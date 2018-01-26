@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2013-2015 Intel Corporation, Inc.  All rights reserved.
  * Copyright (c) 2016 Cisco Systems, Inc. All rights reserved.
+ * Copyright (c) 2017-2018 Hewlett Packard Enterprise Development LP.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -72,6 +73,8 @@
 #ifdef HAVE_VERBS_EXP_H
 #include <infiniband/verbs_exp.h>
 #endif /* HAVE_VERBS_EXP_H */
+
+#include <zhpeq.h>
 
 #ifndef AF_IB
 #define AF_IB 27

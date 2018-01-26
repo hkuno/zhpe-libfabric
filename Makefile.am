@@ -1,5 +1,6 @@
 #
 # Copyright (c) 2016 Cisco Systems, Inc.  All rights reserved.
+# Copyright (c) 2017-2018 Hewlett Packard Enterprise Development LP.  All rights reserved.
 #
 # Makefile.am for libfabric
 
@@ -9,6 +10,8 @@ AM_CPPFLAGS = \
 	-DSYSCONFDIR=\"$(sysconfdir)\" \
 	-DRDMADIR=\"@rdmadir@\" \
 	-DPROVDLDIR=\"$(pkglibdir)\"
+
+AM_LDFLAGS =
 
 noinst_LTLIBRARIES =
 lib_LTLIBRARIES =
@@ -349,6 +352,7 @@ include prov/bgq/Makefile.include
 include prov/mlx/Makefile.include
 include prov/shm/Makefile.include
 include prov/tcp/Makefile.include
+include prov/zhpe/Makefile.include
 
 man_MANS = $(real_man_pages) $(prov_install_man_pages) $(dummy_man_pages)
 

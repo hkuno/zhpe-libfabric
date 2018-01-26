@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2013-2017 Intel Corporation. All rights reserved.
  * Copyright (c) 2016 Cisco Systems, Inc. All rights reserved.
+ * Copyright (c) 2017-2018 Hewlett Packard Enterprise Development LP.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -204,6 +205,17 @@ NETDIR_INI ;
 SHM_INI ;
 #else
 #  define SHM_INIT NULL
+#endif
+
+#if (HAVE_ZHPE) && (HAVE_ZHPE_DL)
+#  define ZHPE_INI FI_EXT_INI
+#  define ZHPE_INIT NULL
+#elif (HAVE_ZHPE)
+#  define ZHPE_INI INI_SIG(fi_zhpe_ini)
+#  define ZHPE_INIT fi_zhpe_ini()
+ZHPE_INI ;
+#else
+#  define ZHPE_INIT NULL
 #endif
 
 #endif /* _PROV_H_ */

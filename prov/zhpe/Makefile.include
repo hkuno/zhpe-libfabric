@@ -1,0 +1,52 @@
+# Makefile.include for zhpe provider
+
+if HAVE_ZHPE
+
+AM_CPPFLAGS += -I$(top_srcdir)/prov/zhpe/include -I$(top_srcdir)/prov/zhpe
+
+_zhpe_files = \
+	prov/zhpe/src/zhpe_av.c \
+	prov/zhpe/src/zhpe_dom.c \
+	prov/zhpe/src/zhpe_eq.c \
+	prov/zhpe/src/zhpe_cq.c \
+	prov/zhpe/src/zhpe_cntr.c \
+	prov/zhpe/src/zhpe_poll.c \
+	prov/zhpe/src/zhpe_wait.c \
+	prov/zhpe/src/zhpe_ep_rdm.c \
+	prov/zhpe/src/zhpe_ep_msg.c \
+	prov/zhpe/src/zhpe_fabric.c \
+	prov/zhpe/src/zhpe_ep.c \
+	prov/zhpe/src/zhpe_ctx.c \
+	prov/zhpe/src/zhpe_progress.c \
+	prov/zhpe/src/zhpe_conn.c \
+	prov/zhpe/src/zhpe_rma.c \
+	prov/zhpe/src/zhpe_msg.c \
+	prov/zhpe/src/zhpe_atomic.c \
+	prov/zhpe/src/zhpe_trigger.c \
+	prov/zhpe/src/zhpe_zq.c
+
+_zhpe_headers = \
+	prov/zhpe/include/zhpe.h
+
+if HAVE_ZHPE_DL
+pkglib_LTLIBRARIES += libzhpe-fi.la
+libzhpe_fi_la_SOURCES = $(_zhpe_files) $(_zhpe_headers) $(common_srcs)
+libzhpe_fi_la_CPPFLAGS = $(AM_CPPFLAGS) $(zhpe_CPPFLAGS) -g
+libzhpe_fi_la_LDFLAGS = \
+    -module -avoid-version -shared -export-dynamic $(zhpe_LDFLAGS)
+libzhpe_fi_la_LIBADD = $(linkback) $(zhpe_LIBS)
+libzhpe_fi_la_DEPENDENCIES = $(linkback)
+else !HAVE_ZHPE_DL
+src_libfabric_la_SOURCES += $(_zhpe_files) $(_zhpe_headers)
+src_libfabric_la_CPPFLAGS += $(zhpe_CPPFLAGS) -g
+src_libfabric_la_LDFLAGS += $(zhpe_LDFLAGS)
+src_libfabric_la_LIBADD += $(zhpe_LIBS)
+endif !HAVE_ZHPE_DL
+
+AM_LDFLAGS += $(zhpe_LDFLAGS) $(zhpe_LIBS)
+
+#prov_install_man_pages += man/man7/fi_zhpe.7
+
+endif HAVE_ZHPE
+
+#prov_dist_man_pages += man/man7/fi_zhpe.7

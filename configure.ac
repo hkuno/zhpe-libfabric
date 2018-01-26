@@ -1,5 +1,6 @@
 dnl
 dnl Copyright (c) 2016 Cisco Systems, Inc.  All rights reserved.
+dnl Copyright (c) 2017-2018 Hewlett Packard Enterprise Development LP.  All rights reserved.
 dnl
 dnl Process this file with autoconf to produce a configure script.
 
@@ -275,6 +276,7 @@ FI_PROVIDER_SETUP([rxm])
 FI_PROVIDER_SETUP([rxd])
 FI_PROVIDER_SETUP([bgq])
 FI_PROVIDER_SETUP([shm])
+FI_PROVIDER_SETUP([zhpe])
 FI_PROVIDER_FINI
 dnl Configure the .pc file
 FI_PROVIDER_SETUP_PC
