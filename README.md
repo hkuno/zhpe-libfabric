@@ -2,7 +2,9 @@
 [<img alt="libfabric Coverity scan suild status" src="https://scan.coverity.com/projects/4274/badge.svg"/>](https://scan.coverity.com/projects/4274)
 [![libfabric release version](https://img.shields.io/github/release/ofiwg/libfabric.svg)](https://github.com/ofiwg/libfabric/releases/latest)
 
-# libfabric
+# zhpe-libfabric
+
+The zhpe branch in this repository hosts a provider for a Gen-Z ASIC being developed by HPE. This provider requires a library and driver supporting low-level access to the hardware: [zhpe-support](https://github.com/HewlettPackard/zhpe-support). Currently, [zhpe-support](https://github.com/HewlettPackard/zhpe-support) provides a partial emulation of the hardware and uses other libfabric providers to provide transport between nodes. The build and test instructions for this provider are hosted [there](https://github.com/HewlettPackard/zhpe-support/blob/master/README.md).
 
 The Open Fabrics Interfaces (OFI) is a framework focused on exporting fabric
 communication services to applications.
