@@ -32,8 +32,8 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <fi_mem.h>
-#include <fi_iov.h>
+#include <ofi_mem.h>
+#include <ofi_iov.h>
 #include "rxd.h"
 
 int rxd_progress_spin_count = 1000;
@@ -202,7 +202,7 @@ int rxd_ep_repost_buff(struct rxd_rx_buf *buf)
 }
 
 /*
- * See fi_proto.h for how conn_data is being used.
+ * See ofi_proto.h for how conn_data is being used.
  */
 static uint64_t rxd_ep_conn_data(struct rxd_ep *ep)
 {
@@ -1552,22 +1552,24 @@ static void rxd_buf_region_free_hndlr(void *pool_ctx, void *context)
 
 int rxd_ep_create_buf_pools(struct rxd_ep *ep, struct fi_info *fi_info)
 {
-	ep->tx_pkt_pool = util_buf_pool_create_ex(
+	int ret = util_buf_pool_create_ex(
+		&ep->tx_pkt_pool,
 		rxd_ep_domain(ep)->max_mtu_sz + sizeof(struct rxd_pkt_meta),
 		RXD_BUF_POOL_ALIGNMENT, 0, RXD_TX_POOL_CHUNK_CNT,
 	        (fi_info->mode & FI_LOCAL_MR) ? rxd_buf_region_alloc_hndlr : NULL,
 		(fi_info->mode & FI_LOCAL_MR) ? rxd_buf_region_free_hndlr : NULL,
 		rxd_ep_domain(ep));
-	if (!ep->tx_pkt_pool)
+	if (ret)
 		return -FI_ENOMEM;
 
-	ep->rx_pkt_pool = util_buf_pool_create_ex(
+	ret = util_buf_pool_create_ex(
+		&ep->rx_pkt_pool,
 		rxd_ep_domain(ep)->max_mtu_sz + sizeof (struct rxd_rx_buf),
 		RXD_BUF_POOL_ALIGNMENT, 0, RXD_RX_POOL_CHUNK_CNT,
 	        (fi_info->mode & FI_LOCAL_MR) ? rxd_buf_region_alloc_hndlr : NULL,
 		(fi_info->mode & FI_LOCAL_MR) ? rxd_buf_region_free_hndlr : NULL,
 		rxd_ep_domain(ep));
-	if (!ep->rx_pkt_pool)
+	if (ret)
 		goto err;
 
 	ep->tx_entry_fs = rxd_tx_entry_fs_create(1ULL << RXD_MAX_TX_BITS);

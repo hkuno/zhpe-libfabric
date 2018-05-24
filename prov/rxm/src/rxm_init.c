@@ -30,31 +30,53 @@
  * SOFTWARE.
  */
 
-#include <rdma/fi_errno.h>
+#include <netdb.h>
 
-#include <prov.h>
+#include <rdma/fi_errno.h>
+#include <ofi_net.h>
+
+#include <ofi_prov.h>
 #include "rxm.h"
+
+char *rxm_proto_state_str[] = {
+	RXM_PROTO_STATES(OFI_STR)
+};
+
+/*
+ * - Support FI_MR_LOCAL/FI_LOCAL_MR as ofi_rxm can handle it.
+ * - The RxM FI_RMA implementation is pass-through but the provider can handle
+ *   FI_MR_PROV_KEY and FI_MR_VIRT_ADDR in its large message transfer rendezvous
+ *   protocol.
+ * - fi_alter_domain_attr should correctly set the mr_mode in return fi_info
+ *   based on hints.
+ */
+void rxm_info_to_core_mr_modes(uint32_t version, const struct fi_info *hints,
+			       struct fi_info *core_info)
+{
+	/* We handle FI_MR_BASIC and FI_MR_SCALABLE irrespective of version */
+	if (hints && hints->domain_attr &&
+	    (hints->domain_attr->mr_mode & (FI_MR_SCALABLE | FI_MR_BASIC))) {
+		core_info->mode = FI_LOCAL_MR;
+		core_info->domain_attr->mr_mode = hints->domain_attr->mr_mode;
+	} else if (FI_VERSION_LT(version, FI_VERSION(1, 5))) {
+		core_info->mode |= FI_LOCAL_MR;
+		/* Specify FI_MR_UNSPEC (instead of FI_MR_BASIC) so that
+		 * providers that support only FI_MR_SCALABLE aren't dropped */
+		core_info->domain_attr->mr_mode = FI_MR_UNSPEC;
+	} else {
+		core_info->domain_attr->mr_mode |= FI_MR_LOCAL;
+		if (!hints || !ofi_rma_target_allowed(hints->caps))
+			core_info->domain_attr->mr_mode |= OFI_MR_BASIC_MAP;
+		else if (hints->domain_attr)
+			core_info->domain_attr->mr_mode |=
+				hints->domain_attr->mr_mode & OFI_MR_BASIC_MAP;
+	}
+}
 
 int rxm_info_to_core(uint32_t version, const struct fi_info *hints,
 		     struct fi_info *core_info)
 {
-	/* Support modes that ofi_rxm could handle */
-	if (FI_VERSION_GE(version, FI_VERSION(1, 5)))
-		core_info->domain_attr->mr_mode |= FI_MR_LOCAL;
-	else
-		core_info->mode |= FI_LOCAL_MR;
-
-	/* The RxM FI_RMA implementation is pass-through but the provider
-	 * can handle FI_MR_PROV_KEY and FI_MR_VIRT_ADDR in its large message
-	 * transfer rendezvous protocol. */
-	if (!hints || !ofi_rma_target_allowed(hints->caps)) {
-		if (FI_VERSION_GE(version, FI_VERSION(1, 5)))
-			core_info->domain_attr->mr_mode |= OFI_MR_BASIC_MAP;
-		else
-			/* specify FI_MR_UNSPEC (instead of FI_MR_BASIC) so that
-			 * providers that support FI_MR_SCALABLE aren't dropped */
-			core_info->domain_attr->mr_mode = FI_MR_UNSPEC;
-	}
+	rxm_info_to_core_mr_modes(version, hints, core_info);
 
 	core_info->mode |= FI_RX_CQ_DATA | FI_CONTEXT;
 
@@ -66,20 +88,7 @@ int rxm_info_to_core(uint32_t version, const struct fi_info *hints,
 		if (hints->caps & (FI_MSG | FI_TAGGED))
 			core_info->caps |= FI_RMA;
 
-		/* No fi_info modes apart from those handled earlier in
-		 * this function can be passed along to the core provider */
-
 		if (hints->domain_attr) {
-			if (FI_VERSION_GE(version, FI_VERSION(1, 5))) {
-				/* Allow only those mr modes that can be
-				 * passed along to the core provider */
-				core_info->domain_attr->mr_mode |=
-					hints->domain_attr->mr_mode &
-					OFI_MR_BASIC_MAP;
-			} else if (ofi_rma_target_allowed(hints->caps)) {
-				core_info->domain_attr->mr_mode =
-					hints->domain_attr->mr_mode;
-			}
 			core_info->domain_attr->caps |= hints->domain_attr->caps;
 		}
 		if (hints->tx_attr) {
@@ -132,6 +141,7 @@ int rxm_info_to_rxm(uint32_t version, const struct fi_info *core_info,
 	info->domain_attr->mr_mode |= core_info->domain_attr->mr_mode;
 	info->domain_attr->cq_data_size = MIN(core_info->domain_attr->cq_data_size,
 					      rxm_info.domain_attr->cq_data_size);
+	info->domain_attr->mr_key_size = core_info->domain_attr->mr_key_size;
 
 	return 0;
 }
@@ -161,12 +171,37 @@ static int rxm_getinfo(uint32_t version, const char *node, const char *service,
 			struct fi_info **info)
 {
 	struct fi_info *cur, *dup;
+	struct addrinfo *ai;
+	uint16_t port_save = 0;
 	int ret;
+
+	/* Avoid getting wild card address from MSG provider */
+	if (ofi_is_only_src_port_set(node, service, flags, hints)) {
+		if (service) {
+			ret = getaddrinfo(NULL, service, NULL, &ai);
+			if (ret) {
+				FI_WARN(&rxm_prov, FI_LOG_CORE,
+					"Unable to getaddrinfo\n");
+				return ret;
+			}
+			port_save = ofi_addr_get_port(ai->ai_addr);
+			freeaddrinfo(ai);
+			service = NULL;
+		} else {
+			port_save = ofi_addr_get_port(hints->src_addr);
+			ofi_addr_set_port(hints->src_addr, 0);
+		}
+	}
 
 	ret = ofix_getinfo(version, node, service, flags, &rxm_util_prov, hints,
 			   rxm_info_to_core, rxm_info_to_rxm, info);
 	if (ret)
 		return ret;
+
+	if (port_save) {
+		for (cur = *info; cur; cur = cur->next)
+			ofi_addr_set_port(cur->src_addr, port_save);
+	}
 
 	/* If app supports FI_MR_LOCAL, prioritize requiring it for
 	 * better performance. */
@@ -179,21 +214,19 @@ static int rxm_getinfo(uint32_t version, const char *node, const char *service,
 			if (!dup) {
 				fi_freeinfo(*info);
 				return -FI_ENOMEM;
-			}
-			if (FI_VERSION_LT(version, FI_VERSION(1, 5)))
-				dup->mode &= ~FI_LOCAL_MR;
-			else
-				dup->domain_attr->mr_mode &= ~FI_MR_LOCAL;
+			} 
+
+			dup->mode &= ~FI_LOCAL_MR;
+			dup->domain_attr->mr_mode &= ~FI_MR_LOCAL;
+
 			dup->next = cur->next;
 			cur->next = dup;
 			cur = dup;
 		}
 	} else {
 		for (cur = *info; cur; cur = cur->next) {
-			if (FI_VERSION_LT(version, FI_VERSION(1, 5)))
-				cur->mode &= ~FI_LOCAL_MR;
-			else
-				cur->domain_attr->mr_mode &= ~FI_MR_LOCAL;
+			cur->mode &= ~FI_LOCAL_MR;
+			cur->domain_attr->mr_mode &= ~FI_MR_LOCAL;
 		}
 	}
 	return 0;
@@ -208,7 +241,7 @@ static void rxm_fini(void)
 struct fi_provider rxm_prov = {
 	.name = OFI_UTIL_PREFIX "rxm",
 	.version = FI_VERSION(RXM_MAJOR_VERSION, RXM_MINOR_VERSION),
-	.fi_version = FI_VERSION(1, 5),
+	.fi_version = FI_VERSION(1, 6),
 	.getinfo = rxm_getinfo,
 	.fabric = rxm_fabric,
 	.cleanup = rxm_fini
@@ -217,9 +250,16 @@ struct fi_provider rxm_prov = {
 RXM_INI
 {
 	fi_param_define(&rxm_prov, "buffer_size", FI_PARAM_INT,
-			"Defines the transmit buffer size. Transmit data would "
-			"be copied upto this size (default: ~16k). This would "
-			"also affect the supported inject size");
+			"Defines the transmit buffer size / inject size. Messages"
+			" of size less than this would be transmitted via an "
+			"eager protocol and those above would be transmitted "
+			"via a rendezvous protocol. Transmit data would be copied"
+			" up to this size (default: ~16k).");
+
+	fi_param_define(&rxm_prov, "comp_per_progress", FI_PARAM_INT,
+			"Defines the maximum number of MSG provider CQ entries "
+			"(default: 1) that would be read per progress "
+			"(RxM CQ read).");
 
 	if (rxm_init_info()) {
 		FI_WARN(&rxm_prov, FI_LOG_CORE, "Unable to initialize rxm_info\n");

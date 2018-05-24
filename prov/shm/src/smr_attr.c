@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2017 Intel Corporation. All rights reserved.
+ * Copyright (c) 2015-2018 Intel Corporation. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -32,26 +32,36 @@
 
 #include "smr.h"
 
+#define SMR_TX_CAPS (OFI_TX_MSG_CAPS | FI_TAGGED | OFI_TX_RMA_CAPS | FI_ATOMICS)
+#define SMR_RX_CAPS (FI_SOURCE | OFI_RX_MSG_CAPS | FI_TAGGED | \
+		     OFI_RX_RMA_CAPS | FI_ATOMICS)
+
 struct fi_tx_attr smr_tx_attr = {
-	.caps = FI_MSG | FI_SEND,
-	.comp_order = FI_ORDER_STRICT,
+	.caps = SMR_TX_CAPS,
+	.comp_order = FI_ORDER_NONE,
+	.msg_order = SMR_RMA_ORDER | FI_ORDER_SAS,
 	.inject_size = SMR_INJECT_SIZE,
 	.size = 1024,
-	.iov_limit = SMR_IOV_LIMIT
+	.iov_limit = SMR_IOV_LIMIT,
+	.rma_iov_limit = SMR_IOV_LIMIT
 };
 
 struct fi_rx_attr smr_rx_attr = {
-	.caps = FI_MSG | FI_RECV | FI_SOURCE,
+	.caps = SMR_RX_CAPS | FI_MULTI_RECV,
 	.comp_order = FI_ORDER_STRICT,
+	.msg_order = SMR_RMA_ORDER | FI_ORDER_SAS,
 	.size = 1024,
 	.iov_limit = SMR_IOV_LIMIT
 };
 
 struct fi_ep_attr smr_ep_attr = {
-	.type = FI_EP_DGRAM,
+	.type = FI_EP_RDM,
 	.protocol = FI_PROTO_SHM,
 	.protocol_version = 1,
 	.max_msg_size = SIZE_MAX,
+	.max_order_raw_size = SIZE_MAX,
+	.max_order_waw_size = SIZE_MAX,
+	.max_order_war_size = SIZE_MAX,
 	.tx_ctx_cnt = 1,
 	.rx_ctx_cnt = 1
 };
@@ -63,13 +73,16 @@ struct fi_domain_attr smr_domain_attr = {
 	.data_progress = FI_PROGRESS_MANUAL,
 	.resource_mgmt = FI_RM_ENABLED,
 	.av_type = FI_AV_UNSPEC,
-	.mr_mode = FI_MR_BASIC,
+	.mr_mode = FI_MR_SCALABLE,
+	.cq_data_size = sizeof_field(struct smr_msg_hdr, data),
 	.cq_cnt = (1 << 10),
 	.ep_cnt = (1 << 10),
 	.tx_ctx_cnt = (1 << 10),
 	.rx_ctx_cnt = (1 << 10),
 	.max_ep_tx_ctx = 1,
-	.max_ep_rx_ctx = 1
+	.max_ep_rx_ctx = 1,
+	.mr_iov_limit = SMR_IOV_LIMIT,
+	.caps = FI_LOCAL_COMM,
 };
 
 struct fi_fabric_attr smr_fabric_attr = {
@@ -78,7 +91,7 @@ struct fi_fabric_attr smr_fabric_attr = {
 };
 
 struct fi_info smr_info = {
-	.caps = FI_MSG | FI_SEND | FI_RECV | FI_SOURCE | FI_TAGGED,
+	.caps = SMR_TX_CAPS | SMR_RX_CAPS | FI_MULTI_RECV,
 	.addr_format = FI_ADDR_STR,
 	.tx_attr = &smr_tx_attr,
 	.rx_attr = &smr_rx_attr,

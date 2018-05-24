@@ -1,6 +1,8 @@
 /*
  * Copyright (c) 2014 Intel Corporation, Inc.  All rights reserved.
  * Copyright (c) 2016, Cisco Systems, Inc. All rights reserved.
+ * Copyright (c) 2017  Los Alamos National Security, LLC.
+ *                     All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -50,8 +52,8 @@
 #include "sock.h"
 #include "sock_util.h"
 
-#include "fi_osd.h"
-#include "fi_util.h"
+#include "ofi_osd.h"
+#include "ofi_util.h"
 
 #define SOCK_LOG_DBG(...) _SOCK_LOG_DBG(FI_LOG_AV, __VA_ARGS__)
 #define SOCK_LOG_ERROR(...) _SOCK_LOG_ERROR(FI_LOG_AV, __VA_ARGS__)
@@ -400,8 +402,12 @@ static int sock_av_remove(struct fid_av *av, fi_addr_t *fi_addr, size_t count,
 		for (i = 0; i < count; i++) {
         		idx = fi_addr[i] & sock_ep->attr->av->mask;
 			conn = ofi_idm_lookup(&sock_ep->attr->av_idm, idx);
-			if (conn && conn->sock_fd != -1) {
-				sock_ep_remove_conn(sock_ep->attr, conn);
+			if (conn) {
+				/* A peer may be using the connection, so leave
+				 * it operational, just dissociate it from AV.
+				 */
+				if (conn->av_index == idx)
+					conn->av_index = FI_ADDR_NOTAVAIL;
 				ofi_idm_clear(&sock_ep->attr->av_idm, idx);
 			}
 		}

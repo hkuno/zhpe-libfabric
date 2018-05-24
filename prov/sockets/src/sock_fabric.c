@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2014 Intel Corporation, Inc.  All rights reserved.
  * Copyright (c) 2016 Cisco Systems, Inc.  All rights reserved.
+ * Copyright (c) 2017 DataDirect Networks, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -46,8 +47,8 @@
 #include <ifaddrs.h>
 #endif
 
-#include "prov.h"
-#include "fi_osd.h"
+#include "ofi_prov.h"
+#include "ofi_osd.h"
 
 #include "sock.h"
 #include "sock_util.h"
@@ -67,6 +68,18 @@ int sock_eq_def_sz = SOCK_EQ_DEF_SZ;
 #if ENABLE_DEBUG
 int sock_dgram_drop_rate = 0;
 #endif
+int sock_keepalive_enable;
+int sock_keepalive_time = INT_MAX;
+int sock_keepalive_intvl = INT_MAX;
+int sock_keepalive_probes = INT_MAX;
+
+char *sock_interface_name = NULL;
+
+uint64_t SOCK_EP_RDM_SEC_CAP = SOCK_EP_RDM_SEC_CAP_BASE;
+uint64_t SOCK_EP_RDM_CAP = SOCK_EP_RDM_CAP_BASE;
+uint64_t SOCK_EP_MSG_SEC_CAP = SOCK_EP_MSG_SEC_CAP_BASE;
+uint64_t SOCK_EP_MSG_CAP = SOCK_EP_MSG_CAP_BASE;
+
 
 const struct fi_fabric_attr sock_fabric_attr = {
 	.fabric = NULL,
@@ -344,6 +357,11 @@ static void sock_read_default_params()
 #if ENABLE_DEBUG
 		fi_param_get_int(&sock_prov, "dgram_drop_rate", &sock_dgram_drop_rate);
 #endif
+		fi_param_get_bool(&sock_prov, "keepalive_enable", &sock_keepalive_enable);
+		fi_param_get_int(&sock_prov, "keepalive_time", &sock_keepalive_time);
+		fi_param_get_int(&sock_prov, "keepalive_intvl", &sock_keepalive_intvl);
+		fi_param_get_int(&sock_prov, "keepalive_probes", &sock_keepalive_probes);
+
 		read_default_params = 1;
 	}
 }
@@ -513,14 +531,35 @@ void sock_get_list_of_addr(struct slist *addr_list)
 	struct sock_host_list_entry *addr_entry;
 	struct ifaddrs *ifaddrs, *ifa;
 
+	fi_param_get_str(&sock_prov, "interface_name", &sock_interface_name);
+
 	ret = ofi_getifaddrs(&ifaddrs);
 	if (!ret) {
+		if (sock_interface_name) {
+			for (ifa = ifaddrs; ifa != NULL; ifa = ifa->ifa_next) {
+				if (strncmp(sock_interface_name, ifa->ifa_name,
+					    strlen(sock_interface_name)) == 0) {
+					break;
+				}
+			}
+			if (ifa == NULL) {
+				FI_INFO(&sock_prov, FI_LOG_CORE,
+					"Can't set filter to unknown interface: (%s)\n",
+					sock_interface_name);
+				sock_interface_name = NULL;
+			}
+		}
 		for (ifa = ifaddrs; ifa != NULL; ifa = ifa->ifa_next) {
 			if (ifa->ifa_addr == NULL || !(ifa->ifa_flags & IFF_UP) ||
 			     (ifa->ifa_addr->sa_family != AF_INET) ||
 			     !strcmp(ifa->ifa_name, "lo"))
 				continue;
-
+			if (sock_interface_name &&
+			    strncmp(sock_interface_name, ifa->ifa_name,
+				    strlen(sock_interface_name)) != 0) {
+				SOCK_LOG_DBG("Skip (%s) interface\n", ifa->ifa_name);
+				continue;
+			}
 			addr_entry = calloc(1, sizeof(struct sock_host_list_entry));
 			if (!addr_entry)
 				continue;
@@ -730,7 +769,7 @@ static void fi_sockets_fini(void)
 struct fi_provider sock_prov = {
 	.name = sock_prov_name,
 	.version = FI_VERSION(SOCK_MAJOR_VERSION, SOCK_MINOR_VERSION),
-	.fi_version = FI_VERSION(1, 5),
+	.fi_version = FI_VERSION(1, 6),
 	.getinfo = sock_getinfo,
 	.fabric = sock_fabric,
 	.cleanup = fi_sockets_fini
@@ -738,6 +777,10 @@ struct fi_provider sock_prov = {
 
 SOCKETS_INI
 {
+#if HAVE_SOCKETS_DL
+	ofi_pmem_init();
+#endif
+
 	fi_param_define(&sock_prov, "pe_waittime", FI_PARAM_INT,
 			"How many milliseconds to spin while waiting for progress");
 
@@ -758,12 +801,31 @@ SOCKETS_INI
 
 	fi_param_define(&sock_prov, "pe_affinity", FI_PARAM_STRING,
 			"If specified, bind the progress thread to the indicated range(s) of Linux virtual processor ID(s). "
-			"This option is currently not supported on OS X. Usage: id_start[-id_end[:stride]][,]");
+			"This option is currently not supported on OS X and Windows. Usage: id_start[-id_end[:stride]][,]");
+
+	fi_param_define(&sock_prov, "keepalive_enable", FI_PARAM_BOOL,
+			"Enable keepalive support");
+
+	fi_param_define(&sock_prov, "keepalive_time", FI_PARAM_INT,
+			"Idle time in seconds before sending the first keepalive probe");
+
+	fi_param_define(&sock_prov, "keepalive_intvl", FI_PARAM_INT,
+			"Time in seconds between individual keepalive probes");
+
+	fi_param_define(&sock_prov, "keepalive_probes", FI_PARAM_INT,
+			"Maximum number of keepalive probes sent before dropping the connection");
+
+	fi_param_define(&sock_prov, "interface_name", FI_PARAM_STRING,
+			"Specify interface name");
 
 	fastlock_init(&sock_list_lock);
 	dlist_init(&sock_fab_list);
 	dlist_init(&sock_dom_list);
 	slist_init(&sock_addr_list);
+	SOCK_EP_RDM_SEC_CAP |= OFI_RMA_PMEM;
+	SOCK_EP_RDM_CAP |= OFI_RMA_PMEM;
+	SOCK_EP_MSG_SEC_CAP |= OFI_RMA_PMEM;
+	SOCK_EP_MSG_CAP |= OFI_RMA_PMEM;
 	/* Returns loopback address if no other interfaces are available */
 	sock_get_list_of_addr(&sock_addr_list);
 #if ENABLE_DEBUG

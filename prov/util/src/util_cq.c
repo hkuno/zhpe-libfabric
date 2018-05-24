@@ -33,8 +33,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <fi_enosys.h>
-#include <fi_util.h>
+#include <ofi_enosys.h>
+#include <ofi_util.h>
 
 #define UTIL_DEF_CQ_SIZE (1024)
 
@@ -61,13 +61,31 @@ int ofi_cq_write_error(struct util_cq *cq,
 
 int ofi_cq_write_error_peek(struct util_cq *cq, uint64_t tag, void *context)
 {
-	struct fi_cq_err_entry err_entry = {0};
+	struct fi_cq_err_entry err_entry = {
+		.op_context	= context,
+		.flags		= FI_TAGGED | FI_RECV,
+		.tag		= tag,
+		.err		= FI_ENOMSG,
+		.prov_errno	= -FI_ENOMSG,
+	};
+	return ofi_cq_write_error(cq, &err_entry);
+}
 
-	err_entry.op_context    = context;
-	err_entry.flags         = FI_TAGGED | FI_RECV;
-	err_entry.tag		= tag;
-	err_entry.err           = FI_ENOMSG;
-	err_entry.prov_errno    = -FI_ENOMSG;
+int ofi_cq_write_error_trunc(struct util_cq *cq, void *context, uint64_t flags,
+			     size_t len, void *buf, uint64_t data, uint64_t tag,
+			     size_t olen)
+{
+	struct fi_cq_err_entry err_entry = {
+		.op_context	= context,
+		.flags		= flags,
+		.len		= len,
+		.buf		= buf,
+		.data		= data,
+		.tag		= tag,
+		.olen		= olen,
+		.err		= FI_ETRUNC,
+		.prov_errno	= -FI_ETRUNC,
+	};
 	return ofi_cq_write_error(cq, &err_entry);
 }
 
@@ -173,42 +191,6 @@ static void util_cq_read_tagged(void **dst, void *src)
 	*(char **)dst += sizeof(struct fi_cq_tagged_entry);
 }
 
-ssize_t ofi_cq_read(struct fid_cq *cq_fid, void *buf, size_t count)
-{
-	struct util_cq *cq;
-	struct fi_cq_tagged_entry *entry;
-	size_t i;
-
-	cq = container_of(cq_fid, struct util_cq, cq_fid);
-	fastlock_acquire(&cq->cq_lock);
-	if (ofi_cirque_isempty(cq->cirq)) {
-		fastlock_release(&cq->cq_lock);
-		cq->progress(cq);
-		fastlock_acquire(&cq->cq_lock);
-		if (ofi_cirque_isempty(cq->cirq)) {
-			i = -FI_EAGAIN;
-			goto out;
-		}
-	}
-
-	if (count > ofi_cirque_usedcnt(cq->cirq))
-		count = ofi_cirque_usedcnt(cq->cirq);
-
-	for (i = 0; i < count; i++) {
-		entry = ofi_cirque_head(cq->cirq);
-		if (entry->flags & UTIL_FLAG_ERROR) {
-			if (!i)
-				i = -FI_EAVAIL;
-			break;
-		}
-		cq->read_entry(&buf, entry);
-		ofi_cirque_discard(cq->cirq);
-	}
-out:
-	fastlock_release(&cq->cq_lock);
-	return i;
-}
-
 ssize_t ofi_cq_readfrom(struct fid_cq *cq_fid, void *buf, size_t count,
 		fi_addr_t *src_addr)
 {
@@ -217,14 +199,6 @@ ssize_t ofi_cq_readfrom(struct fid_cq *cq_fid, void *buf, size_t count,
 	ssize_t i;
 
 	cq = container_of(cq_fid, struct util_cq, cq_fid);
-	if (!cq->src) {
-		i = ofi_cq_read(cq_fid, buf, count);
-		if (i > 0) {
-			for (count = 0; count < (size_t)i; count++)
-				src_addr[i] = FI_ADDR_NOTAVAIL;
-		}
-		return i;
-	}
 
 	fastlock_acquire(&cq->cq_lock);
 	if (ofi_cirque_isempty(cq->cirq)) {
@@ -247,13 +221,19 @@ ssize_t ofi_cq_readfrom(struct fid_cq *cq_fid, void *buf, size_t count,
 				i = -FI_EAVAIL;
 			break;
 		}
-		src_addr[i] = cq->src[ofi_cirque_rindex(cq->cirq)];
+		if (src_addr && cq->src)
+			src_addr[i] = cq->src[ofi_cirque_rindex(cq->cirq)];
 		cq->read_entry(&buf, entry);
 		ofi_cirque_discard(cq->cirq);
 	}
 out:
 	fastlock_release(&cq->cq_lock);
 	return i;
+}
+
+ssize_t ofi_cq_read(struct fid_cq *cq_fid, void *buf, size_t count)
+{
+	return ofi_cq_readfrom(cq_fid, buf, count, NULL);
 }
 
 ssize_t ofi_cq_readerr(struct fid_cq *cq_fid, struct fi_cq_err_entry *buf,
@@ -297,26 +277,43 @@ unlock:
 	return ret;
 }
 
-ssize_t ofi_cq_sread(struct fid_cq *cq_fid, void *buf, size_t count,
-		const void *cond, int timeout)
-{
-	struct util_cq *cq;
-
-	cq = container_of(cq_fid, struct util_cq, cq_fid);
-	assert(cq->wait && cq->internal_wait);
-	fi_wait(&cq->wait->wait_fid, timeout);
-	return ofi_cq_read(cq_fid, buf, count);
-}
-
 ssize_t ofi_cq_sreadfrom(struct fid_cq *cq_fid, void *buf, size_t count,
 		fi_addr_t *src_addr, const void *cond, int timeout)
 {
 	struct util_cq *cq;
+	uint64_t start;
+	int ret;
 
 	cq = container_of(cq_fid, struct util_cq, cq_fid);
 	assert(cq->wait && cq->internal_wait);
-	fi_wait(&cq->wait->wait_fid, timeout);
-	return ofi_cq_readfrom(cq_fid, buf, count, src_addr);
+	start = (timeout >= 0) ? fi_gettime_ms() : 0;
+
+	do {
+		ret = ofi_cq_readfrom(cq_fid, buf, count, src_addr);
+		if (ret != -FI_EAGAIN)
+			break;
+
+		if (timeout >= 0) {
+			timeout -= (int) (fi_gettime_ms() - start);
+			if (timeout <= 0)
+				return -FI_EAGAIN;
+		}
+
+		if (ofi_atomic_get32(&cq->signaled)) {
+			ofi_atomic_set32(&cq->signaled, 0);
+			return -FI_ECANCELED;
+		}
+
+		ret = fi_wait(&cq->wait->wait_fid, timeout);
+	} while (!ret);
+
+	return ret == -FI_ETIMEDOUT ? -FI_EAGAIN : ret;
+}
+
+ssize_t ofi_cq_sread(struct fid_cq *cq_fid, void *buf, size_t count,
+		const void *cond, int timeout)
+{
+	return ofi_cq_sreadfrom(cq_fid, buf, count, NULL, cond, timeout);
 }
 
 int ofi_cq_signal(struct fid_cq *cq_fid)
@@ -325,6 +322,7 @@ int ofi_cq_signal(struct fid_cq *cq_fid)
 
 	cq = container_of(cq_fid, struct util_cq, cq_fid);
 	assert(cq->wait);
+	ofi_atomic_set32(&cq->signaled, 1);
 	cq->wait->signal(cq->wait);
 	return 0;
 }
@@ -408,6 +406,7 @@ static int fi_cq_init(struct fid_domain *domain, struct fi_cq_attr *attr,
 
 	cq->domain = container_of(domain, struct util_domain, domain_fid);
 	ofi_atomic_initialize32(&cq->ref, 0);
+	ofi_atomic_initialize32(&cq->signaled, 0);
 	dlist_init(&cq->ep_list);
 	fastlock_init(&cq->ep_list_lock);
 	fastlock_init(&cq->cq_lock);

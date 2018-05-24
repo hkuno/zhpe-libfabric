@@ -98,6 +98,12 @@
 /* Network Direct provider is built as DSO */
 /* #undef HAVE_NETDIR_DL */
 
+/* TCP provider is built */
+#define HAVE_TCP 1
+
+/* TCP provider is built as DSO */
+/* #undef HAVE_TCP_DL */
+
 /* Define to 1 if you have the <stdint.h> header file. */
 /* #undef HAVE_STDINT_H */
 
@@ -186,3 +192,7 @@
 /* Version number of package */
 #define _FI_EXP(s) #s
 #define VERSION _FI_EXP(FI_MAJOR_VERSION) "." _FI_EXP(FI_MINOR_VERSION) ".0"
+
+#ifndef BUILD_ID
+#define BUILD_ID ""
+#endif

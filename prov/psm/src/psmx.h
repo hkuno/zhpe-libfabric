@@ -63,12 +63,12 @@ extern "C" {
 #include <rdma/fi_trigger.h>
 #include <rdma/fi_cm.h>
 #include <rdma/fi_errno.h>
-#include "fi.h"
+#include "ofi.h"
 #include "ofi_atomic.h"
-#include "fi_enosys.h"
-#include "fi_list.h"
-#include "fi_util.h"
-#include "fi_file.h"
+#include "ofi_enosys.h"
+#include "ofi_list.h"
+#include "ofi_util.h"
+#include "ofi_file.h"
 #include "rbtree.h"
 #include "version.h"
 
@@ -76,7 +76,7 @@ extern struct fi_provider psmx_prov;
 
 extern int psmx_am_compat_mode;
 
-#define PSMX_VERSION	(FI_VERSION(1,5))
+#define PSMX_VERSION	(FI_VERSION(1, 6))
 
 #define PSMX_OP_FLAGS	(FI_INJECT | FI_MULTI_RECV | FI_COMPLETION | \
 			 FI_TRIGGER | FI_INJECT_COMPLETE | \
@@ -97,7 +97,8 @@ extern int psmx_am_compat_mode;
 
 #define PSMX_MAX_MSG_SIZE	((0x1ULL << 32) - 1)
 #define PSMX_INJECT_SIZE	(64)
-#define PSMX_MSG_ORDER	FI_ORDER_SAS
+#define PSMX_MSG_ORDER	(FI_ORDER_SAS | FI_ORDER_RAR | FI_ORDER_RAW | \
+			 FI_ORDER_WAR | FI_ORDER_WAW)
 #define PSMX_COMP_ORDER	FI_ORDER_NONE
 
 #define PSMX_MSG_BIT	(0x1ULL << 63)
@@ -138,6 +139,7 @@ union psmx_pi {
 #define PSMX_AM_CHUNK_SIZE	2032	/* The maximum that's actually working:
 					 * 2032 for inter-node, 2072 for intra-node.
 					 */
+#define PSMX_RMA_ORDER_SIZE	PSMX_AM_CHUNK_SIZE
 
 #define PSMX_AM_OP_MASK		0x0000FFFF
 #define PSMX_AM_FLAG_MASK	0xFFFF0000
@@ -614,7 +616,7 @@ static inline void psmx_domain_release(struct psmx_fid_domain *domain)
 	ofi_atomic_dec32(&domain->util_domain.ref);
 }
 
-int	psmx_domain_check_features(struct psmx_fid_domain *domain, int ep_cap);
+int	psmx_domain_check_features(struct psmx_fid_domain *domain, uint64_t ep_caps);
 int	psmx_domain_enable_ep(struct psmx_fid_domain *domain, struct psmx_fid_ep *ep);
 void	psmx_domain_disable_ep(struct psmx_fid_domain *domain, struct psmx_fid_ep *ep);
 

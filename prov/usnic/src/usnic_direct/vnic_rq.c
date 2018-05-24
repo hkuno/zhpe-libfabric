@@ -1,5 +1,5 @@
 /*
- * Copyright 2008-2010 Cisco Systems, Inc.  All rights reserved.
+ * Copyright 2008-2018 Cisco Systems, Inc.  All rights reserved.
  * Copyright 2007 Nuova Systems, Inc.  All rights reserved.
  *
  * LICENSE_BEGIN
@@ -152,7 +152,7 @@ int vnic_rq_alloc(struct vnic_dev *vdev, struct vnic_rq *rq, unsigned int index,
 	return 0;
 }
 
-void vnic_rq_init_start(struct vnic_rq *rq, unsigned int cq_index,
+static void vnic_rq_init_start(struct vnic_rq *rq, unsigned int cq_index,
 	unsigned int fetch_index, unsigned int posted_index,
 	unsigned int error_interrupt_enable,
 	unsigned int error_interrupt_offset)
@@ -166,7 +166,8 @@ void vnic_rq_init_start(struct vnic_rq *rq, unsigned int cq_index,
 	iowrite32(cq_index, &rq->ctrl->cq_index);
 	iowrite32(error_interrupt_enable, &rq->ctrl->error_interrupt_enable);
 	iowrite32(error_interrupt_offset, &rq->ctrl->error_interrupt_offset);
-	iowrite32(0, &rq->ctrl->dropped_packet_count);
+	iowrite32(0, &rq->ctrl->data_ring);
+	iowrite32(0, &rq->ctrl->header_split);
 	iowrite32(0, &rq->ctrl->error_status);
 	iowrite32(fetch_index, &rq->ctrl->fetch_index);
 	iowrite32(posted_index, &rq->ctrl->posted_index);
@@ -180,21 +181,8 @@ void vnic_rq_init(struct vnic_rq *rq, unsigned int cq_index,
 	unsigned int error_interrupt_enable,
 	unsigned int error_interrupt_offset)
 {
-	u32 fetch_index = 0;
-#if !defined(__LIBUSNIC__)
-	/* Use current fetch_index as the ring starting point */
-	fetch_index = ioread32(&rq->ctrl->fetch_index);
-
-	if (fetch_index == 0xFFFFFFFF) { /* check for hardware gone  */
-		/* Hardware surprise removal: reset fetch_index */
-		fetch_index = 0;
-	}
-#endif
-
-	vnic_rq_init_start(rq, cq_index,
-		fetch_index, fetch_index,
-		error_interrupt_enable,
-		error_interrupt_offset);
+	vnic_rq_init_start(rq, cq_index, 0, 0, error_interrupt_enable,
+			   error_interrupt_offset);
 }
 
 void vnic_rq_error_out(struct vnic_rq *rq, unsigned int error)
@@ -207,6 +195,7 @@ unsigned int vnic_rq_error_status(struct vnic_rq *rq)
 	return vnic_rq_ctrl_error_status(rq->ctrl);
 }
 
+EXPORT_SYMBOL(vnic_rq_ctrl_error_status);
 unsigned int vnic_rq_ctrl_error_status(struct vnic_rq_ctrl *ctrl)
 {
 	return ioread32(&ctrl->error_status);

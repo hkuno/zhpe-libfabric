@@ -63,11 +63,14 @@ struct zhpe_rx_ctx *zhpe_rx_ctx_alloc(const struct fi_rx_attr *attr,
 	rx_ctx->use_shared = use_shared;
 
 	rx_ctx->domain = domain;
-	rx_ctx->rx_entry_pool =
-		util_buf_pool_create(sizeof(struct zhpe_rx_entry),
-				     alignof(struct zhpe_rx_entry), 0, 64);
-	if (!rx_ctx->rx_entry_pool)
+	rc = util_buf_pool_create(&rx_ctx->rx_entry_pool,
+				  sizeof(struct zhpe_rx_entry),
+				  alignof(struct zhpe_rx_entry), 0, 64);
+	if (rc < 0) {
+                rx_ctx->rx_entry_pool = NULL;
+		ZHPE_LOG_ERROR("util_buf_pool_create() error %d\n", rc);
 		goto err;
+	}
 	if (attr->total_buffered_recv > 0) {
 		rc = zhpe_slab_init(&rx_ctx->eager,
 				    attr->total_buffered_recv,

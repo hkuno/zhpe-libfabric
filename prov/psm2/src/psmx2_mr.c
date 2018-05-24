@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2017 Intel Corporation. All rights reserved.
+ * Copyright (c) 2013-2018 Intel Corporation. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -156,7 +156,7 @@ static int psmx2_mr_bind(struct fid *fid, struct fid *bfid, uint64_t flags)
 		if (mr->domain != cntr->domain)
 			return -FI_EINVAL;
 		mr->cntr = cntr;
-		cntr->trx_ctxt = PSMX2_ALL_TRX_CTXT;
+		cntr->poll_all = 1;
 		break;
 
 	default:

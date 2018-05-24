@@ -32,7 +32,7 @@
 
 #include <rdma/fi_errno.h>
 
-#include <prov.h>
+#include <ofi_prov.h>
 #include "udpx.h"
 
 #include <sys/types.h>
@@ -137,7 +137,7 @@ static void udpx_fini(void)
 struct fi_provider udpx_prov = {
 	.name = "UDP",
 	.version = FI_VERSION(UDPX_MAJOR_VERSION, UDPX_MINOR_VERSION),
-	.fi_version = FI_VERSION(1, 5),
+	.fi_version = FI_VERSION(1, 6),
 	.getinfo = udpx_getinfo,
 	.fabric = udpx_fabric,
 	.cleanup = udpx_fini

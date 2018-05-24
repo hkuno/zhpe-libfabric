@@ -46,12 +46,12 @@
 #include <rdma/fi_tagged.h>
 #include <rdma/fi_trigger.h>
 
-#include <fi.h>
-#include <fi_proto.h>
-#include <fi_enosys.h>
-#include <fi_rbuf.h>
-#include <fi_list.h>
-#include <fi_util.h>
+#include <ofi.h>
+#include <ofi_proto.h>
+#include <ofi_enosys.h>
+#include <ofi_rbuf.h>
+#include <ofi_list.h>
+#include <ofi_util.h>
 
 #ifndef _RXD_H_
 #define _RXD_H_
@@ -59,7 +59,7 @@
 #define RXD_MAJOR_VERSION 	(1)
 #define RXD_MINOR_VERSION 	(0)
 #define RXD_PROTOCOL_VERSION 	(1)
-#define RXD_FI_VERSION 		FI_VERSION(1,5)
+#define RXD_FI_VERSION 		FI_VERSION(1,6)
 
 #define RXD_IOV_LIMIT		4
 #define RXD_MAX_DGRAM_ADDR	128
@@ -116,7 +116,7 @@ struct rxd_domain {
 
 	ssize_t max_mtu_sz;
 	int mr_mode;
-	struct ofi_mr_map mr_map;
+	struct ofi_mr_map mr_map;//TODO use util_domain mr_map instead
 };
 
 struct rxd_av {

@@ -34,8 +34,31 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <fi_util.h>
+#include <ofi_util.h>
 #include "rxm.h"
+
+int rxm_cntr_open(struct fid_domain *domain, struct fi_cntr_attr *attr,
+		  struct fid_cntr **cntr_fid, void *context)
+{
+	int ret;
+	struct util_cntr *cntr;
+
+	cntr = calloc(1, sizeof(*cntr));
+	if (!cntr)
+		return -FI_ENOMEM;
+
+	ret = ofi_cntr_init(&rxm_prov, domain, attr, cntr,
+			    &ofi_cntr_progress, context);
+	if (ret)
+		goto free;
+
+	*cntr_fid = &cntr->cntr_fid;
+	return FI_SUCCESS;
+
+free:
+	free(cntr);
+	return ret;
+}
 
 static struct fi_ops_domain rxm_domain_ops = {
 	.size = sizeof(struct fi_ops_domain),
@@ -43,7 +66,7 @@ static struct fi_ops_domain rxm_domain_ops = {
 	.cq_open = rxm_cq_open,
 	.endpoint = rxm_endpoint,
 	.scalable_ep = fi_no_scalable_ep,
-	.cntr_open = fi_no_cntr_open,
+	.cntr_open = rxm_cntr_open,
 	.poll_open = fi_poll_create,
 	.stx_ctx = fi_no_stx_context,
 	.srx_ctx = fi_no_srx_context,
@@ -131,7 +154,7 @@ static int rxm_mr_reg(struct fid *domain_fid, const void *buf, size_t len,
 	rxm_mr->mr_fid.fid.ops = &rxm_mr_ops;
 	/* Store msg_mr as rxm_mr descriptor so that we can get its key when
 	 * the app passes msg_mr as the descriptor in fi_send and friends.
-	 * The key would be used in large message transfer protocol. */
+	 * The key would be used in large message transfer protocol and RMA. */
 	rxm_mr->mr_fid.mem_desc = rxm_mr->msg_mr;
 	rxm_mr->mr_fid.key = fi_mr_key(rxm_mr->msg_mr);
 	*mr = &rxm_mr->mr_fid;
@@ -169,7 +192,8 @@ int rxm_domain_open(struct fid_fabric *fabric, struct fi_info *info,
 		goto err1;
 
 	/* Force core provider to supply MR key */
-	if (FI_VERSION_LT(fabric->api_version, FI_VERSION(1, 5)))
+	if (FI_VERSION_LT(fabric->api_version, FI_VERSION(1, 5)) ||
+	    (msg_info->domain_attr->mr_mode & (FI_MR_BASIC | FI_MR_SCALABLE)))
 		msg_info->domain_attr->mr_mode = FI_MR_BASIC;
 	else
 		msg_info->domain_attr->mr_mode |= FI_MR_PROV_KEY;

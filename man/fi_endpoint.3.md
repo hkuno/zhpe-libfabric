@@ -187,7 +187,12 @@ bound to one or more fabric resources.  An endpoint that will generate
 asynchronous completions, either through data transfer operations or
 communication establishment events, must be bound to the appropriate
 completion queues or event queues, respectively, before being enabled.
-Unconnected endpoints must be bound to an address vector.
+Additionally, endpoints that use manual progress must be associated
+with relevant completion queues or event queues in order to drive
+progress.  For endpoints that are only used as the target of RMA or
+atomic operations, this means binding the endpoint to a completion
+queue associated with receive processing.  Unconnected endpoints must
+be bound to an address vector.
 
 Once an endpoint has been activated, it may be associated with an address
 vector.  Receive buffers may be posted to it and
@@ -328,7 +333,7 @@ together when binding an endpoint to a completion domain CQ.
   fi_inject(ep, ...);                 // no completion!
 ```
 
-An endpoint may also, or instead, be bound to a fabric counter.  When
+An endpoint may also be bound to a fabric counter.  When
 binding an endpoint to a counter, the following flags may be specified.
 
 *FI_SEND*
@@ -1344,6 +1349,16 @@ value of transmit or receive context attributes of an endpoint.
   that return data to the initiator, such as RMA read or atomic-fetch,
   the source endpoint is also considered a destination endpoint.  This is the
   default completion mode for such operations.
+
+*FI_COMMIT_COMPLETE*
+: Indicates that a completion should not be generated (locally or at the
+  peer) until the result of an operation have been made persistent.
+  A completion guarantees that the result is both available and durable,
+  in the case of power failure.
+
+  This completion mode applies only to operations that target persistent
+  memory regions over reliable endpoints.  This completion mode is
+  experimental.
 
 *FI_MULTICAST*
 : Indicates that data transfers will target multicast addresses by default.

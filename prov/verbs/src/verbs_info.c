@@ -30,7 +30,7 @@
  * SOFTWARE.
  */
 
-#include <fi_util.h>
+#include <ofi_util.h>
 
 #include <ifaddrs.h>
 #include <net/if.h>
@@ -41,15 +41,16 @@
 
 #define VERBS_IB_PREFIX "IB-0x"
 #define VERBS_IWARP_FABRIC "Ethernet-iWARP"
-#define VERBS_ANY_FABRIC "Any RDMA fabric"
 
-#define VERBS_MSG_CAPS (FI_MSG | FI_RMA | FI_ATOMICS | FI_READ | FI_WRITE | \
-			FI_SEND | FI_RECV | FI_REMOTE_READ | FI_REMOTE_WRITE | \
-			FI_LOCAL_COMM | FI_REMOTE_COMM)
+#define VERBS_DOMAIN_CAPS (FI_LOCAL_COMM | FI_REMOTE_COMM)
+
+#define VERBS_MSG_CAPS (FI_MSG | FI_RMA | FI_ATOMICS | FI_READ | FI_WRITE |	\
+			FI_SEND | FI_RECV | FI_REMOTE_READ | FI_REMOTE_WRITE |	\
+			VERBS_DOMAIN_CAPS)
 #define VERBS_RDM_CAPS (FI_MSG | FI_RMA | FI_TAGGED | FI_READ | FI_WRITE |	\
 			FI_RECV | FI_MULTI_RECV | FI_SEND | FI_REMOTE_READ |	\
-			FI_REMOTE_WRITE)
-#define VERBS_DGRAM_CAPS (FI_MSG | FI_RECV | FI_SEND)
+			FI_REMOTE_WRITE | VERBS_DOMAIN_CAPS)
+#define VERBS_DGRAM_CAPS (FI_MSG | FI_RECV | FI_SEND | VERBS_DOMAIN_CAPS)
 
 #define VERBS_RDM_MODE (FI_CONTEXT)
 
@@ -78,6 +79,7 @@ const struct fi_fabric_attr verbs_fabric_attr = {
 };
 
 const struct fi_domain_attr verbs_domain_attr = {
+	.caps			= VERBS_DOMAIN_CAPS,
 	.threading		= FI_THREAD_SAFE,
 	.control_progress	= FI_PROGRESS_AUTO,
 	.data_progress		= FI_PROGRESS_AUTO,
@@ -414,6 +416,7 @@ static inline int fi_ibv_get_qp_cap(struct ibv_context *ctx,
 	struct ibv_cq *cq;
 	struct ibv_qp *qp;
 	struct ibv_qp_init_attr init_attr;
+	enum ibv_qp_type qp_type;
 	int ret = 0;
 
 	pd = ibv_alloc_pd(ctx);
@@ -429,6 +432,9 @@ static inline int fi_ibv_get_qp_cap(struct ibv_context *ctx,
 		goto err1;
 	}
 
+	qp_type = (info->ep_attr->type != FI_EP_DGRAM) ?
+			    IBV_QPT_RC : IBV_QPT_UD;
+
 	memset(&init_attr, 0, sizeof init_attr);
 	init_attr.send_cq = cq;
 	init_attr.recv_cq = cq;
@@ -436,10 +442,8 @@ static inline int fi_ibv_get_qp_cap(struct ibv_context *ctx,
 	init_attr.cap.max_recv_wr = fi_ibv_gl_data.def_rx_size;
 	init_attr.cap.max_send_sge = fi_ibv_gl_data.def_tx_iov_limit;
 	init_attr.cap.max_recv_sge = fi_ibv_gl_data.def_rx_iov_limit;
-	init_attr.cap.max_inline_data = fi_ibv_gl_data.def_inline_size;
-
-	init_attr.qp_type = (info->ep_attr->type != FI_EP_DGRAM) ?
-			    IBV_QPT_RC : IBV_QPT_UD;
+	init_attr.cap.max_inline_data = fi_ibv_find_max_inline(pd, ctx, qp_type);
+	init_attr.qp_type = qp_type;
 
 	qp = ibv_create_qp(pd, &init_attr);
 	if (!qp) {
@@ -1170,14 +1174,45 @@ static int fi_ibv_set_default_info(struct fi_info *info)
 	return 0;
 }
 
+static struct fi_info *fi_ibv_get_passive_info(const struct fi_info *prov_info,
+					       const struct fi_info *hints)
+{
+	struct fi_info *info;
+
+	if (!(info = fi_dupinfo(hints)))
+		return NULL;
+
+	info->mode = prov_info->mode;
+	info->tx_attr->mode = prov_info->tx_attr->mode;
+	info->rx_attr->mode = prov_info->rx_attr->mode;
+	info->ep_attr->type = prov_info->ep_attr->type;
+
+	info->domain_attr->domain 	= prov_info->domain_attr->domain;
+	if (!info->domain_attr->name)
+		info->domain_attr->name = strdup(VERBS_ANY_DOMAIN);
+	info->domain_attr->mr_mode 	= prov_info->domain_attr->mr_mode;
+	info->domain_attr->mode 	= prov_info->domain_attr->mode;
+
+	info->fabric_attr->fabric = prov_info->fabric_attr->fabric;
+	if (!info->fabric_attr->name)
+		info->fabric_attr->name = strdup(VERBS_ANY_FABRIC);
+
+	/* prov_name is set by libfabric core */
+	free(info->fabric_attr->prov_name);
+	info->fabric_attr->prov_name = NULL;
+	return info;
+}
+
 static int fi_ibv_get_matching_info(uint32_t version,
 				    const struct fi_info *hints,
 				    struct fi_info **info,
-				    const struct fi_info *verbs_info)
+				    const struct fi_info *verbs_info,
+				    uint8_t only_srcport_set)
 {
 	const struct fi_info *check_info = verbs_info;
 	struct fi_info *fi, *tail;
 	int ret;
+	uint8_t got_passive_info = 0;
 
 	*info = tail = NULL;
 
@@ -1191,15 +1226,25 @@ static int fi_ibv_get_matching_info(uint32_t version,
 				continue;
 		}
 
-		if (!(fi = fi_dupinfo(check_info))) {
-			ret = -FI_ENOMEM;
-			goto err;
-		}
+		if ((check_info->ep_attr->type == FI_EP_MSG) && only_srcport_set) {
+			if (got_passive_info)
+				continue;
 
-		ret = fi_ibv_set_default_info(fi);
-		if (ret) {
-			fi_freeinfo(fi);
-			continue;
+			if (!(fi = fi_ibv_get_passive_info(check_info, hints))) {
+				ret = -FI_ENOMEM;
+				goto err;
+			}
+			got_passive_info = 1;
+		} else {
+			if (!(fi = fi_dupinfo(check_info))) {
+				ret = -FI_ENOMEM;
+				goto err;
+			}
+			ret = fi_ibv_set_default_info(fi);
+			if (ret) {
+				fi_freeinfo(fi);
+				continue;
+			}
 		}
 
 		if (!*info)
@@ -1257,22 +1302,16 @@ static int fi_ibv_del_info_not_belong_to_dev(const char *dev_name, struct fi_inf
 static int fi_ibv_resolve_ib_ud_dest_addr(const char *node, const char *service,
 					  struct ofi_ib_ud_ep_name **dest_addr)
 {
-	int ret, svc = VERBS_IB_UD_NS_ANY_SERVICE;
-	struct util_ns ns = { 0 };
-	struct util_ns_attr ns_attr = {
-		.ns_port = fi_ibv_gl_data.dgram.name_server_port,
+	int svc = VERBS_IB_UD_NS_ANY_SERVICE;
+	struct util_ns ns = {
+		.port = fi_ibv_gl_data.dgram.name_server_port,
 		.name_len = sizeof(**dest_addr),
 		.service_len = sizeof(svc),
 		.service_cmp = fi_ibv_dgram_ns_service_cmp,
 		.is_service_wildcard = fi_ibv_dgram_ns_is_service_wildcard,
 	};
 
-	ret = ofi_ns_init(&ns_attr, &ns);
-	if (ret) {
-		VERBS_INFO(FI_LOG_CORE,
-			   "ofi_ns_init returns %d\n", ret);
-		return -FI_ENODATA;
-	}
+	ofi_ns_init(&ns);
 
 	if (service)
 		svc = atoi(service);
@@ -1286,7 +1325,7 @@ static int fi_ibv_resolve_ib_ud_dest_addr(const char *node, const char *service,
 		return -FI_ENODATA;
 	}
 
-	return ret;
+	return 0;
 }
 
 static int fi_ibv_handle_ib_ud_addr(const char *node, const char *service,
@@ -1375,6 +1414,7 @@ fn:
 	return ret;
 }
 
+
 static int fi_ibv_get_match_infos(uint32_t version, const char *node,
 				  const char *service, uint64_t flags,
 				  const struct fi_info *hints,
@@ -1383,8 +1423,10 @@ static int fi_ibv_get_match_infos(uint32_t version, const char *node,
 {
 	int ret, ret_sock_addr, ret_ib_ud_addr;
 
-	ret = fi_ibv_get_matching_info(version, hints,
-				       info, *raw_info);
+	// TODO check for AF_IB addr
+	ret = fi_ibv_get_matching_info(version, hints, info, *raw_info,
+				       ofi_is_only_src_port_set(node, service,
+								flags, hints));
 	if (ret)
 		return ret;
 
@@ -1432,9 +1474,20 @@ int fi_ibv_getinfo(uint32_t version, const char *node, const char *service,
 
 	ofi_alter_info(*info, hints, version);
 
-	if (!hints || !(hints->mode & FI_RX_CQ_DATA)) {
+	if (!ofi_check_rx_mode(hints, FI_RX_CQ_DATA)) {
 		for (cur = *info; cur; cur = cur->next)
 			cur->domain_attr->cq_data_size = 0;
+	}
+
+	if (!hints || !hints->tx_attr || !hints->tx_attr->inject_size) {
+		for (cur = *info; cur; cur = cur->next) {
+			if (cur->ep_attr->type != FI_EP_MSG)
+				continue;
+			/* The default inline size is usually smaller.
+			 * This is to avoid drop in throughput */
+			cur->tx_attr->inject_size = MIN(cur->tx_attr->inject_size,
+							fi_ibv_gl_data.def_inline_size);
+		}
 	}
 out:
 	if (!ret || ret == -FI_ENOMEM || ret == -FI_ENODEV)

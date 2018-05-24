@@ -42,9 +42,9 @@
 #include <dirent.h>
 
 #include <rdma/fi_errno.h>
-#include "fi_util.h"
-#include "fi.h"
-#include "prov.h"
+#include "ofi_util.h"
+#include "ofi.h"
+#include "ofi_prov.h"
 
 #ifdef HAVE_LIBDL
 #include <dlfcn.h>
@@ -90,6 +90,19 @@ int ofi_apply_filter(struct fi_filter *filter, const char *name)
 		return filter->negated ? 0 : 1;
 	}
 	return 0;
+}
+
+/*
+ * Utility providers may be disabled, but do not need to be explicitly
+ * enabled.  This allows them to always be available when only a core
+ * provider is enabled.
+ */
+static int ofi_getinfo_filter(const struct fi_provider *provider)
+{
+	if (!prov_filter.negated && ofi_is_util_prov(provider))
+		return 0;
+
+	return ofi_apply_filter(&prov_filter, provider->name);
 }
 
 static struct ofi_prov *ofi_getprov(const char *prov_name, size_t len)
@@ -149,26 +162,24 @@ static struct ofi_prov *ofi_create_prov_entry(const char *prov_name)
 }
 
 /* This is the default order that providers will be reported when a provider
- * is availabe.  Initialize the socket(s) provider last.  This will result in
+ * is available.  Initialize the socket(s) provider last.  This will result in
  * it being the least preferred provider.
  */
 static void ofi_ordered_provs_init(void)
 {
 	char *ordered_prov_names[] =
-			{"psm2", "psm", "usnic", "mlx", "verbs","gni",
-			 "bgq", "netdir", "ofi_rxm", "ofi_rxd",
+			{"psm2", "psm", "usnic", "mlx", "gni",
+			 "bgq", "netdir", "ofi_rxm", "ofi_rxd", "verbs",
 			/* Initialize the socket(s) provider last.  This will result in
 			 * it being the least preferred provider. */
 
 			/* Before you add ANYTHING here, read the comment above!!! */
-			"UDP", "sockets" /* NOTHING GOES HERE! */};
+			"UDP", "sockets", "tcp" /* NOTHING GOES HERE! */};
 			/* Seriously, read it! */
 	int num_provs = sizeof(ordered_prov_names)/sizeof(ordered_prov_names[0]), i;
 
-	for (i = 0; i < num_provs; i++) {
-		if (ofi_apply_filter(&prov_filter, ordered_prov_names[i]) == 0)
-			ofi_create_prov_entry(ordered_prov_names[i]);
-	}
+	for (i = 0; i < num_provs; i++)
+		ofi_create_prov_entry(ordered_prov_names[i]);
 }
 
 static int ofi_register_provider(struct fi_provider *provider, void *dlhandle)
@@ -215,21 +226,16 @@ static int ofi_register_provider(struct fi_provider *provider, void *dlhandle)
 	ctx = (struct fi_prov_context *) &provider->context;
 	ctx->is_util_prov = (ofi_util_name(provider->name, &len) != NULL);
 
-	/* Util providers are never filtered, as they cannot be used
-	 * by themselves.
-	 */
-	if (!ctx->is_util_prov) {
-		if (ofi_apply_filter(&prov_filter, provider->name)) {
-			FI_INFO(&core_prov, FI_LOG_CORE,
-				"\"%s\" filtered by provider include/exclude "
-				"list, skipping\n", provider->name);
-			ret = -FI_ENODEV;
-			goto cleanup;
-		}
-
-		if (ofi_apply_filter(&prov_log_filter, provider->name))
-			ctx->disable_logging = 1;
+	if (ofi_getinfo_filter(provider)) {
+		FI_INFO(&core_prov, FI_LOG_CORE,
+			"\"%s\" filtered by provider include/exclude "
+			"list, skipping\n", provider->name);
+		ret = -FI_ENODEV;
+		goto cleanup;
 	}
+
+	if (ofi_apply_filter(&prov_log_filter, provider->name))
+		ctx->disable_logging = 1;
 
 	prov = ofi_getprov(provider->name, strlen(provider->name));
 	if (prov) {
@@ -438,6 +444,7 @@ void fi_ini(void)
 	fi_param_init();
 	fi_log_init();
 	ofi_osd_init();
+	ofi_pmem_init();
 
 	fi_param_define(NULL, "provider", FI_PARAM_STRING,
 			"Only use specified provider (default: all available)");
@@ -484,12 +491,12 @@ libdl_done:
 	ofi_register_provider(PSM_INIT, NULL);
 	ofi_register_provider(USNIC_INIT, NULL);
 	ofi_register_provider(MLX_INIT, NULL);
-	ofi_register_provider(VERBS_INIT, NULL);
 	ofi_register_provider(GNI_INIT, NULL);
 	ofi_register_provider(BGQ_INIT, NULL);
 	ofi_register_provider(NETDIR_INIT, NULL);
 	ofi_register_provider(SHM_INIT, NULL);
 	ofi_register_provider(RXM_INIT, NULL);
+	ofi_register_provider(VERBS_INIT, NULL);
 	ofi_register_provider(ZHPE_INIT, NULL);
 
 	{
@@ -522,6 +529,7 @@ FI_DESTRUCTOR(fi_fini(void))
 		prov = prov_head;
 		prov_head = prov->next;
 		cleanup_provider(prov->provider, prov->dlhandle);
+		free(prov->prov_name);
 		free(prov);
 	}
 
@@ -531,7 +539,7 @@ FI_DESTRUCTOR(fi_fini(void))
 	ofi_osd_fini();
 }
 
-__attribute__((visibility ("default")))
+__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
 void DEFAULT_SYMVER_PRE(fi_freeinfo)(struct fi_info *info)
 {
 	struct fi_info *next;
@@ -682,7 +690,7 @@ static int ofi_layering_ok(const struct fi_provider *provider,
 	return 1;
 }
 
-__attribute__((visibility ("default")))
+__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
 int DEFAULT_SYMVER_PRE(fi_getinfo)(uint32_t version, const char *node,
 		const char *service, uint64_t flags,
 		const struct fi_info *hints, struct fi_info **info)
@@ -789,7 +797,7 @@ err:
 }
 
 
-__attribute__((visibility ("default")))
+__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
 struct fi_info *DEFAULT_SYMVER_PRE(fi_dupinfo)(const struct fi_info *info)
 {
 	struct fi_info *dup;
@@ -888,7 +896,7 @@ fail:
 }
 CURRENT_SYMVER(fi_dupinfo_, fi_dupinfo);
 
-__attribute__((visibility ("default")))
+__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
 int DEFAULT_SYMVER_PRE(fi_fabric)(struct fi_fabric_attr *attr,
 		struct fid_fabric **fabric, void *context)
 {
@@ -921,7 +929,7 @@ int DEFAULT_SYMVER_PRE(fi_fabric)(struct fi_fabric_attr *attr,
 }
 CURRENT_SYMVER(fi_fabric_, fi_fabric);
 
-__attribute__((visibility ("default")))
+__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
 uint32_t DEFAULT_SYMVER_PRE(fi_version)(void)
 {
 	return FI_VERSION(FI_MAJOR_VERSION, FI_MINOR_VERSION);
@@ -944,7 +952,7 @@ static const char *const errstr[] = {
 	[FI_EOVERRUN - FI_ERRNO_OFFSET] = "Queue has been overrun",
 };
 
-__attribute__((visibility ("default")))
+__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
 const char *DEFAULT_SYMVER_PRE(fi_strerror)(int errnum)
 {
 	if (errnum < FI_ERRNO_OFFSET)

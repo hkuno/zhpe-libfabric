@@ -31,7 +31,7 @@
  */
 
 #include "psmx.h"
-#include "prov.h"
+#include "ofi_prov.h"
 #include <glob.h>
 
 static int psmx_init_count = 0;
@@ -175,6 +175,14 @@ static int psmx_reserve_tag_bits(int *caps, uint64_t *max_tag_value)
 	return 0;
 }
 
+#define PSMX_INFO_DIFF(description, requested, supported, type) \
+	do { \
+		FI_INFO(&psmx_prov, FI_LOG_CORE, "%s: requested=%s\n", \
+			(description), fi_tostr(&(requested), (type))); \
+		FI_INFO(&psmx_prov, FI_LOG_CORE, "%s: supported=%s\n", \
+			(description), fi_tostr(&(supported), (type))); \
+	} while (0)
+
 static int psmx_getinfo(uint32_t version, const char *node, const char *service,
 			uint64_t flags, const struct fi_info *hints,
 			struct fi_info **info)
@@ -182,7 +190,7 @@ static int psmx_getinfo(uint32_t version, const char *node, const char *service,
 	struct fi_info *psmx_info;
 	uint32_t cnt = 0;
 	psm_epid_t *dest_addr = NULL;
-	struct psmx_src_name *src_addr;
+	struct psmx_src_name *src_addr = NULL;
 	int ep_type = FI_EP_RDM;
 	int av_type = FI_AV_UNSPEC;
 	uint64_t mode = FI_CONTEXT;
@@ -198,6 +206,51 @@ static int psmx_getinfo(uint32_t version, const char *node, const char *service,
 	FI_INFO(&psmx_prov, FI_LOG_CORE,"\n");
 
 	*info = NULL;
+
+	/* Perform some quick check first to avoid unnecessary operations */
+	if (hints) {
+		if (hints->fabric_attr && hints->fabric_attr->name &&
+		    strcasecmp(hints->fabric_attr->name, PSMX_FABRIC_NAME)) {
+			FI_INFO(&psmx_prov, FI_LOG_CORE,
+				"hints->fabric_name=%s, supported=%s\n",
+				hints->fabric_attr->name, PSMX_FABRIC_NAME);
+			goto err_out;
+		}
+
+		if (hints->domain_attr && hints->domain_attr->name &&
+		    strcasecmp(hints->domain_attr->name, PSMX_DOMAIN_NAME)) {
+			FI_INFO(&psmx_prov, FI_LOG_CORE,
+				"hints->domain_name=%s, supported=%s\n",
+				hints->domain_attr->name, PSMX_DOMAIN_NAME);
+			goto err_out;
+		}
+
+		if (hints->ep_attr) {
+			switch (hints->ep_attr->type) {
+			case FI_EP_UNSPEC:
+			case FI_EP_DGRAM:
+			case FI_EP_RDM:
+				break;
+			default:
+				FI_INFO(&psmx_prov, FI_LOG_CORE,
+					"hints->ep_attr->type=%d, supported=%d,%d,%d.\n",
+					hints->ep_attr->type, FI_EP_UNSPEC,
+					FI_EP_DGRAM, FI_EP_RDM);
+				goto err_out;
+			}
+		}
+
+		if ((hints->caps & PSMX_CAPS) != hints->caps &&
+		    (hints->caps & PSMX_CAPS2) != hints->caps) {
+			uint64_t psmx_caps = PSMX_CAPS;
+			uint64_t psmx_caps2 = PSMX_CAPS2;
+			PSMX_INFO_DIFF("hints->caps", hints->caps, psmx_caps,
+				       FI_TYPE_CAPS);
+			PSMX_INFO_DIFF("alternatively, hints->caps",
+				       hints->caps, psmx_caps2, FI_TYPE_CAPS);
+			goto err_out;
+		}
+	}
 
 	if (FI_VERSION_GE(version, FI_VERSION(1,5)))
 		mr_mode = 0;
@@ -237,8 +290,6 @@ static int psmx_getinfo(uint32_t version, const char *node, const char *service,
 		return -FI_ENODATA;
 	}
 
-	psmx_init_env();
-
 	src_addr = calloc(1, sizeof(*src_addr));
 	if (!src_addr) {
 		FI_INFO(&psmx_prov, FI_LOG_CORE,
@@ -259,23 +310,17 @@ static int psmx_getinfo(uint32_t version, const char *node, const char *service,
 			"node '%s' service '%s' converted to <unit=%d, port=%d, service=%d>\n",
 			node, service, src_addr->unit, src_addr->port, src_addr->service);
 	} else if (node) {
-		struct util_ns ns = (const struct util_ns){ 0 };
-		struct util_ns_attr ns_attr = (const struct util_ns_attr){ 0 };
 		psm_uuid_t uuid;
-
 		psmx_get_uuid(uuid);
-		ns_attr.ns_port = psmx_uuid_to_port(uuid);
-		ns_attr.name_len = sizeof(*dest_addr);
-		ns_attr.service_len = sizeof(svc);
-		ns_attr.service_cmp = psmx_ns_service_cmp;
-		ns_attr.is_service_wildcard = psmx_ns_is_service_wildcard;
-		err = ofi_ns_init(&ns_attr, &ns);
-		if (err) {
-			FI_INFO(&psmx_prov, FI_LOG_CORE,
-				"ofi_ns_init returns %d\n", err);
-			err = -FI_ENODATA;
-			goto err_out;
-		}
+
+		struct util_ns ns = {
+			.port = psmx_uuid_to_port(uuid),
+			.name_len = sizeof(*dest_addr),
+			.service_len = sizeof(svc),
+			.service_cmp = psmx_ns_service_cmp,
+			.is_service_wildcard = psmx_ns_is_service_wildcard,
+		};
+		ofi_ns_init(&ns);
 
 		if (service)
 			svc = atoi(service);
@@ -306,19 +351,6 @@ static int psmx_getinfo(uint32_t version, const char *node, const char *service,
 		}
 
 		if (hints->ep_attr) {
-			switch (hints->ep_attr->type) {
-			case FI_EP_UNSPEC:
-			case FI_EP_DGRAM:
-			case FI_EP_RDM:
-				break;
-			default:
-				FI_INFO(&psmx_prov, FI_LOG_CORE,
-					"hints->ep_attr->type=%d, supported=%d,%d,%d.\n",
-					hints->ep_attr->type, FI_EP_UNSPEC,
-					FI_EP_DGRAM, FI_EP_RDM);
-				goto err_out;
-			}
-
 			switch (hints->ep_attr->protocol) {
 			case FI_PROTO_UNSPEC:
 			case FI_PROTO_PSMX:
@@ -347,28 +379,13 @@ static int psmx_getinfo(uint32_t version, const char *node, const char *service,
 			}
 		}
 
-		if ((hints->caps & PSMX_CAPS) != hints->caps &&
-		    (hints->caps & PSMX_CAPS2) != hints->caps) {
-			uint64_t psmx_caps = PSMX_CAPS;
-			uint64_t psmx_caps2 = PSMX_CAPS2;
-			FI_INFO(&psmx_prov, FI_LOG_CORE, "hints->caps: %s,\n"
-				"supported = %s and %s.\n",
-				fi_tostr(&hints->caps, FI_TYPE_CAPS),
-				fi_tostr(&psmx_caps, FI_TYPE_CAPS),
-				fi_tostr(&psmx_caps2, FI_TYPE_CAPS));
-			goto err_out;
-		}
-
 		if (hints->tx_attr) {
 			if ((hints->tx_attr->op_flags & PSMX_OP_FLAGS) !=
 			    hints->tx_attr->op_flags) {
 				uint64_t psmx_op_flags = PSMX_OP_FLAGS;
-				FI_INFO(&psmx_prov, FI_LOG_CORE, "hints->tx->flags=%s,\n"
-					"supported=%s.\n",
-					fi_tostr(&hints->tx_attr->op_flags,
-						 FI_TYPE_OP_FLAGS),
-					fi_tostr(&psmx_op_flags,
-						 FI_TYPE_OP_FLAGS));
+				PSMX_INFO_DIFF("hints->tx_attr->of_flags",
+					       hints->tx_attr->op_flags,
+					       psmx_op_flags, FI_TYPE_OP_FLAGS);
 				goto err_out;
 			}
 			if (hints->tx_attr->inject_size > PSMX_INJECT_SIZE) {
@@ -385,12 +402,9 @@ static int psmx_getinfo(uint32_t version, const char *node, const char *service,
 		    (hints->rx_attr->op_flags & PSMX_OP_FLAGS) !=
 		     hints->rx_attr->op_flags) {
 			uint64_t psmx_op_flags = PSMX_OP_FLAGS;
-			FI_INFO(&psmx_prov, FI_LOG_CORE, "hints->rx->flags=%s,\n"
-				"supported=%s.\n",
-				fi_tostr(&hints->rx_attr->op_flags,
-					 FI_TYPE_OP_FLAGS),
-				fi_tostr(&psmx_op_flags,
-					 FI_TYPE_OP_FLAGS));
+			PSMX_INFO_DIFF("hints->rx_attr->of_flags",
+				       hints->rx_attr->op_flags,
+				       psmx_op_flags, FI_TYPE_OP_FLAGS);
 			goto err_out;
 		}
 
@@ -398,33 +412,15 @@ static int psmx_getinfo(uint32_t version, const char *node, const char *service,
 		    ((hints->caps & FI_MSG) && !psmx_env.am_msg)) {
 			if ((hints->mode & FI_CONTEXT) != FI_CONTEXT) {
 				uint64_t psmx_mode = FI_CONTEXT;
-				FI_INFO(&psmx_prov, FI_LOG_CORE,
-					"hints->mode=%s,\n required=%s.\n",
-					fi_tostr(&hints->mode, FI_TYPE_MODE),
-					fi_tostr(&psmx_mode, FI_TYPE_MODE));
+				PSMX_INFO_DIFF("hints->mode", hints->mode,
+					       psmx_mode, FI_TYPE_MODE);
 				goto err_out;
 			}
 		} else {
 			mode = 0;
 		}
 
-		if (hints->fabric_attr && hints->fabric_attr->name &&
-		    strcmp(hints->fabric_attr->name, PSMX_FABRIC_NAME)) {
-			FI_INFO(&psmx_prov, FI_LOG_CORE,
-				"hints->fabric_name=%s, supported=psm\n",
-				hints->fabric_attr->name);
-			goto err_out;
-		}
-
 		if (hints->domain_attr) {
-			if (hints->domain_attr->name &&
-			    strcmp(hints->domain_attr->name, PSMX_DOMAIN_NAME)) {
-				FI_INFO(&psmx_prov, FI_LOG_CORE,
-					"hints->domain_name=%s, supported=psm\n",
-					hints->domain_attr->name);
-				goto err_out;
-			}
-
 			switch (hints->domain_attr->av_type) {
 			case FI_AV_UNSPEC:
 			case FI_AV_MAP:
@@ -515,26 +511,24 @@ static int psmx_getinfo(uint32_t version, const char *node, const char *service,
 					PSMX_MAX_MSG_SIZE);
 				goto err_out;
 			}
-			max_tag_value = fi_tag_bits(hints->ep_attr->mem_tag_format);
+			max_tag_value = ofi_max_tag(hints->ep_attr->mem_tag_format);
 		}
 
 		if (hints->tx_attr) {
 			if ((hints->tx_attr->msg_order & PSMX_MSG_ORDER) !=
 			    hints->tx_attr->msg_order) {
 				uint64_t psmx_msg_order = PSMX_MSG_ORDER;
-				FI_INFO(&psmx_prov, FI_LOG_CORE,
-					"hints->tx_attr->msg_order=%s,\n supported=%s.\n",
-					fi_tostr(&hints->tx_attr->msg_order, FI_TYPE_MSG_ORDER),
-					fi_tostr(&psmx_msg_order, FI_TYPE_MSG_ORDER));
+				PSMX_INFO_DIFF("hints->tx_attr->msg_order",
+					       hints->tx_attr->msg_order,
+					       psmx_msg_order, FI_TYPE_MSG_ORDER);
 				goto err_out;
 			}
 			if ((hints->tx_attr->comp_order & PSMX_COMP_ORDER) !=
 			    hints->tx_attr->comp_order) {
 				uint64_t psmx_comp_order = PSMX_COMP_ORDER;
-				FI_INFO(&psmx_prov, FI_LOG_CORE,
-					"hints->tx_attr->comp_order=%s,\n supported=%s.\n",
-					fi_tostr(&hints->tx_attr->comp_order, FI_TYPE_MSG_ORDER),
-					fi_tostr(&psmx_comp_order, FI_TYPE_MSG_ORDER));
+				PSMX_INFO_DIFF("hints->tx_attr->comp_order",
+					       hints->tx_attr->comp_order,
+					       psmx_comp_order, FI_TYPE_MSG_ORDER);
 				goto err_out;
 			}
 			if (hints->tx_attr->inject_size > PSMX_INJECT_SIZE) {
@@ -565,19 +559,17 @@ static int psmx_getinfo(uint32_t version, const char *node, const char *service,
 			if ((hints->rx_attr->msg_order & PSMX_MSG_ORDER) !=
 			    hints->rx_attr->msg_order) {
 				uint64_t psmx_msg_order = PSMX_MSG_ORDER;
-				FI_INFO(&psmx_prov, FI_LOG_CORE,
-					"hints->rx_attr->msg_order=%s,\n supported=%s.\n",
-					fi_tostr(&hints->rx_attr->msg_order, FI_TYPE_MSG_ORDER),
-					fi_tostr(&psmx_msg_order, FI_TYPE_MSG_ORDER));
+				PSMX_INFO_DIFF("hints->rx_attr->msg_order",
+					       hints->rx_attr->msg_order,
+					       psmx_msg_order, FI_TYPE_MSG_ORDER);
 				goto err_out;
 			}
 			if ((hints->rx_attr->comp_order & PSMX_COMP_ORDER) !=
 			    hints->rx_attr->comp_order) {
 				uint64_t psmx_comp_order = PSMX_COMP_ORDER;
-				FI_INFO(&psmx_prov, FI_LOG_CORE,
-					"hints->rx_attr->comp_order=%s,\n supported=%s.\n",
-					fi_tostr(&hints->rx_attr->comp_order, FI_TYPE_MSG_ORDER),
-					fi_tostr(&psmx_comp_order, FI_TYPE_MSG_ORDER));
+				PSMX_INFO_DIFF("hints->rx_attr->comp_order",
+					       hints->rx_attr->comp_order,
+					       psmx_comp_order, FI_TYPE_MSG_ORDER);
 				goto err_out;
 			}
 			if (hints->rx_attr->iov_limit > 1) {
@@ -607,7 +599,10 @@ static int psmx_getinfo(uint32_t version, const char *node, const char *service,
 	psmx_info->ep_attr->protocol = FI_PROTO_PSMX;
 	psmx_info->ep_attr->protocol_version = PSM_VERNO;
 	psmx_info->ep_attr->max_msg_size = PSMX_MAX_MSG_SIZE;
-	psmx_info->ep_attr->mem_tag_format = fi_tag_format(max_tag_value);
+	psmx_info->ep_attr->max_order_raw_size = PSMX_RMA_ORDER_SIZE;
+	psmx_info->ep_attr->max_order_war_size = PSMX_RMA_ORDER_SIZE;
+	psmx_info->ep_attr->max_order_waw_size = PSMX_RMA_ORDER_SIZE;
+	psmx_info->ep_attr->mem_tag_format = ofi_tag_format(max_tag_value);
 	psmx_info->ep_attr->tx_ctx_cnt = 1;
 	psmx_info->ep_attr->rx_ctx_cnt = 1;
 
@@ -749,6 +744,8 @@ PROVIDER_INI
 			"of core_ids. Both <start> and <end> can be either the core_id "
 			"(when >=0) or core_id - num_cores (when <0). "
 			"(default: affinity not set)");
+
+	psmx_init_env();
 
 	pthread_mutex_init(&psmx_lib_mutex, NULL);
 	psmx_init_count++;

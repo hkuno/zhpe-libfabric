@@ -34,12 +34,11 @@
 
 #include <string.h>
 
-#include <fi.h>
-#include <fi_iov.h>
+#include <ofi.h>
+#include <ofi_iov.h>
 
-uint64_t ofi_copy_iov_buf(const struct iovec *iov, size_t iov_count,
-			uint64_t iov_offset, void *buf, uint64_t bufsize,
-			int dir)
+uint64_t ofi_copy_iov_buf(const struct iovec *iov, size_t iov_count, uint64_t iov_offset,
+			  void *buf, uint64_t bufsize, int dir)
 {
 	uint64_t done = 0, len;
 	char *iov_buf;
@@ -67,4 +66,38 @@ uint64_t ofi_copy_iov_buf(const struct iovec *iov, size_t iov_count,
 		done += len;
 	}
 	return done;
+}
+
+void ofi_consume_iov(struct iovec *iov, size_t *iov_count, size_t consumed)
+{
+	size_t i;
+
+	if (*iov_count == 1)
+		goto out;
+
+	for (i = 0; i < *iov_count; i++) {
+		if (consumed < iov[i].iov_len)
+			break;
+		consumed -= iov[i].iov_len;
+	}
+	memmove(iov, &iov[i], sizeof(*iov) * (*iov_count - i));
+	*iov_count -= i;
+out:
+	iov[0].iov_base = (uint8_t *)iov[0].iov_base + consumed;
+	iov[0].iov_len -= consumed;
+}
+
+int ofi_truncate_iov(struct iovec *iov, size_t *iov_count, size_t trim_size)
+{
+	size_t i;
+
+	for (i = 0; i < *iov_count; i++) {
+		if (trim_size <= iov[i].iov_len) {
+			iov[i].iov_len = trim_size;
+			*iov_count = i + 1;
+			return FI_SUCCESS;
+		}
+		trim_size -= iov[i].iov_len;
+	}
+	return -FI_ETRUNC;
 }

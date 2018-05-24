@@ -49,6 +49,12 @@
 #define FI_DEPRECATED_FIELD
 #endif
 
+#if defined(__GNUC__) && !defined(__clang__)
+#define EXTERNALLY_VISIBLE externally_visible
+#else
+#define EXTERNALLY_VISIBLE
+#endif
+
 #if defined(_WIN32)
 #include <BaseTsd.h>
 #include <windows.h>
@@ -73,7 +79,7 @@ extern "C" {
  * tarball/libfabric package version number).
  */
 #define FI_MAJOR_VERSION 1
-#define FI_MINOR_VERSION 5
+#define FI_MINOR_VERSION 6
 
 enum {
 	FI_PATH_MAX		= 256,
@@ -150,7 +156,9 @@ typedef struct fid *fid_t;
 #define FI_TRANSMIT_COMPLETE	(1ULL << 27)
 #define FI_DELIVERY_COMPLETE	(1ULL << 28)
 #define FI_AFFINITY		(1ULL << 29)
+#define FI_COMMIT_COMPLETE	(1ULL << 30)
 
+#define FI_RMA_PMEM		(1ULL << 49)
 #define FI_SOURCE_ERR		(1ULL << 50)
 #define FI_LOCAL_COMM		(1ULL << 51)
 #define FI_REMOTE_COMM		(1ULL << 52)
@@ -562,7 +570,8 @@ char *fi_tostr(const void *data, enum fi_type datatype);
 enum fi_param_type {
 	FI_PARAM_STRING,
 	FI_PARAM_INT,
-	FI_PARAM_BOOL
+	FI_PARAM_BOOL,
+	FI_PARAM_SIZE_T,
 };
 
 struct fi_param {

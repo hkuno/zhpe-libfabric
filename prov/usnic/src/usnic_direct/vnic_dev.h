@@ -1,5 +1,5 @@
 /*
- * Copyright 2008-2010 Cisco Systems, Inc.  All rights reserved.
+ * Copyright 2008-2018 Cisco Systems, Inc.  All rights reserved.
  * Copyright 2007 Nuova Systems, Inc.  All rights reserved.
  *
  * LICENSE_BEGIN
@@ -54,7 +54,6 @@
 #define VNIC_PADDR_TARGET	0x0000000000000000ULL
 #endif
 
-#ifndef __WINDOWS__
 #ifndef readq
 static inline u64 readq(void __iomem *reg)
 {
@@ -71,9 +70,6 @@ static inline void writeq(u64 val, void __iomem *reg)
 
 #undef pr_fmt
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-#else
-#define pr_fmt(fmt) fmt
-#endif
 
 enum vnic_dev_intr_mode {
 	VNIC_DEV_INTR_MODE_UNKNOWN,
@@ -156,9 +152,6 @@ int vnic_dev_raise_intr(struct vnic_dev *vdev, u16 intr);
 int vnic_dev_notify_set(struct vnic_dev *vdev, u16 intr);
 void vnic_dev_set_reset_flag(struct vnic_dev *vdev, int state);
 int vnic_dev_notify_unset(struct vnic_dev *vdev);
-int vnic_dev_notify_setcmd(struct vnic_dev *vdev,
-	void *notify_addr, dma_addr_t notify_pa, u16 intr);
-int vnic_dev_notify_unsetcmd(struct vnic_dev *vdev);
 int vnic_dev_link_status(struct vnic_dev *vdev);
 u32 vnic_dev_port_speed(struct vnic_dev *vdev);
 u32 vnic_dev_msg_lvl(struct vnic_dev *vdev);
@@ -212,13 +205,10 @@ int vnic_dev_deinit_done(struct vnic_dev *vdev, int *status);
 int vnic_dev_set_mac_addr(struct vnic_dev *vdev, u8 *mac_addr);
 int vnic_dev_classifier(struct vnic_dev *vdev, u8 cmd, u16 *entry,
 	struct filter *data);
-#ifdef ENIC_VXLAN
-int vnic_dev_overlay_offload_ctrl(struct vnic_dev *vdev,
-	u8 overlay, u8 config);
+int vnic_dev_overlay_offload_ctrl(struct vnic_dev *vdev, u8 overlay, u8 config);
 int vnic_dev_overlay_offload_cfg(struct vnic_dev *vdev, u8 overlay,
-	u16 vxlan_udp_port_number);
-int vnic_dev_get_supported_feature_ver(struct vnic_dev *vdev,
-	u8 feature, u64 *supported_versions);
-#endif
+				 u16 vxlan_udp_port_number);
+int vnic_dev_get_supported_feature_ver(struct vnic_dev *vdev, u8 feature,
+				       u64 *supported_versions);
 int vnic_dev_init_devcmd1(struct vnic_dev *vdev);
 #endif /* _VNIC_DEV_H_ */

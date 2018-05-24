@@ -39,8 +39,8 @@
 
 #include <rdma/fi_errno.h>
 
-#include "fi.h"
-#include "fi_list.h"
+#include "ofi.h"
+#include "ofi_list.h"
 
 
 extern int ofi_init;
@@ -78,7 +78,7 @@ fi_find_param(const struct fi_provider *provider, const char *param_name)
 	return NULL;
 }
 
-__attribute__((visibility ("default")))
+__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
 int DEFAULT_SYMVER_PRE(fi_getparams)(struct fi_param **params, int *count)
 {
 	struct fi_param *vhead = NULL;
@@ -109,7 +109,8 @@ int DEFAULT_SYMVER_PRE(fi_getparams)(struct fi_param **params, int *count)
 		vhead[i].type = param->type;
 		vhead[i].help_string = strdup(param->help_string);
 
-		if ((tmp = getenv(param->env_var_name)))
+		tmp = getenv(param->env_var_name);
+		if (tmp)
 			vhead[i].value = strdup(tmp);
 
 		if (!vhead[i].name || !vhead[i].help_string) {
@@ -125,7 +126,7 @@ out:
 }
 DEFAULT_SYMVER(fi_getparams_, fi_getparams, FABRIC_1.0);
 
-__attribute__((visibility ("default")))
+__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
 void DEFAULT_SYMVER_PRE(fi_freeparams)(struct fi_param *params)
 {
 	int i;
@@ -163,7 +164,7 @@ void fi_param_undefine(const struct fi_provider *provider)
 	}
 }
 
-__attribute__((visibility ("default")))
+__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
 int DEFAULT_SYMVER_PRE(fi_param_define)(const struct fi_provider *provider,
 		const char *param_name, enum fi_param_type type,
 		const char *help_string)
@@ -215,7 +216,7 @@ int DEFAULT_SYMVER_PRE(fi_param_define)(const struct fi_provider *provider,
 	}
 
 	for (i = 0; v->env_var_name[i]; ++i)
-		v->env_var_name[i] = toupper(v->env_var_name[i]);
+		v->env_var_name[i] = (char) toupper(v->env_var_name[i]);
 
 	dlist_insert_tail(&v->entry, &param_list);
 
@@ -243,7 +244,7 @@ static int fi_parse_bool(const char *str_value)
 	return -1;
 }
 
-__attribute__((visibility ("default")))
+__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
 int DEFAULT_SYMVER_PRE(fi_param_get)(struct fi_provider *provider,
 		const char *param_name, void *value)
 {
@@ -274,7 +275,6 @@ int DEFAULT_SYMVER_PRE(fi_param_get)(struct fi_provider *provider,
 	}
 
 	switch (param->type) {
-	default:
 	case FI_PARAM_STRING:
 		* ((char **) value) = str_value;
 		FI_INFO(provider, FI_LOG_CORE,
@@ -291,6 +291,11 @@ int DEFAULT_SYMVER_PRE(fi_param_get)(struct fi_provider *provider,
 			"read bool var %s=%d\n", param_name, *(int *) value);
 		if (*(int *) value == -1)
 			ret = -FI_EINVAL;
+		break;
+	case FI_PARAM_SIZE_T:
+		* ((size_t *) value) = strtol(str_value, NULL, 0);
+		FI_INFO(provider, FI_LOG_CORE,
+			"read long var %s=%zu\n", param_name, *(size_t *) value);
 		break;
 	}
 
