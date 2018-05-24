@@ -1211,14 +1211,16 @@ int zhpe_pe_tx_handle_rma(struct zhpe_pe_root *pe_root,
 
 	/* Assume the compiler does not understrand the aliasing. */
 	pe_root = &pe_entry->pe_root;
-	if (zq_cqe && zq_cqe->status != ZHPEQ_CQ_STATUS_SUCCESS)
-		zhpe_pe_root_update_status(pe_root, -FI_EIO);
 	pe_root->completions--;
-	if (!pe_root->completions &&
-	    ((pe_entry->flags & (FI_INJECT | FI_READ)) ==
-	     (FI_INJECT | FI_READ)))
-		memcpy(pe_entry->rma.liov[0].iov_base, zq_cqe->result.data,
-		       pe_entry->rem);
+	if (zq_cqe) {
+		if (zq_cqe->status != ZHPEQ_CQ_STATUS_SUCCESS)
+			zhpe_pe_root_update_status(pe_root, -FI_EIO);
+		if (!pe_root->completions &&
+		    ((pe_entry->flags & (FI_INJECT | FI_READ)) ==
+		     (FI_INJECT | FI_READ)))
+			memcpy(pe_entry->rma.liov[0].iov_base,
+			       zq_cqe->result.data, pe_entry->rem);
+	}
 	zhpe_pe_tx_rma(pe_entry);
 
 	return 0;
