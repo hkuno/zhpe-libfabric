@@ -262,7 +262,8 @@ static int fi_verify_av_insert(struct util_av *av, uint64_t flags)
 /*
  * Must hold AV lock
  */
-static int util_av_hash_insert(struct util_av_hash *hash, int slot, int index)
+static int util_av_hash_insert(struct util_av_hash *hash, int slot,
+			       int index, int *table_slot)
 {
 	int entry, i;
 
@@ -271,6 +272,8 @@ static int util_av_hash_insert(struct util_av_hash *hash, int slot, int index)
 
 	if (hash->table[slot].index == UTIL_NO_ENTRY) {
 		hash->table[slot].index = index;
+		if (table_slot)
+			*table_slot = slot;
 		return 0;
 	}
 
@@ -284,9 +287,38 @@ static int util_av_hash_insert(struct util_av_hash *hash, int slot, int index)
 		i = hash->table[i].next;
 
 	hash->table[i].next = entry;
+	if (table_slot)
+		*table_slot = i;
 	hash->table[entry].index = index;
 	hash->table[entry].next = UTIL_NO_ENTRY;
 	return 0;
+}
+
+/* Caller must hold `av::lock` */
+static inline
+int util_av_lookup_index(struct util_av *av, const void *addr,
+			 int slot, int *table_slot)
+{
+	int i, ret = -FI_ENODATA;
+
+	if (av->hash.table[slot].index == UTIL_NO_ENTRY) {
+		FI_DBG(av->prov, FI_LOG_AV, "no entry at slot (%d)\n", slot);
+		goto out;
+	}
+
+	for (i = slot; i != UTIL_NO_ENTRY; i = av->hash.table[i].next) {
+		if (!memcmp(ofi_av_get_addr(av, av->hash.table[i].index), addr,
+			    av->addrlen)) {
+			ret = av->hash.table[i].index;
+			if (table_slot)
+				*table_slot = i;
+			FI_DBG(av->prov, FI_LOG_AV, "entry at index (%d)\n", ret);
+			break;
+		}
+	}
+out:
+	FI_DBG(av->prov, FI_LOG_AV, "%d\n", ret);
+	return ret;
 }
 
 /*
@@ -298,18 +330,32 @@ int ofi_av_insert_addr(struct util_av *av, const void *addr, int slot, int *inde
 	struct util_ep *ep;
 	int ret;
 
-	if (av->free_list == UTIL_NO_ENTRY) {
+	if (OFI_UNLIKELY(av->free_list == UTIL_NO_ENTRY)) {
 		FI_WARN(av->prov, FI_LOG_AV, "AV is full\n");
 		return -FI_ENOSPC;
 	}
 
-	if (av->flags & FI_SOURCE) {
-		ret = util_av_hash_insert(&av->hash, slot, av->free_list);
+	if (av->flags & OFI_AV_HASH) {
+		int table_slot;
+
+		if (OFI_UNLIKELY(slot < 0 || slot >= av->hash.slots)) {
+			FI_WARN(av->prov, FI_LOG_AV, "invalid slot (%d)\n", slot);
+			return -FI_EINVAL;
+		}
+		ret = util_av_lookup_index(av, addr, slot, &table_slot);
+		if (ret != -FI_ENODATA) {
+			*index = ret;
+			ofi_atomic_inc32(&av->hash.table[table_slot].use_cnt);
+			return 0;
+		}
+		ret = util_av_hash_insert(&av->hash, slot, av->free_list,
+					  &table_slot);
 		if (ret) {
 			FI_WARN(av->prov, FI_LOG_AV,
 				"failed to insert addr into hash table\n");
 			return ret;
 		}
+		ofi_atomic_inc32(&av->hash.table[table_slot].use_cnt);
 	}
 
 	*index = av->free_list;
@@ -324,25 +370,36 @@ int ofi_av_insert_addr(struct util_av *av, const void *addr, int slot, int *inde
 	return 0;
 }
 
+static inline int
+util_av_hash_lookup_table_slot(struct util_av_hash *hash, int slot, int index)
+{
+	int i;
+
+	if (hash->table[slot].index == index) {
+		return slot;
+	} else {
+		for (i = slot; hash->table[i].index != index; )
+			i = hash->table[i].next;
+		return i;
+	}
+}
+
 /*
  * Must hold AV lock
  */
 static void util_av_hash_remove(struct util_av_hash *hash, int slot, int index)
 {
-	int i, slot_next;
+	int table_slot, slot_next;
 
-	if (slot < 0 || slot >= hash->slots)
+	if (OFI_UNLIKELY(slot < 0 || slot >= hash->slots))
 		return;
 
-	if (hash->table[slot].index == index) {
-		if (hash->table[slot].next == UTIL_NO_ENTRY) {
-			hash->table[slot].index = UTIL_NO_ENTRY;
+	table_slot = util_av_hash_lookup_table_slot(hash, slot, index);
+	if (table_slot == slot) {
+		if (hash->table[table_slot].next == UTIL_NO_ENTRY) {
+			hash->table[table_slot].index = UTIL_NO_ENTRY;
 			return;
 		}
-	} else {
-		for (i = slot; hash->table[i].index != index; )
-			i = hash->table[i].next;
-		slot = i;
 	}
 
 	slot_next = hash->table[slot].next;
@@ -361,9 +418,22 @@ int ofi_av_remove_addr(struct util_av *av, int slot, int index)
 	int *entry, *next, i;
 	int ret = 0;
 
-	if (index < 0 || (size_t)index > av->count) {
+	if (OFI_UNLIKELY(index < 0 || (size_t)index > av->count)) {
 		FI_WARN(av->prov, FI_LOG_AV, "index out of range\n");
 		return -FI_EINVAL;
+	}
+
+	if (av->flags & FI_SOURCE) {
+		int table_slot;
+
+		if (OFI_UNLIKELY(slot < 0 || slot >= av->hash.slots)) {
+			FI_WARN(av->prov, FI_LOG_AV, "invalid slot (%d)\n", slot);
+			return -FI_EINVAL;
+		}
+
+		table_slot = util_av_hash_lookup_table_slot(&av->hash, slot, index);
+		if (ofi_atomic_dec32(&av->hash.table[table_slot].use_cnt))
+			return FI_SUCCESS;
 	}
 
 	/* This should stay at top */
@@ -383,7 +453,7 @@ int ofi_av_remove_addr(struct util_av *av, int slot, int index)
 		}
 	}
 
-	if (av->flags & FI_SOURCE)
+	if (av->flags & OFI_AV_HASH)
 		util_av_hash_remove(&av->hash, slot, index);
 
 	entry = util_av_get_data(av, index);
@@ -405,7 +475,7 @@ int ofi_av_remove_addr(struct util_av *av, int slot, int index)
 
 int ofi_av_lookup_index(struct util_av *av, const void *addr, int slot)
 {
-	int i, ret = -FI_ENODATA;
+	int ret;
 
 	if (slot < 0 || slot >= av->hash.slots) {
 		FI_WARN(av->prov, FI_LOG_AV, "invalid slot (%d)\n", slot);
@@ -413,21 +483,7 @@ int ofi_av_lookup_index(struct util_av *av, const void *addr, int slot)
 	}
 
 	fastlock_acquire(&av->lock);
-	if (av->hash.table[slot].index == UTIL_NO_ENTRY) {
-		FI_DBG(av->prov, FI_LOG_AV, "no entry at slot (%d)\n", slot);
-		goto out;
-	}
-
-	for (i = slot; i != UTIL_NO_ENTRY; i = av->hash.table[i].next) {
-		if (!memcmp(ofi_av_get_addr(av, av->hash.table[i].index), addr,
-			    av->addrlen)) {
-			ret = av->hash.table[i].index;
-			FI_DBG(av->prov, FI_LOG_AV, "entry at index (%d)\n", ret);
-			break;
-		}
-	}
-out:
-	FI_DBG(av->prov, FI_LOG_AV, "%d\n", ret);
+	ret = util_av_lookup_index(av, addr, slot, NULL);
 	fastlock_release(&av->lock);
 	return ret;
 }
@@ -478,12 +534,14 @@ static void util_av_hash_init(struct util_av_hash *hash)
 	for (i = 0; i < hash->slots; i++) {
 		hash->table[i].index = UTIL_NO_ENTRY;
 		hash->table[i].next = UTIL_NO_ENTRY;
+		ofi_atomic_initialize32(&hash->table[i].use_cnt, 0);
 	}
 
 	hash->free_list = hash->slots;
 	for (i = hash->slots; i < hash->total_count; i++) {
 		hash->table[i].index = UTIL_NO_ENTRY;
 		hash->table[i].next = i + 1;
+		ofi_atomic_initialize32(&hash->table[i].use_cnt, 0);
 	}
 	hash->table[hash->total_count - 1].next = UTIL_NO_ENTRY;
 }
@@ -492,10 +550,18 @@ static int util_av_init(struct util_av *av, const struct fi_av_attr *attr,
 			const struct util_av_attr *util_attr)
 {
 	int *entry, i, ret = 0;
+	size_t max_count;
+
+	if (attr->count) {
+		max_count = attr->count;
+	} else {
+		if (fi_param_get_size_t(NULL, "universe_size", &max_count))
+			max_count = UTIL_DEFAULT_AV_SIZE;
+	}
 
 	ofi_atomic_initialize32(&av->ref, 0);
 	fastlock_init(&av->lock);
-	av->count = attr->count ? attr->count : UTIL_DEFAULT_AV_SIZE;
+	av->count = max_count ? max_count : UTIL_DEFAULT_AV_SIZE;
 	av->count = roundup_power_of_two(av->count);
 	av->addrlen = util_attr->addrlen;
 	av->flags = util_attr->flags | attr->flags;
@@ -505,14 +571,14 @@ static int util_av_init(struct util_av *av, const struct fi_av_attr *attr,
 	/* TODO: Handle FI_READ */
 	/* TODO: Handle mmap - shared AV */
 
-	if (util_attr->flags & FI_SOURCE) {
+	if (util_attr->flags & OFI_AV_HASH) {
 		av->hash.slots = av->count;
 		if (util_attr->overhead)
 			av->hash.total_count = av->count + util_attr->overhead;
 		else
 			av->hash.total_count = av->count * 2;
 		FI_INFO(av->prov, FI_LOG_AV,
-		       "FI_SOURCE requested, hash size %u\n", av->hash.total_count);
+		       "OFI_AV_HASH requested, hash size %u\n", av->hash.total_count);
 	}
 
 	av->data = malloc((av->count * util_attr->addrlen) +
@@ -527,7 +593,7 @@ static int util_av_init(struct util_av *av, const struct fi_av_attr *attr,
 	entry = util_av_get_data(av, av->count - 1);
 	*entry = UTIL_NO_ENTRY;
 
-	if (util_attr->flags & FI_SOURCE) {
+	if (util_attr->flags & OFI_AV_HASH) {
 		av->hash.table = util_av_get_data(av, av->count);
 		util_av_hash_init(&av->hash);
 	}
@@ -563,7 +629,7 @@ static int util_verify_av_attr(struct util_domain *domain,
 		return -FI_EINVAL;
 	}
 
-	if (util_attr->flags & ~(FI_SOURCE)) {
+	if (util_attr->flags & ~(OFI_AV_HASH)) {
 		FI_WARN(domain->prov, FI_LOG_AV, "invalid internal flags\n");
 		return -FI_EINVAL;
 	}
@@ -1038,8 +1104,8 @@ static struct fi_ops ip_av_fi_ops = {
 	.ops_open = fi_no_ops_open,
 };
 
-int ip_av_create(struct fid_domain *domain_fid, struct fi_av_attr *attr,
-		 struct fid_av **av, void *context)
+int ip_av_create_flags(struct fid_domain *domain_fid, struct fi_av_attr *attr,
+		       struct fid_av **av, void *context, int flags)
 {
 	struct util_domain *domain;
 	struct util_av_attr util_attr;
@@ -1053,7 +1119,7 @@ int ip_av_create(struct fid_domain *domain_fid, struct fi_av_attr *attr,
 		util_attr.addrlen = sizeof(struct sockaddr_in6);
 
 	util_attr.overhead = attr->count >> 1;
-	util_attr.flags = domain->info_domain_caps & FI_SOURCE ? FI_SOURCE : 0;
+	util_attr.flags = flags;
 
 	if (attr->type == FI_AV_UNSPEC)
 		attr->type = FI_AV_MAP;
@@ -1072,6 +1138,17 @@ int ip_av_create(struct fid_domain *domain_fid, struct fi_av_attr *attr,
 	(*av)->fid.ops = &ip_av_fi_ops;
 	(*av)->ops = &ip_av_ops;
 	return 0;
+}
+
+int ip_av_create(struct fid_domain *domain_fid, struct fi_av_attr *attr,
+		 struct fid_av **av, void *context)
+{
+	struct util_domain *domain = container_of(domain_fid, struct util_domain,
+						  domain_fid);
+
+	return ip_av_create_flags(domain_fid, attr, av, context,
+				  (domain->info_domain_caps & FI_SOURCE) ?
+				  OFI_AV_HASH : 0);
 }
 
 /*

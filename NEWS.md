@@ -5,6 +5,25 @@ This file contains the main features as well as overviews of specific
 bug fixes (and other actions) for each version of Libfabric since
 version 1.0.
 
+v1.6.1, Wed May 8, 2018
+===========================
+
+## Core
+
+-- Fix compile issues with older compilers
+-- Check that all debug compiler flags are supported by compiler
+
+## RXM
+
+-- Fix reading pointer after freeing it.
+-- Avoid reading invalid AV entry
+-- Handle deleting the same address multiple times
+-- Fix crash in fi_av_remove if FI_SOURCE wasn't enabled
+
+## Sockets
+
+-- Fix use after free error handling triggered ops.
+
 v1.6.0, Wed Mar 14, 2018
 ========================
 
@@ -18,6 +37,7 @@ v1.6.0, Wed Mar 14, 2018
 -- Add const to fi_getinfo() hints parameter
 -- Improve use of epoll for better scalability
 -- Fixes to generic name service
+-- Implemented support of MR caching without merging of regions
 
 ## GNI
 -- Fix a problem with the GNI waitset implementation
@@ -35,6 +55,7 @@ v1.6.0, Wed Mar 14, 2018
 
 ## PSM2
 
+-- Requires psm2 library version 10.2.235 or later
 -- Skip inactive units in round-robin context allocation
 -- Allow contexts be shared by Tx-only and Rx-only endpoints
 -- Use utility functions to check provider attributes
