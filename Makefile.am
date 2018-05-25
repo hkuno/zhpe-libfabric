@@ -1,5 +1,6 @@
 #
 # Copyright (c) 2016 Cisco Systems, Inc.  All rights reserved.
+# Copyright (c) 2017 Intel Corporation, Inc. All right reserved.
 # Copyright (c) 2017-2018 Hewlett Packard Enterprise Development LP.  All rights reserved.
 #
 # Makefile.am for libfabric
@@ -39,30 +40,44 @@ rdmaincludedir = $(includedir)/rdma
 rdmainclude_HEADERS =
 
 # internal utility functions shared by in-tree providers:
-common_srcs = \
-	src/common.c \
-	src/enosys.c \
-	src/rbtree.c \
-	src/fasthash.c \
-	src/indexer.c \
-	src/iov.c \
-	prov/util/src/util_atomic.c \
-	prov/util/src/util_attr.c   \
-	prov/util/src/util_av.c     \
-	prov/util/src/util_cq.c     \
-	prov/util/src/util_cntr.c   \
-	prov/util/src/util_domain.c \
-	prov/util/src/util_ep.c     \
-	prov/util/src/util_pep.c     \
-	prov/util/src/util_eq.c     \
-	prov/util/src/util_fabric.c \
-	prov/util/src/util_main.c   \
-	prov/util/src/util_poll.c   \
-	prov/util/src/util_wait.c   \
-	prov/util/src/util_buf.c    \
-	prov/util/src/util_mr.c     \
-	prov/util/src/util_ns.c     \
-	prov/util/src/util_shm.c
+common_srcs =				\
+	src/common.c			\
+	src/enosys.c			\
+	src/rbtree.c			\
+	src/fasthash.c			\
+	src/indexer.c			\
+	src/mem.c			\
+	src/iov.c			\
+	prov/util/src/util_atomic.c	\
+	prov/util/src/util_attr.c	\
+	prov/util/src/util_av.c		\
+	prov/util/src/util_cq.c		\
+	prov/util/src/util_cntr.c	\
+	prov/util/src/util_domain.c	\
+	prov/util/src/util_ep.c		\
+	prov/util/src/util_pep.c	\
+	prov/util/src/util_eq.c		\
+	prov/util/src/util_fabric.c	\
+	prov/util/src/util_main.c	\
+	prov/util/src/util_poll.c	\
+	prov/util/src/util_wait.c	\
+	prov/util/src/util_buf.c	\
+	prov/util/src/util_mr_map.c	\
+	prov/util/src/util_ns.c		\
+	prov/util/src/util_shm.c	\
+	prov/util/src/util_mem_monitor.c\
+	prov/util/src/util_mr_cache.c	\
+	prov/hook/src/hook.c		\
+	prov/hook/src/hook_av.c		\
+	prov/hook/src/hook_cm.c		\
+	prov/hook/src/hook_cntr.c	\
+	prov/hook/src/hook_cq.c		\
+	prov/hook/src/hook_domain.c	\
+	prov/hook/src/hook_ep.c		\
+	prov/hook/src/hook_eq.c		\
+	prov/hook/src/hook_wait.c	\
+	prov/hook/src/hook_xfer.c
+
 
 if MACOS
 common_srcs += src/unix/osd.c
@@ -78,6 +93,10 @@ endif
 
 if LINUX
 common_srcs += src/unix/osd.c
+if HAVE_LINUX_PERF_RDPMC
+common_srcs += src/linux/rdpmc.c
+endif
+common_srcs += include/linux/rdpmc.h
 common_srcs += include/linux/osd.h
 common_srcs += include/unix/osd.h
 endif
@@ -105,34 +124,40 @@ util_fi_pingpong_SOURCES = \
 util_fi_pingpong_LDADD = $(linkback)
 
 nodist_src_libfabric_la_SOURCES =
-src_libfabric_la_SOURCES = \
-	include/fi.h \
-	include/fi_abi.h \
-	include/fi_atom.h \
-	include/fi_enosys.h \
-	include/fi_file.h \
-	include/fi_indexer.h \
-	include/fi_iov.h \
-	include/fi_list.h \
-	include/fi_lock.h \
-	include/fi_mem.h \
-	include/fi_osd.h \
-	include/fi_proto.h \
-	include/fi_rbuf.h \
-	include/fi_shm.h \
-	include/fi_signal.h \
-	include/fi_util.h \
-	include/ofi_atomic.h \
-	include/fasthash.h \
-	include/rbtree.h \
-	include/prov.h \
-	include/rdma/providers/fi_log.h \
-	include/rdma/providers/fi_prov.h \
-	src/fabric.c \
-	src/fi_tostr.c \
-	src/log.c \
-	src/var.c \
-	src/abi_1_0.c \
+src_libfabric_la_SOURCES =			\
+	include/ofi.h				\
+	include/ofi_abi.h			\
+	include/ofi_atom.h			\
+	include/ofi_enosys.h			\
+	include/ofi_file.h			\
+	include/ofi_indexer.h			\
+	include/ofi_iov.h			\
+	include/ofi_list.h			\
+	include/ofi_lock.h			\
+	include/ofi_mem.h			\
+	include/ofi_osd.h			\
+	include/ofi_proto.h			\
+	include/ofi_rbuf.h			\
+	include/ofi_shm.h			\
+	include/ofi_signal.h			\
+	include/ofi_util.h			\
+	include/ofi_atomic.h			\
+	include/ofi_mr.h			\
+	include/ofi_net.h			\
+	include/ofi_perf.h			\
+	include/fasthash.h			\
+	include/rbtree.h			\
+	include/uthash.h			\
+	include/ofi_prov.h			\
+	prov/hook/src/hook.h			\
+	include/rdma/providers/fi_log.h		\
+	include/rdma/providers/fi_prov.h	\
+	src/fabric.c				\
+	src/fi_tostr.c				\
+	src/perf.c				\
+	src/log.c				\
+	src/var.c				\
+	src/abi_1_0.c				\
 	$(common_srcs)
 
 src_libfabric_la_CPPFLAGS = $(AM_CPPFLAGS)
@@ -141,7 +166,7 @@ src_libfabric_la_LIBADD =
 src_libfabric_la_DEPENDENCIES = libfabric.map
 
 if !EMBEDDED
-src_libfabric_la_LDFLAGS += -version-info 10:0:9
+src_libfabric_la_LDFLAGS += -version-info 10:14:9
 endif
 src_libfabric_la_LDFLAGS += -export-dynamic \
 			   $(libfabric_version_script)

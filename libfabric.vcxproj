@@ -290,7 +290,6 @@
       </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="prov\rxd\src\rxd_rma.c" />
-    <ClCompile Include="prov\rxm\src\rxm.c" />
     <ClCompile Include="prov\rxm\src\rxm_attr.c" />
     <ClCompile Include="prov\rxm\src\rxm_conn.c" />
     <ClCompile Include="prov\rxm\src\rxm_rma.c" />
@@ -443,6 +442,14 @@
       <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release-v141|x64'">$(ProjectDir)prov\sockets\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release-ICC|x64'">$(ProjectDir)prov\sockets\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
+    <ClCompile Include="prov\sockets\src\sock_mr.c">
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Debug-v140|x64'">$(ProjectDir)prov\sockets\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Debug-v141|x64'">$(ProjectDir)prov\sockets\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Debug-ICC|x64'">$(ProjectDir)prov\sockets\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release-v140|x64'">$(ProjectDir)prov\sockets\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release-v141|x64'">$(ProjectDir)prov\sockets\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release-ICC|x64'">$(ProjectDir)prov\sockets\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
     <ClCompile Include="prov\sockets\src\sock_msg.c">
       <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Debug-v140|x64'">$(ProjectDir)prov\sockets\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Debug-v141|x64'">$(ProjectDir)prov\sockets\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -499,18 +506,27 @@
       <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release-v141|x64'">$(ProjectDir)prov\sockets\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release-ICC|x64'">$(ProjectDir)prov\sockets\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
+    <ClCompile Include="prov\tcp\src\tcpx_attr.c" />
+    <ClCompile Include="prov\tcp\src\tcpx_comm.c" />
+    <ClCompile Include="prov\tcp\src\tcpx_conn_mgr.c" />
+    <ClCompile Include="prov\tcp\src\tcpx_cq.c" />
+    <ClCompile Include="prov\tcp\src\tcpx_domain.c" />
+    <ClCompile Include="prov\tcp\src\tcpx_ep.c" />
+    <ClCompile Include="prov\tcp\src\tcpx_fabric.c" />
+    <ClCompile Include="prov\tcp\src\tcpx_init.c" />
+    <ClCompile Include="prov\tcp\src\tcpx_progress.c" />
     <ClCompile Include="prov\udp\src\udpx_attr.c" />
     <ClCompile Include="prov\udp\src\udpx_cq.c" />
     <ClCompile Include="prov\udp\src\udpx_domain.c" />
     <ClCompile Include="prov\udp\src\udpx_ep.c" />
     <ClCompile Include="prov\udp\src\udpx_fabric.c" />
     <ClCompile Include="prov\udp\src\udpx_init.c">
-      <ForcedIncludeFiles Condition="'$(Configuration)|$(Platform)'=='Debug-v140|x64'">fi_osd.h</ForcedIncludeFiles>
-      <ForcedIncludeFiles Condition="'$(Configuration)|$(Platform)'=='Debug-v141|x64'">fi_osd.h</ForcedIncludeFiles>
-      <ForcedIncludeFiles Condition="'$(Configuration)|$(Platform)'=='Debug-ICC|x64'">fi_osd.h</ForcedIncludeFiles>
-      <ForcedIncludeFiles Condition="'$(Configuration)|$(Platform)'=='Release-v140|x64'">fi_osd.h</ForcedIncludeFiles>
-      <ForcedIncludeFiles Condition="'$(Configuration)|$(Platform)'=='Release-v141|x64'">fi_osd.h</ForcedIncludeFiles>
-      <ForcedIncludeFiles Condition="'$(Configuration)|$(Platform)'=='Release-ICC|x64'">fi_osd.h</ForcedIncludeFiles>
+      <ForcedIncludeFiles Condition="'$(Configuration)|$(Platform)'=='Debug-v140|x64'">ofi_osd.h</ForcedIncludeFiles>
+      <ForcedIncludeFiles Condition="'$(Configuration)|$(Platform)'=='Debug-v141|x64'">ofi_osd.h</ForcedIncludeFiles>
+      <ForcedIncludeFiles Condition="'$(Configuration)|$(Platform)'=='Debug-ICC|x64'">ofi_osd.h</ForcedIncludeFiles>
+      <ForcedIncludeFiles Condition="'$(Configuration)|$(Platform)'=='Release-v140|x64'">ofi_osd.h</ForcedIncludeFiles>
+      <ForcedIncludeFiles Condition="'$(Configuration)|$(Platform)'=='Release-v141|x64'">ofi_osd.h</ForcedIncludeFiles>
+      <ForcedIncludeFiles Condition="'$(Configuration)|$(Platform)'=='Release-ICC|x64'">ofi_osd.h</ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="prov\util\src\util_attr.c" />
     <ClCompile Include="prov\util\src\util_atomic.c" />
@@ -523,10 +539,12 @@
     <ClCompile Include="prov\util\src\util_eq.c" />
     <ClCompile Include="prov\util\src\util_fabric.c" />
     <ClCompile Include="prov\util\src\util_main.c" />
-    <ClCompile Include="prov\util\src\util_mr.c" />
+    <ClCompile Include="prov\util\src\util_mr_map.c" />
     <ClCompile Include="prov\util\src\util_ns.c" />
+    <ClCompile Include="prov\util\src\util_pep.c" />
     <ClCompile Include="prov\util\src\util_poll.c" />
     <ClCompile Include="prov\util\src\util_wait.c" />
+    <ClCompile Include="prov\util\src\util_mem_monitor.c" />
     <ClCompile Include="src\common.c" />
     <ClCompile Include="src\enosys.c">
       <DisableSpecificWarnings Condition="'$(Configuration)|$(Platform)'=='Debug-ICC|x64'">4127;869</DisableSpecificWarnings>
@@ -538,28 +556,34 @@
     <ClCompile Include="src\indexer.c" />
     <ClCompile Include="src\iov.c" />
     <ClCompile Include="src\log.c" />
+    <ClCompile Include="src\perf.c" />
+    <ClCompile Include="src\mem.c" />
     <ClCompile Include="src\rbtree.c" />
     <ClCompile Include="src\var.c" />
     <ClCompile Include="src\windows\osd.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\fasthash.h" />
-    <ClInclude Include="include\fi.h" />
-    <ClInclude Include="include\fi_abi.h" />
-    <ClInclude Include="include\fi_atom.h" />
+    <ClInclude Include="include\ofi.h" />
+    <ClInclude Include="include\ofi_abi.h" />
+    <ClInclude Include="include\ofi_atom.h" />
     <ClInclude Include="include\ofi_atomic.h" />
-    <ClInclude Include="include\fi_enosys.h" />
-    <ClInclude Include="include\fi_file.h" />
-    <ClInclude Include="include\fi_indexer.h" />
-    <ClInclude Include="include\fi_list.h" />
-    <ClInclude Include="include\fi_lock.h" />
-    <ClInclude Include="include\fi_mem.h" />
-    <ClInclude Include="include\fi_osd.h" />
-    <ClInclude Include="include\fi_proto.h" />
-    <ClInclude Include="include\fi_rbuf.h" />
-    <ClInclude Include="include\fi_signal.h" />
-    <ClInclude Include="include\fi_util.h" />
-    <ClInclude Include="include\prov.h" />
+    <ClInclude Include="include\ofi_mr.h" />
+    <ClInclude Include="include\ofi_net.h" />
+    <ClInclude Include="include\ofi_enosys.h" />
+    <ClInclude Include="include\ofi_file.h" />
+    <ClInclude Include="include\ofi_iov.h" />
+    <ClInclude Include="include\ofi_indexer.h" />
+    <ClInclude Include="include\ofi_list.h" />
+    <ClInclude Include="include\ofi_lock.h" />
+    <ClInclude Include="include\ofi_mem.h" />
+    <ClInclude Include="include\ofi_osd.h" />
+    <ClInclude Include="include\ofi_perf.h" />
+    <ClInclude Include="include\ofi_proto.h" />
+    <ClInclude Include="include\ofi_rbuf.h" />
+    <ClInclude Include="include\ofi_signal.h" />
+    <ClInclude Include="include\ofi_util.h" />
+    <ClInclude Include="include\ofi_prov.h" />
     <ClInclude Include="include\rbtree.h" />
     <ClInclude Include="include\rdma\fabric.h" />
     <ClInclude Include="include\rdma\fi_atomic.h" />
@@ -573,9 +597,12 @@
     <ClInclude Include="include\rdma\fi_trigger.h" />
     <ClInclude Include="include\rdma\providers\fi_log.h" />
     <ClInclude Include="include\rdma\providers\fi_prov.h" />
+    <ClInclude Include="include\uthash.h" />
     <ClInclude Include="include\windows\arpa\inet.h" />
     <ClInclude Include="include\windows\config.h" />
+    <ClInclude Include="include\windows\dirent.h" />
     <ClInclude Include="include\windows\ifaddrs.h" />
+    <ClInclude Include="include\windows\netdb.h" />
     <ClInclude Include="include\windows\netinet\in.h" />
     <ClInclude Include="include\windows\netinet\ip.h" />
     <ClInclude Include="include\windows\netinet\tcp.h" />
@@ -589,6 +616,7 @@
     <ClInclude Include="include\windows\sys\select.h" />
     <ClInclude Include="include\windows\sys\socket.h" />
     <ClInclude Include="include\windows\sys\time.h" />
+    <ClInclude Include="include\windows\sys\uio.h" />
     <ClInclude Include="include\windows\sys\wait.h" />
     <ClInclude Include="include\windows\unistd.h" />
     <ClInclude Include="prov\netdir\src\netdir_buf.h" />
@@ -605,6 +633,7 @@
     <ClInclude Include="prov\netdir\src\netdir_ov.h" />
     <ClInclude Include="prov\sockets\include\sock.h" />
     <ClInclude Include="prov\sockets\include\sock_util.h" />
+    <ClInclude Include="prov\tcp\src\tcpx.h" />
     <ClInclude Include="prov\udp\src\udpx.h" />
   </ItemGroup>
   <ItemGroup>

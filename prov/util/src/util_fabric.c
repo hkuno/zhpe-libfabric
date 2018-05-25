@@ -33,8 +33,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <fi_enosys.h>
-#include <fi_util.h>
+#include <ofi_enosys.h>
+#include <ofi_util.h>
 
 int ofi_fabric_close(struct util_fabric *fabric)
 {
@@ -62,8 +62,9 @@ int ofi_fabric_init(const struct fi_provider *prov,
 	ofi_atomic_initialize32(&fabric->ref, 0);
 	dlist_init(&fabric->domain_list);
 	fastlock_init(&fabric->lock);
-	if (!(fabric->name = strdup(user_attr->name)))
-	    return -FI_ENOMEM;
+	fabric->name = strdup(user_attr->name);
+	if (!fabric->name)
+		return -FI_ENOMEM;
 
 	fabric->fabric_fid.fid.fclass = FI_CLASS_FABRIC;
 	fabric->fabric_fid.fid.context = context;

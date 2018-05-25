@@ -362,7 +362,7 @@ been set by the provider; however, it is safe to use this call with any
 memory region.
 
 A raw key must be mapped by a peer before it can be used in data transfer
-operations.  See fi_mr_map_key below.
+operations.  See fi_mr_map_raw below.
 
 ## fi_mr_map_raw
 
@@ -551,6 +551,12 @@ The follow flag may be specified to any memory registration call.
 : This flag indicates that the specified memory region will be
   associated with a completion counter used to count RMA operations
   that access the MR.
+
+*FI_RMA_PMEM*
+: This flag indicates that the underlying memory region is backed by
+  persistent memory and will be used in RMA operations.  It must be
+  specified if persistent completion semantics or persistent data transfers
+  are required when accessing the registered region.
 
 # RETURN VALUES
 

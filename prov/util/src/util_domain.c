@@ -33,8 +33,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <fi_enosys.h>
-#include <fi_util.h>
+#include <ofi_enosys.h>
+#include <ofi_util.h>
 
 
 int ofi_domain_bind_eq(struct util_domain *domain, struct util_eq *eq)
@@ -54,6 +54,9 @@ int ofi_domain_close(struct util_domain *domain)
 {
 	if (ofi_atomic_get32(&domain->ref))
 		return -FI_EBUSY;
+
+	if (domain->mr_map.rbtree)
+		ofi_mr_map_close(&domain->mr_map);
 
 	fastlock_acquire(&domain->fabric->lock);
 	dlist_remove(&domain->list_entry);
@@ -105,6 +108,13 @@ int ofi_domain_init(struct fid_fabric *fabric_fid, const struct fi_info *info,
 	 * domain ops set by provider
 	 */
 	domain->domain_fid.mr = &util_domain_mr_ops;
+
+	ret = ofi_mr_map_init(domain->prov, info->domain_attr->mr_mode,
+			      &domain->mr_map);
+	if (ret) {
+		(void) ofi_domain_close(domain);
+		return ret;
+	}
 
 	fastlock_acquire(&fabric->lock);
 	dlist_insert_tail(&domain->list_entry, &fabric->domain_list);

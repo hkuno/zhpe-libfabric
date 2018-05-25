@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2017 Intel Corporation. All rights reserved.
+ * Copyright (c) 2013-2018 Intel Corporation. All rights reserved.
  * Copyright (c) 2016 Cisco Systems, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -64,71 +64,208 @@ extern "C" {
 #include <rdma/fi_trigger.h>
 #include <rdma/fi_cm.h>
 #include <rdma/fi_errno.h>
-#include "fi.h"
+#include "ofi.h"
 #include "ofi_atomic.h"
-#include "fi_enosys.h"
-#include "fi_list.h"
-#include "fi_util.h"
-#include "fi_mem.h"
+#include "ofi_enosys.h"
+#include "ofi_list.h"
+#include "ofi_util.h"
+#include "ofi_mem.h"
 #include "rbtree.h"
 #include "version.h"
 
 extern struct fi_provider psmx2_prov;
 
-#define PSMX2_VERSION	(FI_VERSION(1,5))
+#define PSMX2_VERSION	(FI_VERSION(1, 6))
 
 #define PSMX2_OP_FLAGS	(FI_INJECT | FI_MULTI_RECV | FI_COMPLETION | \
 			 FI_TRIGGER | FI_INJECT_COMPLETE | \
 			 FI_TRANSMIT_COMPLETE | FI_DELIVERY_COMPLETE)
 
-#define PSMX2_CAPS	(FI_TAGGED | FI_MSG | FI_ATOMICS | \
-			 FI_RMA | FI_MULTI_RECV | \
-			 FI_READ | FI_WRITE | FI_SEND | FI_RECV | \
-			 FI_REMOTE_READ | FI_REMOTE_WRITE | \
-			 FI_TRIGGER | FI_RMA_EVENT | FI_REMOTE_CQ_DATA | \
-			 FI_SOURCE | FI_SOURCE_ERR | FI_DIRECTED_RECV | \
-			 FI_NAMED_RX_CTX)
+#define PSMX2_PRI_CAPS	(FI_TAGGED | FI_MSG | FI_RMA | FI_ATOMICS | \
+			 FI_NAMED_RX_CTX | FI_DIRECTED_RECV | \
+			 FI_SEND | FI_RECV | FI_READ | FI_WRITE | \
+			 FI_REMOTE_READ | FI_REMOTE_WRITE)
 
-#define PSMX2_SUB_CAPS	(FI_READ | FI_WRITE | FI_REMOTE_READ | FI_REMOTE_WRITE | \
-			 FI_SEND | FI_RECV)
+#define PSMX2_SEC_CAPS	(FI_MULTI_RECV | FI_SOURCE | FI_RMA_EVENT | \
+			 FI_TRIGGER | FI_LOCAL_COMM | FI_REMOTE_COMM | \
+			 FI_SOURCE_ERR)
+
+#define PSMX2_CAPS	(PSMX2_PRI_CAPS | PSMX2_SEC_CAPS | FI_REMOTE_CQ_DATA)
+
+#define PSMX2_RMA_CAPS	(PSMX2_CAPS & ~(FI_TAGGED | FI_MSG | FI_SEND | \
+			 FI_RECV | FI_DIRECTED_RECV | FI_MULTI_RECV))
+
+#define PSMX2_SUB_CAPS	(FI_SEND | FI_RECV | FI_READ | FI_WRITE | \
+			 FI_REMOTE_READ | FI_REMOTE_WRITE)
 
 #define PSMX2_DOM_CAPS	(FI_LOCAL_COMM | FI_REMOTE_COMM)
 
-#define PSMX2_MAX_TRX_CTXT	(80)
 #define PSMX2_ALL_TRX_CTXT	((void *)-1)
 #define PSMX2_MAX_MSG_SIZE	((0x1ULL << 32) - 1)
-#define PSMX2_MSG_ORDER		FI_ORDER_SAS
+#define PSMX2_RMA_ORDER_SIZE	(4096)
+#define PSMX2_MSG_ORDER		(FI_ORDER_SAS | FI_ORDER_RAR | FI_ORDER_RAW | \
+				 FI_ORDER_WAR | FI_ORDER_WAW)
 #define PSMX2_COMP_ORDER	FI_ORDER_NONE
 
-#define PSMX2_MSG_BIT	(0x80000000)
-#define PSMX2_RMA_BIT	(0x40000000)
-#define PSMX2_IOV_BIT	(0x20000000)
-#define PSMX2_IMM_BIT	(0x10000000)
-#define PSMX2_SEQ_BITS	(0x0FFF0000)
-#define PSMX2_SRC_BITS	(0x0000FF00)
-#define PSMX2_DST_BITS	(0x000000FF)
+/*
+ * Four bits are reserved from the 64-bit tag space as a flags to identify the
+ * type and properties of the messages.
+ *
+ * To conserve tag bits, we use a couple otherwise invalid bit combinations
+ * to distinguish RMA long reads from long writes and distinguish iovec
+ * payloads from regular messages.
+ *
+ * We never match on the immediate bit. Regular tagged and untagged messages
+ * do not match on the iov bit, but the iov and imm bits are checked when we
+ * process completions.
+ *
+ *                   MSG RMA IOV IMM
+ * tagged message    0   0   x   x
+ * untagged message  1   0   x   x
+ * rma long read     0   1   0   x
+ * rma long write    0   1   1   x
+ * iov payload       1   1   x   x
+ */
 
-#define PSMX2_TAG32(base, src, dst)	((base) | ((src)<<8) | (dst))
-#define PSMX2_TAG32_GET_SRC(tag32)	(((tag32) & PSMX2_SRC_BITS) >> 8)
-#define PSMX2_TAG32_GET_DST(tag32)	((tag32) & PSMX2_DST_BITS)
-#define PSMX2_TAG32_GET_SEQ(tag32)	(((tag32) & PSMX2_SEQ_BITS) >> 16)
-#define PSMX2_TAG32_SET_SEQ(tag32,seq)	do { \
-						tag32 |= ((seq << 16) & PSMX2_SEQ_BITS); \
-					} while (0)
+#define PSMX2_MSG_BIT		(0x80000000)
+#define PSMX2_RMA_BIT		(0x40000000)
+#define PSMX2_IOV_BIT		(0x20000000)
+#define PSMX2_IMM_BIT		(0x10000000)
 
-#define PSMX2_SET_TAG(tag96,tag64,tag32) do { \
-						tag96.tag0 = (uint32_t)tag64; \
-						tag96.tag1 = (uint32_t)(tag64>>32); \
-						tag96.tag2 = tag32; \
-					} while (0)
+/* Top two bits of the flag are the message type */
+#define PSMX2_TYPE_TAGGED	(0)
+#define PSMX2_TYPE_MSG		PSMX2_MSG_BIT
+#define PSMX2_TYPE_RMA		PSMX2_RMA_BIT
+#define PSMX2_TYPE_IOV_PAYLOAD	(PSMX2_MSG_BIT | PSMX2_RMA_BIT)
+#define PSMX2_TYPE_MASK		(PSMX2_MSG_BIT | PSMX2_RMA_BIT)
 
-#define PSMX2_GET_TAG64(tag96)		(tag96.tag0 | ((uint64_t)tag96.tag1<<32))
+/*
+ * For RMA protocol, use the IOV bit to distinguish between long RMA write
+ * and long RMA read. This prevents tag collisions between reads/writes issued
+ * locally and the writes/reads issued by peers. RMA doesn't use this bit for
+ * IOV support so it's safe to do so.
+ */
+#define PSMX2_RMA_TYPE_READ	PSMX2_TYPE_RMA
+#define PSMX2_RMA_TYPE_WRITE	(PSMX2_TYPE_RMA | PSMX2_IOV_BIT)
+#define PSMX2_RMA_TYPE_MASK	(PSMX2_TYPE_MASK | PSMX2_IOV_BIT)
 
-/* When using the long RMA protocol, set a bit in the unused SEQ bits to
- * indicate whether or not the operation is a read or a write. This prevents tag
- * collisions. */
-#define PSMX2_TAG32_LONG_WRITE(tag32) PSMX2_TAG32_SET_SEQ(tag32, 0x1)
-#define PSMX2_TAG32_LONG_READ(tag32)  PSMX2_TAG32_SET_SEQ(tag32, 0x2)
+/* IOV header is only possible when the RMA bit is 0 */
+#define PSMX2_IOV_HEADER_MASK		(PSMX2_IOV_BIT | PSMX2_RMA_BIT)
+
+#define PSMX2_IS_IOV_HEADER(flags)	(((flags) & PSMX2_IOV_HEADER_MASK) == PSMX2_IOV_BIT)
+#define PSMX2_IS_IOV_PAYLOAD(flags)	(((flags) & PSMX2_TYPE_MASK) == PSMX2_TYPE_IOV_PAYLOAD)
+#define PSMX2_IS_RMA(flags)		(((flags) & PSMX2_TYPE_MASK) == PSMX2_TYPE_RMA)
+#define PSMX2_IS_MSG(flags)		(((flags) & PSMX2_TYPE_MASK) == PSMX2_TYPE_MSG)
+#define PSMX2_IS_TAGGED(flags)		(((flags) & PSMX2_TYPE_MASK) == PSMX2_TYPE_TAGGED)
+#define PSMX2_HAS_IMM(flags)		((flags) & PSMX2_IMM_BIT)
+
+/* Set a bit conditionally without branching.  Flag must be 1 or 0. */
+#define PSMX2_MSG_BIT_SET(flag) (-(uint32_t)flag & PSMX2_MSG_BIT)
+#define PSMX2_RMA_BIT_SET(flag) (-(uint32_t)flag & PSMX2_RMA_BIT)
+#define PSMX2_IOV_BIT_SET(flag) (-(uint32_t)flag & PSMX2_IOV_BIT)
+#define PSMX2_IMM_BIT_SET(flag) (-(uint32_t)flag & PSMX2_IMM_BIT)
+
+/*
+ * Different ways to use the 96 bit tag:
+ * 	TAG60: 32/4/60 for data/flags/tag
+ * 	TAG64: 4/28/64 for flags/data/tag
+ * 	RUNTIME:  make the choice at runtime
+ */
+#define PSMX2_TAG_LAYOUT_RUNTIME	0
+#define PSMX2_TAG_LAYOUT_TAG60		1
+#define PSMX2_TAG_LAYOUT_TAG64		2
+
+#ifndef PSMX2_TAG_LAYOUT
+#define PSMX2_TAG_LAYOUT	PSMX2_TAG_LAYOUT_RUNTIME
+#elif (PSMX2_TAG_LAYOUT < 0 || PSMX2_TAG_LAYOUT > 2)
+#warning "Invalid PSMX2_TAG_LAYOUT definition, using default."
+#undef PSMX2_TAG_LAYOUT
+#define PSMX2_TAG_LAYOUT	PSMX2_TAG_LAYOUT_RUNTIME
+#endif
+
+#define PSMX2_TAG_MASK_60	(0x0FFFFFFFFFFFFFFFULL)
+#define PSMX2_TAG_UPPER_MASK_60	((uint32_t)0x0FFFFFFF)
+#define PSMX2_DATA_MASK_60	((uint32_t)0xFFFFFFFF)
+#define PSMX2_FLAGS_IDX_60	(1)
+
+#define PSMX2_TAG_MASK_64	(0xFFFFFFFFFFFFFFFFULL)
+#define PSMX2_TAG_UPPER_MASK_64	((uint32_t)0xFFFFFFFF)
+#define PSMX2_DATA_MASK_64	((uint32_t)0x0FFFFFFF)
+#define PSMX2_FLAGS_IDX_64	(2)
+
+#if (PSMX2_TAG_LAYOUT == PSMX2_TAG_LAYOUT_TAG60)
+#define PSMX2_TAG_MASK		PSMX2_TAG_MASK_60
+#define PSMX2_TAG_UPPER_MASK	PSMX2_TAG_UPPER_MASK_60
+#define PSMX2_DATA_MASK		PSMX2_DATA_MASK_60
+#define PSMX2_FLAGS_IDX		PSMX2_FLAGS_IDX_60
+#endif
+
+#if (PSMX2_TAG_LAYOUT == PSMX2_TAG_LAYOUT_TAG64)
+#define PSMX2_TAG_MASK		PSMX2_TAG_MASK_64
+#define PSMX2_TAG_UPPER_MASK	PSMX2_TAG_UPPER_MASK_64
+#define PSMX2_DATA_MASK		PSMX2_DATA_MASK_64
+#define PSMX2_FLAGS_IDX		PSMX2_FLAGS_IDX_64
+#endif
+
+#if (PSMX2_TAG_LAYOUT == PSMX2_TAG_LAYOUT_RUNTIME)
+#define PSMX2_TAG_MASK		psmx2_tag_mask
+#define PSMX2_TAG_UPPER_MASK	psmx2_tag_upper_mask
+#define PSMX2_DATA_MASK		psmx2_data_mask
+#define PSMX2_FLAGS_IDX		psmx2_flags_idx
+extern uint64_t	psmx2_tag_mask;
+extern uint32_t	psmx2_tag_upper_mask;
+extern uint32_t	psmx2_data_mask;
+extern int	psmx2_flags_idx;
+extern int	psmx2_tag_layout_locked;
+#endif
+
+#define PSMX2_FLAGS_MASK	((uint32_t)0xF0000000)
+
+#define PSMX2_MAX_TAG		PSMX2_TAG_MASK
+#define PSMX2_MATCH_ALL		(-1ULL)
+#define PSMX2_MATCH_NONE	(0ULL)
+
+#define PSMX2_PRINT_TAG(tag96) \
+	printf("%s: %08x %08x %08x\n", __func__, tag96.tag0, tag96.tag1, tag96.tag2)
+
+/*
+ * psm2_mq_tag_t is a union type of 96 bits. These functions are used to
+ * access the first 64 bits without generating the warning "dereferencing
+ * type-punned pointer will break strict-aliasing rules". This is faster
+ * than combining two 32-bit values with bit operations.
+ *
+ * Notice:
+ * (1) *(uint64_t *)tag96 works, but *(uint64_t *)tag96->tag doesn't;
+ * (2) putting these statements directly inside the macros won't work.
+ */
+__attribute__((always_inline))
+static inline void psmx2_set_tag64(psm2_mq_tag_t *tag96, uint64_t tag64)
+{
+	*(uint64_t *)tag96 = tag64;
+}
+
+__attribute__((always_inline))
+static inline uint64_t psmx2_get_tag64(psm2_mq_tag_t *tag96)
+{
+	return *(uint64_t *)tag96;
+}
+
+#define PSMX2_SET_TAG_INTERNAL(tag96,_tag_,cq_data,flags) \
+	do { \
+		psmx2_set_tag64(&(tag96),(_tag_) & PSMX2_TAG_MASK); \
+		(tag96).tag2 = ((cq_data) & PSMX2_DATA_MASK); \
+		(tag96).tag[PSMX2_FLAGS_IDX] |= (flags); \
+	} while (0)
+
+#define PSMX2_SET_TAG(tag96,tag,cq_data,flags) \
+	PSMX2_SET_TAG_INTERNAL(tag96,tag,cq_data,flags)
+
+#define PSMX2_SET_MASK(tagsel96,tag_mask,flag_mask) \
+	PSMX2_SET_TAG_INTERNAL(tagsel96,tag_mask,0,flag_mask)
+
+#define PSMX2_GET_TAG64(tag96)	(psmx2_get_tag64(&(tag96)) & PSMX2_TAG_MASK)
+#define PSMX2_GET_FLAGS(tag96)	((tag96).tag[PSMX2_FLAGS_IDX] & PSMX2_FLAGS_MASK)
+#define PSMX2_GET_CQDATA(tag96)	((tag96).tag2 & PSMX2_DATA_MASK)
 
 /*
  * Canonical virtual address on X86_64 only uses 48 bits and the higher 16 bits
@@ -137,17 +274,13 @@ extern struct fi_provider psmx2_prov;
  * Here is the layout:  AA-B-C-DDDDDDDDDDDD
  *
  * C == 0xE: scalable endpoint, AAB is context index, DDDDDDDDDDDD is the address
- * C != 0xE: regular endpoint, AA is vlane, BCDDDDDDDDDDDD is epaddr
+ * C != 0xE: regular endpoint, AA is 0, BCDDDDDDDDDDDD is epaddr
  */
-#define PSMX2_MAX_VL			(0xFF)
 #define PSMX2_EP_MASK			(0x00FFFFFFFFFFFFFFUL)
 #define PSMX2_SIGN_MASK  		(0x0080000000000000UL)
 #define PSMX2_SIGN_EXT			(0xFF00000000000000UL)
-#define PSMX2_VL_MASK			(0xFF00000000000000UL)
 
-#define PSMX2_EP_TO_ADDR(ep,vl)		((((uint64_t)vl) << 56) | \
-						((uint64_t)ep & PSMX2_EP_MASK))
-#define PSMX2_ADDR_TO_VL(addr)		((uint8_t)((addr & PSMX2_VL_MASK) >> 56))
+#define PSMX2_EP_TO_ADDR(ep)		((uint64_t)ep & PSMX2_EP_MASK)
 #define PSMX2_ADDR_TO_EP(addr)		((psm2_epaddr_t) \
 						((addr & PSMX2_SIGN_MASK) ? \
 						 (addr | PSMX2_SIGN_EXT) : \
@@ -166,10 +299,11 @@ extern struct fi_provider psmx2_prov;
 /* Bits 60 .. 63 of the flag are provider specific */
 #define PSMX2_NO_COMPLETION	(1ULL << 60)
 
-#define PSMX2_CTXT_ALLOC_FLAG		0x80000000
 enum psmx2_context_type {
 	PSMX2_NOCOMP_SEND_CONTEXT = 1,
 	PSMX2_NOCOMP_RECV_CONTEXT,
+	PSMX2_NOCOMP_TSEND_CONTEXT,
+	PSMX2_NOCOMP_TRECV_CONTEXT,
 	PSMX2_NOCOMP_WRITE_CONTEXT,
 	PSMX2_NOCOMP_READ_CONTEXT,
 	PSMX2_SEND_CONTEXT,
@@ -184,12 +318,7 @@ enum psmx2_context_type {
 	PSMX2_SENDV_CONTEXT,
 	PSMX2_IOV_SEND_CONTEXT,
 	PSMX2_IOV_RECV_CONTEXT,
-	PSMX2_NOCOMP_RECV_CONTEXT_ALLOC = PSMX2_NOCOMP_RECV_CONTEXT | PSMX2_CTXT_ALLOC_FLAG,
-};
-
-struct psmx2_context {
-	struct fi_context fi_context;
-	struct slist_entry list_entry;
+	PSMX2_MAX_CONTEXT_TYPE
 };
 
 union psmx2_pi {
@@ -209,20 +338,14 @@ union psmx2_pi {
 #define PSMX2_AM_TRX_CTXT_HANDLER	3
 
 #define PSMX2_AM_OP_MASK	0x000000FF
-#define PSMX2_AM_DST_MASK	0x0000FF00
-#define PSMX2_AM_SRC_MASK	0x00FF0000
 #define PSMX2_AM_FLAG_MASK	0xFF000000
 #define PSMX2_AM_EOM		0x40000000
 #define PSMX2_AM_DATA		0x20000000
 #define PSMX2_AM_FORCE_ACK	0x10000000
 
 #define PSMX2_AM_SET_OP(u32w0,op)	do {u32w0 &= ~PSMX2_AM_OP_MASK; u32w0 |= op;} while (0)
-#define PSMX2_AM_SET_DST(u32w0,vl)	do {u32w0 &= ~PSMX2_AM_DST_MASK; u32w0 |= ((uint32_t)vl << 8);} while (0)
-#define PSMX2_AM_SET_SRC(u32w0,vl)	do {u32w0 &= ~PSMX2_AM_SRC_MASK; u32w0 |= ((uint32_t)vl << 16);} while (0)
 #define PSMX2_AM_SET_FLAG(u32w0,flag)	do {u32w0 &= ~PSMX2_AM_FLAG_MASK; u32w0 |= flag;} while (0)
 #define PSMX2_AM_GET_OP(u32w0)		(u32w0 & PSMX2_AM_OP_MASK)
-#define PSMX2_AM_GET_DST(u32w0)		((uint8_t)((u32w0 & PSMX2_AM_DST_MASK) >> 8))
-#define PSMX2_AM_GET_SRC(u32w0)		((uint8_t)((u32w0 & PSMX2_AM_SRC_MASK) >> 16))
 #define PSMX2_AM_GET_FLAG(u32w0)	(u32w0 & PSMX2_AM_FLAG_MASK)
 
 enum {
@@ -255,8 +378,6 @@ struct psmx2_am_request {
 			uint64_t key;
 			void	*context;
 			void	*peer_addr;
-			uint8_t	vl;
-			uint8_t	peer_vl;
 			uint64_t data;
 		} write;
 		struct {
@@ -269,8 +390,6 @@ struct psmx2_am_request {
 			uint64_t key;
 			void	*context;
 			void	*peer_addr;
-			uint8_t	vl;
-			uint8_t	peer_vl;
 			size_t	len_read;
 		} read;
 		struct {
@@ -301,7 +420,7 @@ struct psmx2_am_request {
 
 #define PSMX2_IOV_PROTO_PACK	0
 #define PSMX2_IOV_PROTO_MULTI	1
-#define PSMX2_IOV_MAX_SEQ_NUM	0x0FFF
+#define PSMX2_IOV_MAX_SEQ_NUM 	0x7fffffff
 #define PSMX2_IOV_BUF_SIZE	64
 #define PSMX2_IOV_MAX_COUNT	(PSMX2_IOV_BUF_SIZE / sizeof(uint32_t) - 3)
 
@@ -315,6 +434,7 @@ struct psmx2_iov_info {
 struct psmx2_sendv_request {
 	struct fi_context fi_context;
 	struct fi_context fi_context_iov;
+	PSMX2_STATUS_TYPE *status;
 	void *user_context;
 	int iov_protocol;
 	int no_completion;
@@ -330,6 +450,7 @@ struct psmx2_sendv_reply {
 	struct fi_context fi_context;
 	int no_completion;
 	int multi_recv;
+	psm2_mq_tag_t tag;
 	uint8_t *buf;
 	void *user_context;
 	size_t iov_done;
@@ -359,20 +480,29 @@ struct psmx2_multi_recv {
 
 struct psmx2_fid_fabric {
 	struct util_fabric	util_fabric;
-	struct psmx2_fid_domain	*active_domain;
 	psm2_uuid_t		uuid;
 	struct util_ns		name_server;
+
+	/* list of all opened domains */
+	fastlock_t		domain_lock;
+	struct dlist_entry	domain_list;
 };
+
+#define PSMX2_TX	(1)
+#define PSMX2_RX	(2)
+#define PSMX2_TX_RX	(PSMX2_TX | PSMX2_RX)
 
 struct psmx2_trx_ctxt {
 	psm2_ep_t		psm2_ep;
 	psm2_epid_t		psm2_epid;
 	psm2_mq_t		psm2_mq;
 	int			am_initialized;
+	int			am_progress;
 	int			id;
+	int			usage_flags;
 	struct psm2_am_parameters psm2_am_param;
 
-	/* ep bound to this tx/rx context, NULL if multiplexed */
+	struct psmx2_fid_domain	*domain;
 	struct psmx2_fid_ep	*ep;
 
 	/* incoming req queue for AM based RMA request. */
@@ -408,22 +538,9 @@ struct psmx2_fid_domain {
 	uint64_t		mr_reserved_key;
 	RbtHandle		mr_map;
 
-	/*
-	 * A list of all opened hw contexts, including the base hw context.
-	 * The list is used for making progress.
-	 */
+	/* list of hw contexts opened for this domain */
 	fastlock_t		trx_ctxt_lock;
 	struct dlist_entry	trx_ctxt_list;
-
-	/*
-	 * The base hw context is multiplexed for all regular endpoints via
-	 * logical "virtual lanes".
-	 */
-	struct psmx2_trx_ctxt	*base_trx_ctxt;
-	fastlock_t		vl_lock;
-	uint64_t		vl_map[(PSMX2_MAX_VL+1)/sizeof(uint64_t)];
-	int			vl_alloc;
-	struct psmx2_fid_ep	*eps[PSMX2_MAX_VL+1];
 
 	ofi_atomic32_t		sep_cnt;
 	fastlock_t		sep_lock;
@@ -433,6 +550,9 @@ struct psmx2_fid_domain {
 	pthread_t		progress_thread;
 
 	int			addr_format;
+	uint32_t		max_atomic_size;
+
+	struct dlist_entry	entry;
 };
 
 #define PSMX2_EP_REGULAR	0
@@ -448,7 +568,6 @@ struct psmx2_ep_name {
 	psm2_epid_t		epid;
 	uint8_t			type;
 	union {
-		uint8_t		vlane;		/* for regular ep */
 		uint8_t		sep_id;		/* for scalable ep */
 		int8_t		unit;		/* for src addr. start from 0. -1 means any */
 	};
@@ -476,10 +595,15 @@ struct psmx2_cq_event {
 
 #define PSMX2_ERR_DATA_SIZE		64	/* large enough to hold a string address */
 
+struct psmx2_poll_ctxt {
+	struct psmx2_trx_ctxt		*trx_ctxt;
+	struct slist_entry		list_entry;
+};
+
 struct psmx2_fid_cq {
 	struct fid_cq			cq;
 	struct psmx2_fid_domain		*domain;
-	struct psmx2_trx_ctxt		*trx_ctxt;
+	struct slist			poll_list;
 	int 				format;
 	int				entry_size;
 	size_t				event_count;
@@ -490,238 +614,11 @@ struct psmx2_fid_cq {
 	struct util_wait		*wait;
 	int				wait_cond;
 	int				wait_is_local;
+	ofi_atomic32_t			signaled;
 	uint8_t				error_data[PSMX2_ERR_DATA_SIZE];
 };
 
-enum psmx2_triggered_op {
-	PSMX2_TRIGGERED_SEND,
-	PSMX2_TRIGGERED_SENDV,
-	PSMX2_TRIGGERED_RECV,
-	PSMX2_TRIGGERED_TSEND,
-	PSMX2_TRIGGERED_TSENDV,
-	PSMX2_TRIGGERED_TRECV,
-	PSMX2_TRIGGERED_WRITE,
-	PSMX2_TRIGGERED_WRITEV,
-	PSMX2_TRIGGERED_READ,
-	PSMX2_TRIGGERED_READV,
-	PSMX2_TRIGGERED_ATOMIC_WRITE,
-	PSMX2_TRIGGERED_ATOMIC_WRITEV,
-	PSMX2_TRIGGERED_ATOMIC_READWRITE,
-	PSMX2_TRIGGERED_ATOMIC_READWRITEV,
-	PSMX2_TRIGGERED_ATOMIC_COMPWRITE,
-	PSMX2_TRIGGERED_ATOMIC_COMPWRITEV,
-};
-
-struct psmx2_trigger {
-	enum psmx2_triggered_op	op;
-	struct psmx2_fid_cntr	*cntr;
-	size_t			threshold;
-	union {
-		struct {
-			struct fid_ep	*ep;
-			const void	*buf;
-			size_t		len;
-			void		*desc;
-			fi_addr_t	dest_addr;
-			void		*context;
-			uint64_t	flags;
-			uint64_t	data;
-		} send;
-		struct {
-			struct fid_ep	*ep;
-			const struct iovec *iov;
-			size_t		count;
-			void		**desc;
-			fi_addr_t	dest_addr;
-			void		*context;
-			uint64_t	flags;
-			uint64_t	data;
-		} sendv;
-		struct {
-			struct fid_ep	*ep;
-			void		*buf;
-			size_t		len;
-			void		*desc;
-			fi_addr_t	src_addr;
-			void		*context;
-			uint64_t	flags;
-		} recv;
-		struct {
-			struct fid_ep	*ep;
-			const void	*buf;
-			size_t		len;
-			void		*desc;
-			fi_addr_t	dest_addr;
-			uint64_t	tag;
-			void		*context;
-			uint64_t	flags;
-			uint64_t	data;
-		} tsend;
-		struct {
-			struct fid_ep	*ep;
-			const struct iovec *iov;
-			size_t		count;
-			void		**desc;
-			fi_addr_t	dest_addr;
-			uint64_t	tag;
-			void		*context;
-			uint64_t	flags;
-			uint64_t	data;
-		} tsendv;
-		struct {
-			struct fid_ep	*ep;
-			void		*buf;
-			size_t		len;
-			void		*desc;
-			fi_addr_t	src_addr;
-			uint64_t	tag;
-			uint64_t	ignore;
-			void		*context;
-			uint64_t	flags;
-		} trecv;
-		struct {
-			struct fid_ep	*ep;
-			const void	*buf;
-			size_t		len;
-			void		*desc;
-			fi_addr_t	dest_addr;
-			uint64_t	addr;
-			uint64_t	key;
-			void		*context;
-			uint64_t	flags;
-			uint64_t	data;
-		} write;
-		struct {
-			struct fid_ep	*ep;
-			const struct iovec *iov;
-			size_t		count;
-			void		*desc;
-			fi_addr_t	dest_addr;
-			uint64_t	addr;
-			uint64_t	key;
-			void		*context;
-			uint64_t	flags;
-			uint64_t	data;
-		} writev;
-		struct {
-			struct fid_ep	*ep;
-			void		*buf;
-			size_t		len;
-			void		*desc;
-			fi_addr_t	src_addr;
-			uint64_t	addr;
-			uint64_t	key;
-			void		*context;
-			uint64_t	flags;
-		} read;
-		struct {
-			struct fid_ep	*ep;
-			const struct iovec *iov;
-			size_t		count;
-			void		*desc;
-			fi_addr_t	src_addr;
-			uint64_t	addr;
-			uint64_t	key;
-			void		*context;
-			uint64_t	flags;
-		} readv;
-		struct {
-			struct fid_ep	*ep;
-			const void	*buf;
-			size_t		count;
-			void		*desc;
-			fi_addr_t	dest_addr;
-			uint64_t	addr;
-			uint64_t	key;
-			enum fi_datatype datatype;
-			enum fi_op	atomic_op;
-			void		*context;
-			uint64_t	flags;
-		} atomic_write;
-		struct {
-			struct fid_ep	*ep;
-			const struct fi_ioc *iov;
-			size_t		count;
-			void		*desc;
-			fi_addr_t	dest_addr;
-			uint64_t	addr;
-			uint64_t	key;
-			enum fi_datatype datatype;
-			enum fi_op	atomic_op;
-			void		*context;
-			uint64_t	flags;
-		} atomic_writev;
-		struct {
-			struct fid_ep	*ep;
-			const void	*buf;
-			size_t		count;
-			void		*desc;
-			void		*result;
-			void		*result_desc;
-			fi_addr_t	dest_addr;
-			uint64_t	addr;
-			uint64_t	key;
-			enum fi_datatype datatype;
-			enum fi_op	atomic_op;
-			void		*context;
-			uint64_t	flags;
-		} atomic_readwrite;
-		struct {
-			struct fid_ep	*ep;
-			const struct fi_ioc *iov;
-			size_t		count;
-			void		**desc;
-			struct fi_ioc	*resultv;
-			void		**result_desc;
-			size_t		result_count;
-			fi_addr_t	dest_addr;
-			uint64_t	addr;
-			uint64_t	key;
-			enum fi_datatype datatype;
-			enum fi_op	atomic_op;
-			void		*context;
-			uint64_t	flags;
-		} atomic_readwritev;
-		struct {
-			struct fid_ep	*ep;
-			const void	*buf;
-			size_t		count;
-			void		*desc;
-			const void	*compare;
-			void		*compare_desc;
-			void		*result;
-			void		*result_desc;
-			fi_addr_t	dest_addr;
-			uint64_t	addr;
-			uint64_t	key;
-			enum fi_datatype datatype;
-			enum fi_op	atomic_op;
-			void		*context;
-			uint64_t	flags;
-		} atomic_compwrite;
-		struct {
-			struct fid_ep	*ep;
-			const struct fi_ioc *iov;
-			size_t		count;
-			void		**desc;
-			const struct fi_ioc *comparev;
-			void		**compare_desc;
-			size_t		compare_count;
-			struct fi_ioc	*resultv;
-			void		**result_desc;
-			size_t		result_count;
-			fi_addr_t	dest_addr;
-			uint64_t	addr;
-			uint64_t	key;
-			enum fi_datatype datatype;
-			enum fi_op	atomic_op;
-			void		*context;
-			uint64_t	flags;
-		} atomic_compwritev;
-	};
-	struct psmx2_trigger *next;	/* used for randomly accessed trigger list */
-	struct slist_entry list_entry;	/* used for ready-to-fire trigger queue */
-};
+struct psmx2_trigger;
 
 struct psmx2_fid_cntr {
 	union {
@@ -729,7 +626,8 @@ struct psmx2_fid_cntr {
 		struct util_cntr	util_cntr; /* for util_poll_run */
 	};
 	struct psmx2_fid_domain	*domain;
-	struct psmx2_trx_ctxt	*trx_ctxt;
+	struct slist		poll_list;
+	int			poll_all;
 	int			events;
 	uint64_t		flags;
 	ofi_atomic64_t		counter;
@@ -740,14 +638,17 @@ struct psmx2_fid_cntr {
 	fastlock_t		trigger_lock;
 };
 
-struct psmx2_ctxt_addr {
-	psm2_epid_t		epid;
-	psm2_epaddr_t		*epaddrs;
+struct psmx2_av_peer {
+	uint8_t			type;
+	uint8_t			sep_id;
+	int			sep_ctxt_cnt;
+	psm2_epid_t		*sep_ctxt_epids;
 };
 
-struct psmx2_sep_addr {
-	int			ctxt_cnt;
-	struct psmx2_ctxt_addr	ctxt_addrs[];
+struct psmx2_av_table {
+	struct psmx2_trx_ctxt	*trx_ctxt;
+	psm2_epaddr_t		*epaddrs;
+	psm2_epaddr_t		**sepaddrs;
 };
 
 struct psmx2_fid_av {
@@ -757,15 +658,15 @@ struct psmx2_fid_av {
 	int			type;
 	int			addr_format;
 	int			rx_ctx_bits;
+	int			max_trx_ctxt;
 	uint64_t		flags;
 	size_t			addrlen;
 	size_t			count;
 	size_t			last;
-	psm2_epid_t		*epids;
-	psm2_epaddr_t		*epaddrs;
-	uint8_t			*vlanes;
-	uint8_t			*types;
-	struct psmx2_sep_addr	**sepaddrs;
+	fastlock_t		lock;
+	psm2_epid_t		*epids;	 /* one entry per peer */
+	struct psmx2_av_peer	*peers;  /* one entry per peer */
+	struct psmx2_av_table	tables[];/* one entry per context */
 };
 
 struct psmx2_fid_ep {
@@ -774,8 +675,10 @@ struct psmx2_fid_ep {
 	struct psmx2_fid_domain	*domain;
 	/* above fields are common with sep */
 
-	struct psmx2_trx_ctxt	*trx_ctxt;
+	struct psmx2_trx_ctxt	*tx;
+	struct psmx2_trx_ctxt	*rx;
 	struct psmx2_fid_ep	*base_ep;
+	struct psmx2_fid_stx	*stx;
 	struct psmx2_fid_av	*av;
 	struct psmx2_fid_cq	*send_cq;
 	struct psmx2_fid_cq	*recv_cq;
@@ -785,7 +688,6 @@ struct psmx2_fid_ep {
 	struct psmx2_fid_cntr	*read_cntr;
 	struct psmx2_fid_cntr	*remote_write_cntr;
 	struct psmx2_fid_cntr	*remote_read_cntr;
-	uint8_t			vlane;
 	unsigned		send_selective_completion:1;
 	unsigned		recv_selective_completion:1;
 	unsigned		enabled:1;
@@ -794,9 +696,10 @@ struct psmx2_fid_ep {
 	uint64_t		caps;
 	ofi_atomic32_t		ref;
 	struct fi_context	nocomp_send_context;
-	struct fi_context	nocomp_recv_context;
-	struct slist		free_context_list;
-	fastlock_t		context_lock;
+	struct fi_context	nocomp_tsend_context;
+
+	PSMX2_EP_DECL_OP_CONTEXT
+
 	size_t			min_multi_recv;
 	uint32_t		iov_seq_num;
 	int			service;
@@ -826,6 +729,8 @@ struct psmx2_fid_sep {
 struct psmx2_fid_stx {
 	struct fid_stx		stx;
 	struct psmx2_fid_domain	*domain;
+	struct psmx2_trx_ctxt	*tx;
+	ofi_atomic32_t		ref;
 };
 
 struct psmx2_fid_mr {
@@ -854,13 +759,17 @@ struct psmx2_env {
 	int timeout;
 	int prog_interval;
 	char *prog_affinity;
-	int sep;
+	int multi_ep;
 	int max_trx_ctxt;
-	int sep_trx_ctxt;
+	int free_trx_ctxt;
 	int num_devunits;
 	int inject_size;
 	int lock_level;
 	int lazy_conn;
+	int disconnect;
+#if (PSMX2_TAG_LAYOUT == PSMX2_TAG_LAYOUT_RUNTIME)
+	char *tag_layout;
+#endif
 };
 
 extern struct fi_ops_mr		psmx2_mr_ops;
@@ -915,70 +824,34 @@ static inline void psmx2_unlock(fastlock_t *lock, int lock_level)
 		fastlock_release(lock);
 }
 
-#ifdef PSM2_MULTI_EP_CAP
+int	psmx2_init_prov_info(const struct fi_info *hints, struct fi_info **info);
+void	psmx2_update_prov_info(struct fi_info *info,
+			       struct psmx2_ep_name *src_addr,
+			       struct psmx2_ep_name *dest_addr);
+int	psmx2_check_prov_info(uint32_t api_version, const struct fi_info *hints,
+			      struct fi_info **info);
+void	psmx2_alter_prov_info(uint32_t api_version, const struct fi_info *hints,
+			      struct fi_info *info);
 
-static inline int psmx2_sep_ok(void)
-{
-	uint64_t caps = PSM2_MULTI_EP_CAP;
-	return (psm2_get_capability_mask(caps) == caps);
-}
-
-static inline psm2_error_t psmx2_ep_epid_lookup(psm2_ep_t ep, psm2_epid_t epid,
-						psm2_epconn_t *epconn)
-{
-	return psm2_ep_epid_lookup2(ep, epid, epconn);
-}
-
-static inline psm2_epid_t psmx2_epaddr_to_epid(psm2_epaddr_t epaddr)
-{
-	psm2_epid_t epid;
-
-	/* Caller ensures that epaddr is not NULL */
-	psm2_epaddr_to_epid(epaddr, &epid);
-	return epid;
-}
-
-#else
-
-static inline int psmx2_sep_ok(void)
-{
-	return 0;
-}
-
-static inline psm2_error_t psmx2_ep_epid_lookup(psm2_ep_t ep, psm2_epid_t epid,
-						psm2_epconn_t *epconn)
-{
-	return psm2_ep_epid_lookup(epid, epconn);
-}
-
-static inline psm2_epid_t psmx2_epaddr_to_epid(psm2_epaddr_t epaddr)
-{
-	/*
-	 * This is a hack based on the fact that the internal representation of
-	 * epaddr has epid as the first field. This is a workaround before a PSM2
-	 * function is availale to retrieve this information.
-	 */
-	return *(psm2_epid_t *)epaddr;
-}
-
-#endif /* PSM2_MULTI_EP_CAP */
+void	psmx2_init_tag_layout(struct fi_info *info);
+int	psmx2_get_round_robin_unit(int idx);
 
 int	psmx2_fabric(struct fi_fabric_attr *attr,
-		    struct fid_fabric **fabric, void *context);
+		     struct fid_fabric **fabric, void *context);
 int	psmx2_domain_open(struct fid_fabric *fabric, struct fi_info *info,
-			 struct fid_domain **domain, void *context);
+			  struct fid_domain **domain, void *context);
 int	psmx2_ep_open(struct fid_domain *domain, struct fi_info *info,
-		     struct fid_ep **ep, void *context);
+		      struct fid_ep **ep, void *context);
 int	psmx2_sep_open(struct fid_domain *domain, struct fi_info *info,
 		       struct fid_ep **sep, void *context);
 int	psmx2_stx_ctx(struct fid_domain *domain, struct fi_tx_attr *attr,
-		     struct fid_stx **stx, void *context);
+		      struct fid_stx **stx, void *context);
 int	psmx2_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr,
-		     struct fid_cq **cq, void *context);
+		      struct fid_cq **cq, void *context);
 int	psmx2_av_open(struct fid_domain *domain, struct fi_av_attr *attr,
-		     struct fid_av **av, void *context);
+		      struct fid_av **av, void *context);
 int	psmx2_cntr_open(struct fid_domain *domain, struct fi_cntr_attr *attr,
-		       struct fid_cntr **cntr, void *context);
+		        struct fid_cntr **cntr, void *context);
 int	psmx2_wait_open(struct fid_fabric *fabric, struct fi_wait_attr *attr,
 			struct fid_wait **waitset);
 int	psmx2_wait_trywait(struct fid_fabric *fabric, struct fid **fids,
@@ -1007,14 +880,12 @@ static inline void psmx2_domain_release(struct psmx2_fid_domain *domain)
 	ofi_atomic_dec32(&domain->util_domain.ref);
 }
 
-int	psmx2_domain_check_features(struct psmx2_fid_domain *domain, int ep_cap);
 int	psmx2_domain_enable_ep(struct psmx2_fid_domain *domain, struct psmx2_fid_ep *ep);
 
-void	psmx2_trx_ctxt_free(struct psmx2_trx_ctxt *trx_ctxt);
+void	psmx2_trx_ctxt_free(struct psmx2_trx_ctxt *trx_ctxt, int usage_flags);
 struct	psmx2_trx_ctxt *psmx2_trx_ctxt_alloc(struct psmx2_fid_domain *domain,
 					     struct psmx2_ep_name *src_addr,
-					     int sep_ctxt_idx);
-
+					     int sep_ctxt_idx, int usage_flags);
 
 static inline
 int	psmx2_ns_service_cmp(void *svc1, void *svc2)
@@ -1039,49 +910,51 @@ struct	psmx2_ep_name *psmx2_string_to_ep_name(const void *s);
 int	psmx2_errno(int err);
 void	psmx2_query_mpi(void);
 
-struct	fi_context *psmx2_ep_get_op_context(struct psmx2_fid_ep *ep);
-void	psmx2_ep_put_op_context(struct psmx2_fid_ep *ep, struct fi_context *fi_context);
 void	psmx2_cq_enqueue_event(struct psmx2_fid_cq *cq, struct psmx2_cq_event *event);
 struct	psmx2_cq_event *psmx2_cq_create_event(struct psmx2_fid_cq *cq,
-					void *op_context, void *buf,
-					uint64_t flags, size_t len,
-					uint64_t data, uint64_t tag,
-					size_t olen, int err);
+					      void *op_context, void *buf,
+					      uint64_t flags, size_t len,
+					      uint64_t data, uint64_t tag,
+					      size_t olen, int err);
 int	psmx2_cq_poll_mq(struct psmx2_fid_cq *cq, struct psmx2_trx_ctxt *trx_ctxt,
-			struct psmx2_cq_event *event, int count, fi_addr_t *src_addr);
+			 struct psmx2_cq_event *event, int count, fi_addr_t *src_addr);
 
 int	psmx2_epid_to_epaddr(struct psmx2_trx_ctxt *trx_ctxt,
 			     psm2_epid_t epid, psm2_epaddr_t *epaddr);
 
+int	psmx2_av_add_trx_ctxt(struct psmx2_fid_av *av, struct psmx2_trx_ctxt *trx_ctxt,
+			      int connect_now);
+
 psm2_epaddr_t psmx2_av_translate_sep(struct psmx2_fid_av *av,
 				     struct psmx2_trx_ctxt *trx_ctxt, fi_addr_t addr);
 
-static inline int psmx2_av_check_table_idx(struct psmx2_fid_av *av, size_t idx)
+static inline int psmx2_av_check_table_idx(struct psmx2_fid_av *av,
+					   struct psmx2_trx_ctxt *trx_ctxt,
+					   size_t idx)
 {
-	int err;
+	int err = 0;
 
-	if (idx >= av->last) {
+	psmx2_lock(&av->lock, 1);
+
+	if (OFI_UNLIKELY(idx >= av->last)) {
 		FI_WARN(&psmx2_prov, FI_LOG_AV,
 			"error: av index %ld out of range(max: %ld).\n", idx, av->last);
-		return -FI_EINVAL;
+		err = -FI_EINVAL;
+		goto out;
 	}
 
-	/*
-	 * NOTE: This is not thread safe! Race condition on "av->epaddrs[idx]".
-	 * Avoid connecting to the same destination from multiple threads.
-	 */
-	if (!av->epaddrs[idx]) {
-		err = psmx2_epid_to_epaddr(av->domain->base_trx_ctxt,
-					   av->epids[idx], &av->epaddrs[idx]);
-		if (err) {
+	if (!av->tables[trx_ctxt->id].epaddrs[idx]) {
+		err = psmx2_epid_to_epaddr(trx_ctxt, av->epids[idx],
+					   &av->tables[trx_ctxt->id].epaddrs[idx]);
+		if (err)
 			FI_WARN(&psmx2_prov, FI_LOG_AV,
 				"fatal error: unable to translate epid %lx to epaddr.\n",
 				av->epids[idx]);
-			return err;
-		}
 	}
 
-	return 0;
+out:
+	psmx2_unlock(&av->lock, 1);
+	return err;
 }
 
 void	psmx2_am_global_init(void);
@@ -1090,22 +963,20 @@ int	psmx2_am_init(struct psmx2_trx_ctxt *trx_ctxt);
 void	psmx2_am_fini(struct psmx2_trx_ctxt *trx_ctxt);
 int	psmx2_am_progress(struct psmx2_trx_ctxt *trx_ctxt);
 int	psmx2_am_process_send(struct psmx2_trx_ctxt *trx_ctxt,
-				struct psmx2_am_request *req);
+			      struct psmx2_am_request *req);
 int	psmx2_am_process_rma(struct psmx2_trx_ctxt *trx_ctxt,
-				struct psmx2_am_request *req);
-int	psmx2_process_trigger(struct psmx2_trx_ctxt *trx_ctxt,
-				struct psmx2_trigger *trigger);
-int	psmx2_am_rma_handler_ext(psm2_am_token_t token,
-				 psm2_amarg_t *args, int nargs, void *src, uint32_t len,
-				 struct psmx2_trx_ctxt *trx_ctxt);
-int	psmx2_am_atomic_handler_ext(psm2_am_token_t token,
-				    psm2_amarg_t *args, int nargs, void *src, uint32_t len,
-				    struct psmx2_trx_ctxt *trx_ctxt);
+			     struct psmx2_am_request *req);
+int	psmx2_am_rma_handler(psm2_am_token_t token, psm2_amarg_t *args,
+			     int nargs, void *src, uint32_t len,
+			     void *hctx);
+int	psmx2_am_atomic_handler(psm2_am_token_t token,
+				psm2_amarg_t *args, int nargs, void *src,
+				uint32_t len, void *hctx);
 int	psmx2_am_sep_handler(psm2_am_token_t token, psm2_amarg_t *args, int nargs,
-			     void *src, uint32_t len);
-int	psmx2_am_trx_ctxt_handler_ext(psm2_am_token_t token,
-				      psm2_amarg_t *args, int nargs, void *src, uint32_t len,
-				      struct psmx2_trx_ctxt *trx_ctxt);
+			     void *src, uint32_t len, void *hctx);
+int	psmx2_am_trx_ctxt_handler(psm2_am_token_t token,
+				  psm2_amarg_t *args, int nargs, void *src, uint32_t len,
+				  void *hctx);
 void	psmx2_atomic_global_init(void);
 void	psmx2_atomic_global_fini(void);
 
@@ -1120,7 +991,9 @@ struct psmx2_am_request *psmx2_am_request_alloc(struct psmx2_trx_ctxt *trx_ctxt)
 	req = util_buf_alloc(trx_ctxt->am_req_pool);
 	psmx2_unlock(&trx_ctxt->am_req_pool_lock, 2);
 
-	memset(req, 0, sizeof(*req));
+	if (req)
+		memset(req, 0, sizeof(*req));
+
 	return req;
 }
 
@@ -1137,7 +1010,7 @@ int	psmx2_mr_validate(struct psmx2_fid_mr *mr, uint64_t addr, size_t len, uint64
 void	psmx2_cntr_check_trigger(struct psmx2_fid_cntr *cntr);
 void	psmx2_cntr_add_trigger(struct psmx2_fid_cntr *cntr, struct psmx2_trigger *trigger);
 
-int	psmx2_handle_sendv_req(struct psmx2_fid_ep *ep, psm2_mq_status2_t *psm2_status,
+int	psmx2_handle_sendv_req(struct psmx2_fid_ep *ep, PSMX2_STATUS_TYPE *status,
 			       int multi_recv);
 
 static inline void psmx2_cntr_inc(struct psmx2_fid_cntr *cntr)
@@ -1155,8 +1028,7 @@ static inline void psmx2_get_source_name(fi_addr_t source, struct psmx2_ep_name 
 	psm2_epaddr_t epaddr = PSMX2_ADDR_TO_EP(source);
 
 	memset(name, 0, sizeof(*name));
-	name->epid = psmx2_epaddr_to_epid(epaddr);
-	name->vlane = PSMX2_ADDR_TO_VL(source);
+	psm2_epaddr_to_epid(epaddr, &name->epid);
 	name->type = PSMX2_EP_REGULAR;
 }
 
@@ -1166,8 +1038,7 @@ static inline void psmx2_get_source_string_name(fi_addr_t source, char *name, si
 	psm2_epaddr_t epaddr = PSMX2_ADDR_TO_EP(source);
 
 	memset(&ep_name, 0, sizeof(ep_name));
-	ep_name.epid = psmx2_epaddr_to_epid(epaddr);
-	ep_name.vlane = PSMX2_ADDR_TO_VL(source);
+	psm2_epaddr_to_epid(epaddr, &ep_name.epid);
 	ep_name.type = PSMX2_EP_REGULAR;
 
 	ofi_straddr(name, len, FI_ADDR_PSMX2, &ep_name);
@@ -1177,7 +1048,7 @@ static inline void psmx2_progress(struct psmx2_trx_ctxt *trx_ctxt)
 {
 	if (trx_ctxt) {
 		psmx2_cq_poll_mq(NULL, trx_ctxt, NULL, 0, NULL);
-		if (trx_ctxt->am_initialized)
+		if (trx_ctxt->am_progress)
 			psmx2_am_progress(trx_ctxt);
 	}
 }
@@ -1194,112 +1065,6 @@ static inline void psmx2_progress_all(struct psmx2_fid_domain *domain)
 	}
 	psmx2_unlock(&domain->trx_ctxt_lock, 1);
 }
-
-/* The following functions are used by triggered operations */
-
-ssize_t psmx2_send_generic(
-			struct fid_ep *ep,
-			const void *buf, size_t len,
-			void *desc, fi_addr_t dest_addr,
-			void *context, uint64_t flags,
-			uint64_t data);
-
-ssize_t psmx2_sendv_generic(
-			struct fid_ep *ep,
-			const struct iovec *iov, void *desc,
-			size_t count, fi_addr_t dest_addr,
-			void *context, uint64_t flags,
-			uint64_t data);
-
-ssize_t psmx2_recv_generic(
-			struct fid_ep *ep,
-			void *buf, size_t len, void *desc,
-			fi_addr_t src_addr, void *context,
-			uint64_t flags);
-
-ssize_t psmx2_tagged_send_generic(
-			struct fid_ep *ep,
-			const void *buf, size_t len,
-			void *desc, fi_addr_t dest_addr,
-			uint64_t tag, void *context,
-			uint64_t flags, uint64_t data);
-
-ssize_t psmx2_tagged_sendv_generic(
-			struct fid_ep *ep,
-			const struct iovec *iov, void *desc,
-			size_t count, fi_addr_t dest_addr,
-			uint64_t tag, void *context,
-			uint64_t flags, uint64_t data);
-
-ssize_t psmx2_tagged_recv_generic(
-			struct fid_ep *ep,
-			void *buf, size_t len,
-			void *desc, fi_addr_t src_addr,
-			uint64_t tag, uint64_t ignore,
-			void *context, uint64_t flags);
-
-ssize_t psmx2_write_generic(
-			struct fid_ep *ep,
-			const void *buf, size_t len,
-			void *desc, fi_addr_t dest_addr,
-			uint64_t addr, uint64_t key,
-			void *context, uint64_t flags,
-			uint64_t data);
-
-ssize_t psmx2_writev_generic(
-			struct fid_ep *ep,
-			const struct iovec *iov, void **desc,
-			size_t count, fi_addr_t dest_addr,
-			uint64_t addr, uint64_t key,
-			void *context, uint64_t flags,
-			uint64_t data);
-
-ssize_t psmx2_read_generic(
-			struct fid_ep *ep,
-			void *buf, size_t len,
-			void *desc, fi_addr_t src_addr,
-			uint64_t addr, uint64_t key,
-			void *context, uint64_t flags);
-
-ssize_t psmx2_readv_generic(
-			struct fid_ep *ep,
-			const struct iovec *iov, void *desc,
-			size_t count, fi_addr_t src_addr,
-			uint64_t addr, uint64_t key,
-			void *context, uint64_t flags);
-
-ssize_t psmx2_atomic_write_generic(
-			struct fid_ep *ep,
-			const void *buf,
-			size_t count, void *desc,
-			fi_addr_t dest_addr,
-			uint64_t addr, uint64_t key,
-			enum fi_datatype datatype,
-			enum fi_op op, void *context,
-			uint64_t flags);
-
-ssize_t psmx2_atomic_readwrite_generic(
-			struct fid_ep *ep,
-			const void *buf,
-			size_t count, void *desc,
-			void *result, void *result_desc,
-			fi_addr_t dest_addr,
-			uint64_t addr, uint64_t key,
-			enum fi_datatype datatype,
-			enum fi_op op, void *context,
-			uint64_t flags);
-
-ssize_t psmx2_atomic_compwrite_generic(
-			struct fid_ep *ep,
-			const void *buf,
-			size_t count, void *desc,
-			const void *compare, void *compare_desc,
-			void *result, void *result_desc,
-			fi_addr_t dest_addr,
-			uint64_t addr, uint64_t key,
-			enum fi_datatype datatype,
-			enum fi_op op, void *context,
-			uint64_t flags);
 
 #ifdef __cplusplus
 }

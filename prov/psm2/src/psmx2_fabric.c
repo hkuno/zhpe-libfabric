@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2017 Intel Corporation. All rights reserved.
+ * Copyright (c) 2013-2018 Intel Corporation. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -41,25 +41,23 @@ static int psmx2_fabric_close(fid_t fid)
 	fabric = container_of(fid, struct psmx2_fid_fabric,
 			      util_fabric.fabric_fid.fid);
 
+	psmx2_fabric_release(fabric);
+
 	FI_INFO(&psmx2_prov, FI_LOG_CORE, "refcnt=%d\n",
 		ofi_atomic_get32(&fabric->util_fabric.ref));
-
-	if (psmx2_env.name_server)
-		ofi_ns_stop_server(&fabric->name_server);
-
-	psmx2_fabric_release(fabric);
 
 	if (ofi_fabric_close(&fabric->util_fabric))
 		return 0;
 
-	if (fabric->active_domain) {
-		FI_WARN(&psmx2_prov, FI_LOG_CORE, "forced closing of active_domain\n");
-		fi_close(&fabric->active_domain->util_domain.domain_fid.fid);
-	}
+	if (psmx2_env.name_server)
+		ofi_ns_stop_server(&fabric->name_server);
+
+	fastlock_destroy(&fabric->domain_lock);
 	assert(fabric == psmx2_active_fabric);
 	psmx2_active_fabric = NULL;
 	free(fabric);
 
+	psmx2_atomic_global_fini();
 	return 0;
 }
 
@@ -103,24 +101,18 @@ int psmx2_fabric(struct fi_fabric_attr *attr,
 	if (!fabric_priv)
 		return -FI_ENOMEM;
 
+	fastlock_init(&fabric_priv->domain_lock);
+	dlist_init(&fabric_priv->domain_list);
+
 	psmx2_get_uuid(fabric_priv->uuid);
 	if (psmx2_env.name_server) {
-		struct util_ns_attr ns_attr = {
-			.ns_port = psmx2_uuid_to_port(fabric_priv->uuid),
-			.name_len = sizeof(struct psmx2_ep_name),
-			.service_len = sizeof(int),
-			.service_cmp = psmx2_ns_service_cmp,
-			.is_service_wildcard = psmx2_ns_is_service_wildcard,
-		};
-		ret = ofi_ns_init(&ns_attr,
-				  &fabric_priv->name_server);
-		if (ret) {
-			FI_INFO(&psmx2_prov, FI_LOG_CORE,
-				"ofi_ns_init returns %d\n", ret);
-			free(fabric_priv);
-			return ret;
-		}
+		fabric_priv->name_server.port = psmx2_uuid_to_port(fabric_priv->uuid);
+		fabric_priv->name_server.name_len = sizeof(struct psmx2_ep_name);
+		fabric_priv->name_server.service_len = sizeof(int);
+		fabric_priv->name_server.service_cmp = psmx2_ns_service_cmp;
+		fabric_priv->name_server.is_service_wildcard = psmx2_ns_is_service_wildcard;
 
+		ofi_ns_init(&fabric_priv->name_server);
 		ofi_ns_start_server(&fabric_priv->name_server);
 	}
 
@@ -138,6 +130,7 @@ int psmx2_fabric(struct fi_fabric_attr *attr,
 	fabric_priv->util_fabric.fabric_fid.fid.ops = &psmx2_fabric_fi_ops;
 	fabric_priv->util_fabric.fabric_fid.ops = &psmx2_fabric_ops;
 
+	psmx2_atomic_global_init();
 	psmx2_query_mpi();
 
 	/* take the reference to count for multiple fabric open calls */

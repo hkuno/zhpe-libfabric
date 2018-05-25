@@ -38,10 +38,10 @@
 #include <iphlpapi.h>
 #include <ifaddrs.h>
 
-#include "fi.h"
-#include "fi_osd.h"
-#include "fi_file.h"
-#include "fi_list.h"
+#include "ofi.h"
+#include "ofi_osd.h"
+#include "ofi_file.h"
+#include "ofi_list.h"
 
 #include "prov/sockets/include/sock.h"
 
@@ -118,10 +118,10 @@ err:
 int ofi_getsockname(SOCKET fd, struct sockaddr *addr, socklen_t *len)
 {
 	struct sockaddr_storage sock_addr;
-	size_t sock_addr_len = sizeof(sock_addr);
+	socklen_t sock_addr_len = sizeof(sock_addr);
 	int ret;
 
-	ret = getsockname(fd, &sock_addr, (socklen_t *)&sock_addr_len);
+	ret = getsockname(fd, (struct sockaddr *) &sock_addr, &sock_addr_len);
 	if (ret)
 		return ret;
 
@@ -288,12 +288,6 @@ int ofi_shm_unmap(struct util_shm *shm)
 	ZeroMemory(shm, sizeof(*shm));
 
 	return FI_SUCCESS;
-}
-
-int fi_fd_nonblock(int fd)
-{
-	u_long argp = 1;
-	return ioctlsocket(fd, FIONBIO, &argp) ? -WSAGetLastError() : 0;
 }
 
 /* emulate sendmsg/recvmsg calls using temporary buffer */
@@ -506,3 +500,44 @@ void freeifaddrs(struct ifaddrs *ifa)
 	}
 }
 
+ssize_t ofi_writev_socket(SOCKET fd, const struct iovec *iovec, size_t iov_cnt)
+{
+	ssize_t size;
+	int ret, i;
+	WSABUF *wsa_buf;
+	DWORD flags = 0;
+
+	wsa_buf = (WSABUF *)alloca(iov_cnt * sizeof(WSABUF));
+
+	for (i = 0; i < iov_cnt; i++) {
+		wsa_buf[i].buf = (char *)iovec[i].iov_base;
+		wsa_buf[i].len = iovec[i].iov_len;
+	}
+
+	ret = WSASend(fd, wsa_buf, iov_cnt, &size, &flags, NULL, NULL);
+	if (ret)
+		size = (ssize_t)ret;
+
+	return size;
+}
+
+ssize_t ofi_readv_socket(SOCKET fd, const struct iovec *iovec, size_t iov_cnt)
+{
+	ssize_t size;
+	int ret,i;
+	WSABUF *wsa_buf;
+	DWORD flags = 0;
+
+	wsa_buf = (WSABUF *)alloca(iov_cnt *sizeof(WSABUF));
+
+	for (i = 0; i <iov_cnt; i++) {
+		wsa_buf[i].buf = (char *)iovec[i].iov_base;
+		wsa_buf[i].len = iovec[i].iov_len;
+	}
+
+	ret = WSARecv(fd, wsa_buf, iov_cnt, &size, &flags, NULL, NULL);
+	if (ret)
+		size = (ssize_t)ret;
+
+	return size;
+}

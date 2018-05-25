@@ -81,19 +81,19 @@
 #include <rdma/providers/fi_log.h>
 
 #include <rbtree.h>
-#include <prov.h>
+#include <ofi_prov.h>
 
-#include <fi.h>
-#include <fi_enosys.h>
-#include <fi_file.h>
-#include <fi_indexer.h>
-#include <fi_iov.h>
-#include <fi_list.h>
-#include <fi_osd.h>
-#include <fi_rbuf.h>
-#include <fi_util.h>
-
+#include <ofi.h>
 #include <ofi_atomic.h>
+#include <ofi_enosys.h>
+#include <ofi_file.h>
+#include <ofi_indexer.h>
+#include <ofi_iov.h>
+#include <ofi_list.h>
+#include <ofi_osd.h>
+#include <ofi_rbuf.h>
+#include <ofi_util.h>
+
 
 #define _ZHPE_LOG_DBG(subsys, ...) FI_DBG(&zhpe_prov, subsys, __VA_ARGS__)
 #define _ZHPE_LOG_ERROR(subsys, ...) FI_WARN(&zhpe_prov, subsys, __VA_ARGS__)

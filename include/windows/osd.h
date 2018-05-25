@@ -33,7 +33,7 @@
 #include <rdma/fi_errno.h>
 #include <rdma/fabric.h>
 
-#include <fi_osd.h>
+#include <ofi_osd.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -204,6 +204,10 @@ extern "C" {
 #define MSG_NOSIGNAL	0
 #endif
 
+#ifndef SHUT_RDWR
+#define SHUT_RDWR	SD_BOTH
+#endif
+
 #ifndef _SC_PAGESIZE
 #define _SC_PAGESIZE	0
 #endif
@@ -253,8 +257,6 @@ do						\
 #define strdup _strdup
 #define strcasecmp _stricmp
 #define snprintf _snprintf
-#define inet_ntop InetNtopA
-
 #define getpid (int)GetCurrentProcessId
 #define sleep(x) Sleep(x * 1000)
 
@@ -728,9 +730,23 @@ static inline ssize_t ofi_sendto_socket(SOCKET fd, const void *buf, size_t count
 	return sendto(fd, (const char*)buf, (int)count, flags, to, tolen);
 }
 
+ssize_t ofi_writev_socket(SOCKET fd, const struct iovec *iovec, size_t iov_cnt);
+ssize_t ofi_readv_socket(SOCKET fd, const struct iovec *iovec, size_t iov_cnt);
+
+static inline int ofi_shutdown(SOCKET socket, int how)
+{
+	return shutdown(socket, how);
+}
+
 static inline int ofi_close_socket(SOCKET socket)
 {
 	return closesocket(socket);
+}
+
+static inline int fi_fd_nonblock(SOCKET fd)
+{
+	u_long argp = 1;
+	return ioctlsocket(fd, FIONBIO, &argp) ? -WSAGetLastError() : 0;
 }
 
 /* Note: Use static variable `errno` for libc routines
@@ -887,6 +903,39 @@ typedef LONGLONG ofi_atomic_int_64_t;
 #define ofi_atomic_add_and_fetch(radix, ptr, val) InterlockedAdd##radix((ofi_atomic_int_##radix##_t *)(ptr), (ofi_atomic_int_##radix##_t)(val))
 #define ofi_atomic_sub_and_fetch(radix, ptr, val) InterlockedAdd##radix((ofi_atomic_int_##radix##_t *)(ptr), -(ofi_atomic_int_##radix##_t)(val))
 #endif /* HAVE_BUILTIN_ATOMICS */
+
+static inline int ofi_set_thread_affinity(const char *s)
+{
+	OFI_UNUSED(s);
+	return -FI_ENOSYS;
+}
+
+
+#if defined(_M_X64) || defined(_M_AMD64)
+
+#include <intrin.h>
+
+static inline void
+ofi_cpuid(unsigned func, unsigned subfunc, unsigned cpuinfo[4])
+{
+	__cpuidex(cpuinfo, func, subfunc);
+}
+
+#define ofi_clwb(addr) do { _mm_clflush(addr); _mm_sfence(); } while (0)
+#define ofi_clflushopt(addr) do { _mm_clflush(addr); _mm_sfence(); } while (0)
+#define ofi_clflush(addr) _mm_clflush(addr)
+#define ofi_sfence() _mm_sfence()
+
+#else /* defined(_M_X64) || defined(_M_AMD64) */
+
+#define ofi_cpuid(func, subfunc, cpuinfo)
+#define ofi_clwb(addr)
+#define ofi_clflushopt(addr)
+#define ofi_clflush(addr)
+#define ofi_sfence()
+
+#endif /* defined(_M_X64) || defined(_M_AMD64) */
+
 
 #ifdef __cplusplus
 }

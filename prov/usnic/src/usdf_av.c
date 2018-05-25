@@ -52,8 +52,8 @@
 #include <netdb.h>
 
 #include "rdma/fi_errno.h"
-#include "fi_enosys.h"
-#include "fi.h"
+#include "ofi_enosys.h"
+#include "ofi.h"
 
 #include "usnic_direct.h"
 #include "usnic_ip_utils.h"
@@ -363,6 +363,10 @@ usdf_am_insert_async(struct fid_av *fav, const void *addr, size_t count,
 
 		if (addr_format_str) {
 			usdf_str_toaddr(addr_str[i], &cur_sin);
+			if (NULL == cur_sin) {
+				ret = -FI_ENOMEM;
+				goto fail;
+			}
 			sin = cur_sin;
 		}
 
@@ -469,6 +473,12 @@ usdf_am_insert_sync(struct fid_av *fav, const void *addr, size_t count,
 
 		if (addr_format_str) {
 			usdf_str_toaddr(addr_str[i], &cur_sin);
+			if (NULL == cur_sin) {
+				if (flags & FI_SYNC_ERR)
+					errors[i] = -ENOMEM;
+
+				return ret_count;
+			}
 			sin = cur_sin;
 		}
 

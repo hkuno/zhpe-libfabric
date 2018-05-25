@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2017, Cisco Systems, Inc. All rights reserved.
+ * Copyright (c) 2014-2018, Cisco Systems, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -49,9 +49,9 @@
 #include <rdma/fi_endpoint.h>
 #include <rdma/fi_rma.h>
 #include <rdma/fi_errno.h>
-#include "fi.h"
-#include "fi_enosys.h"
-#include "fi_util.h"
+#include "ofi.h"
+#include "ofi_enosys.h"
+#include "ofi_util.h"
 
 #include "usnic_direct.h"
 #include "usdf.h"
@@ -251,10 +251,9 @@ usdf_domain_open(struct fid_fabric *fabric, struct fi_info *info,
 			return -FI_ENODATA;
 		}
 
-		if (ofi_check_mr_mode(&usdf_ops,
-				      fabric->api_version,
-				      FI_MR_BASIC | OFI_MR_BASIC_MAP | FI_MR_LOCAL,
-				      info)) {
+		if (ofi_check_mr_mode(
+			&usdf_ops, fabric->api_version,
+			FI_MR_BASIC | FI_MR_ALLOCATED | FI_MR_LOCAL, info)) {
 			/* the caller ignored our fi_getinfo results */
 			USDF_WARN_SYS(DOMAIN, "MR mode (%d) not supported\n",
 				      info->domain_attr->mr_mode);
@@ -285,6 +284,10 @@ usdf_domain_open(struct fid_fabric *fabric, struct fi_info *info,
 		break;
 	case FI_ADDR_STR:
 		sin = usdf_format_to_sin(info, info->src_addr);
+		if (NULL == sin) {
+			ret = -FI_ENOMEM;
+			goto fail;
+		}
 		goto skip_size_check;
 	default:
 		ret = -FI_EINVAL;
@@ -480,6 +483,8 @@ int usdf_catch_dom_attr(uint32_t version, const struct fi_info *hints,
 			if (hints->domain_attr->caps == FI_REMOTE_COMM)
 				return -FI_EBADFLAGS;
 		}
+        } else {
+            dom_attr->mr_mode &= ~(FI_MR_BASIC | FI_MR_SCALABLE);
 	}
 
 	return FI_SUCCESS;
@@ -507,36 +512,4 @@ int usdf_catch_rx_attr(uint32_t version, const struct fi_rx_attr *rx_attr)
 	}
 
 	return FI_SUCCESS;
-}
-
-/* A wrapper function to core utility function to check mr_mode bits.
- * We need to check some more things for backward compatibility.
- */
-int usdf_check_mr_mode(uint32_t version, const struct fi_info *hints,
-		       uint64_t prov_mode)
-{
-	int ret;
-
-	ret = ofi_check_mr_mode(&usdf_ops, version, prov_mode, hints);
-
-	/* TODO: Checks below may not be needed */
-	/* If ofi_check_mr_mode fails. */
-	if (ret) {
-		/* Is it because the user give 0 as mr_mode? */
-		if (hints->domain_attr->mr_mode == 0) {
-			if (FI_VERSION_LT(version, FI_VERSION(1, 5))) {
-				/* If the version is < 1.5, it is ok.
-				 * We let this slide and catch it later on.
-				 */
-				return FI_SUCCESS;
-			} else if (hints->mode & FI_LOCAL_MR) {
-				/* If version is >= 1.5, we check fi_info mode
-				 * for FI_LOCAL_MR for backward compatibility.
-				 */
-				return FI_SUCCESS;
-			}
-		}
-	}
-
-	return ret;
 }

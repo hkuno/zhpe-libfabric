@@ -274,7 +274,7 @@ int mr_close(struct fid *fid, bool revoke_oneshot)
 		fastlock_acquire(&domain->lock);
 	}
 	/* Free key last to prevent re-use race. */
-	ret = ofi_mr_remove(&domain->mr_map, zmr->mr_fid.key);
+	ret = ofi_mr_map_remove(&domain->mr_map, zmr->mr_fid.key);
 	if (ret < 0)
 		ZHPE_LOG_ERROR("MR Erase error %d \n", ret);
 	fastlock_release(&domain->lock);
@@ -321,7 +321,7 @@ struct zhpe_mr *zhpe_mr_get(struct zhpe_domain *domain, uint64_t key)
 	struct zhpe_mr		*ret;
 
 	fastlock_acquire(&domain->lock);
-	ret = ofi_mr_get(&domain->mr_map, key);
+	ret = ofi_mr_map_get(&domain->mr_map, key);
 	if (ret)
 		__sync_fetch_and_add(&ret->use_count, 1);
 	fastlock_release(&domain->lock);
@@ -353,7 +353,7 @@ static inline int zhpe_regattr_int(struct zhpe_domain *domain,
 	zmr->flags = flags;
 	zmr->use_count = 1;
 
-	ret = ofi_mr_insert(&domain->mr_map, attr, &zmr->mr_fid.key, zmr);
+	ret = ofi_mr_map_insert(&domain->mr_map, attr, &zmr->mr_fid.key, zmr);
 	if (ret < 0)
 		goto done;
 

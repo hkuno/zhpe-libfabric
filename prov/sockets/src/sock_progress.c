@@ -56,7 +56,7 @@
 #include <arpa/inet.h>
 #include <net/if.h>
 
-#include <fi_mem.h>
+#include <ofi_mem.h>
 #include "sock.h"
 #include "sock_util.h"
 
@@ -319,7 +319,8 @@ static void sock_pe_report_mr_completion(struct sock_domain *domain,
 
 	for (i = 0; i < pe_entry->msg_hdr.dest_iov_len; i++) {
 		fastlock_acquire(&domain->lock);
-		mr = ofi_mr_get(&domain->mr_map, pe_entry->pe.rx.rx_iov[i].iov.key);
+		mr = ofi_mr_map_get(&domain->mr_map,
+				    pe_entry->pe.rx.rx_iov[i].iov.key);
 		fastlock_release(&domain->lock);
 		if (!mr || (!mr->cq && !mr->cntr))
 			continue;
@@ -827,6 +828,12 @@ static int sock_pe_process_rx_write(struct sock_pe *pe,
 	pe_entry->data_len = 0;
 	for (i = 0; i < pe_entry->msg_hdr.dest_iov_len; i++) {
 		pe_entry->data_len += pe_entry->pe.rx.rx_iov[i].iov.len;
+		if ((pe_entry->msg_hdr.flags & FI_COMMIT_COMPLETE) &&
+		    ofi_pmem_commit) {
+			(*ofi_pmem_commit)((const void *) (uintptr_t)
+					   pe_entry->pe.rx.rx_iov[i].iov.addr,
+					   pe_entry->pe.rx.rx_iov[i].iov.len);
+		}
 	}
 
 	/* report error, if any */
@@ -2344,29 +2351,38 @@ static int sock_pe_progress_rx_ep(struct sock_pe *pe,
 				  struct sock_ep_attr *ep_attr,
 				  struct sock_rx_ctx *rx_ctx)
 {
-	int ret = 0, i, num_fds;
+	int i, num_fds;
 	struct sock_conn *conn;
 	struct sock_conn_map *map;
-	void *ep_contexts[SOCK_EPOLL_WAIT_EVENTS];
 
 	map = &ep_attr->cmap;
 
 	if (!map->used)
 		return 0;
 
-epoll_wait_retry:
-	num_fds = fi_epoll_wait(map->epoll_set, ep_contexts,
-			SOCK_EPOLL_WAIT_EVENTS, 0);
+	if (map->epoll_ctxs_sz < map->used) {
+		uint64_t new_size = map->used * 2;
+		void *ctxs;
+
+		ctxs = realloc(map->epoll_ctxs,
+			       sizeof(*map->epoll_ctxs) * new_size);
+		if (ctxs) {
+			map->epoll_ctxs = ctxs;
+			map->epoll_ctxs_sz = new_size;
+		}
+	}
+
+	num_fds = fi_epoll_wait(map->epoll_set, map->epoll_ctxs,
+	                        MIN(map->used, map->epoll_ctxs_sz), 0);
 	if (num_fds < 0 || num_fds == 0) {
 		if (num_fds < 0)
-			SOCK_LOG_ERROR("poll failed: %d\n",
-				       num_fds);
+			SOCK_LOG_ERROR("epoll failed: %d\n", num_fds);
 		return num_fds;
 	}
 
 	fastlock_acquire(&map->lock);
 	for (i = 0; i < num_fds; i++) {
-		conn = ep_contexts[i];
+		conn = map->epoll_ctxs[i];
 		if (!conn)
 			SOCK_LOG_ERROR("ofi_idm_lookup failed\n");
 
@@ -2377,11 +2393,7 @@ epoll_wait_retry:
 	}
 	fastlock_release(&map->lock);
 
-	/* There is possibly more fds to progress */
-	if (num_fds == SOCK_EPOLL_WAIT_EVENTS)
-		goto epoll_wait_retry;
-
-	return ret;
+	return 0;
 }
 
 int sock_pe_progress_rx_ctx(struct sock_pe *pe, struct sock_rx_ctx *rx_ctx)
@@ -2427,6 +2439,40 @@ out:
 		SOCK_LOG_ERROR("failed to progress RX ctx\n");
 	fastlock_release(&pe->lock);
 	return ret;
+}
+
+int sock_pe_progress_ep_rx(struct sock_pe *pe, struct sock_ep_attr *ep_attr)
+{
+	struct sock_rx_ctx *rx_ctx;
+	int ret, i;
+
+	for (i = 0; i < ep_attr->ep_attr.rx_ctx_cnt; i++) {
+		rx_ctx = ep_attr->rx_array[i];
+		if (!rx_ctx)
+			continue;
+
+		ret = sock_pe_progress_rx_ctx(pe, rx_ctx);
+		if (ret < 0)
+			return ret;
+	}
+	return 0;
+}
+
+int sock_pe_progress_ep_tx(struct sock_pe *pe, struct sock_ep_attr *ep_attr)
+{
+	struct sock_tx_ctx *tx_ctx;
+	int ret, i;
+
+	for (i = 0; i < ep_attr->ep_attr.tx_ctx_cnt; i++) {
+		tx_ctx = ep_attr->tx_array[i];
+		if (!tx_ctx)
+			continue;
+
+		ret = sock_pe_progress_tx_ctx(pe, tx_ctx);
+		if (ret < 0)
+			return ret;
+	}
+	return 0;
 }
 
 void sock_pe_progress_rx_ctrl_ctx(struct sock_pe *pe, struct sock_rx_ctx *rx_ctx,
@@ -2552,59 +2598,6 @@ static void sock_pe_wait(struct sock_pe *pe)
 	pe->waittime = fi_gettime_ms();
 }
 
-#if !defined __APPLE__ && !defined _WIN32
-static void sock_thread_set_affinity(const char *s)
-{
-	char *saveptra = NULL, *saveptrb = NULL, *saveptrc = NULL;
-	char *dup_s, *a, *b, *c;
-	int j, first, last, stride;
-	cpu_set_t mycpuset;
-	pthread_t mythread;
-
-	mythread = pthread_self();
-	CPU_ZERO(&mycpuset);
-
-	dup_s = strdup(s);
-	if (dup_s == NULL) {
-		SOCK_LOG_ERROR("strdup cannot allocate memory\n");
-		return;
-	}
-
-	a = strtok_r(dup_s, ",", &saveptra);
-	while (a) {
-		first = last = -1;
-		stride = 1;
-		b = strtok_r(a, "-", &saveptrb);
-		assert(b);
-		first = atoi(b);
-		/* Check for range delimiter */
-		b = strtok_r(NULL, "-", &saveptrb);
-		if (b) {
-			c = strtok_r(b, ":", &saveptrc);
-			assert(c);
-			last = atoi(c);
-			/* Check for stride */
-			c = strtok_r(NULL, ":", &saveptrc);
-			if (c)
-				stride = atoi(c);
-		}
-
-		if (last == -1)
-			last = first;
-
-		for (j = first; j <= last; j += stride)
-			CPU_SET(j, &mycpuset);
-		a =  strtok_r(NULL, ",", &saveptra);
-	}
-
-	j = pthread_setaffinity_np(mythread, sizeof(cpu_set_t), &mycpuset);
-	if (j != 0)
-		SOCK_LOG_ERROR("pthread_setaffinity_np failed\n");
-
-	free(dup_s);
-}
-#endif
-
 static void sock_pe_set_affinity(void)
 {
 	char *sock_pe_affinity_str;
@@ -2614,11 +2607,8 @@ static void sock_pe_set_affinity(void)
 	if (sock_pe_affinity_str == NULL)
 		return;
 
-#if !defined __APPLE__ && !defined _WIN32
-	sock_thread_set_affinity(sock_pe_affinity_str);
-#else
-	SOCK_LOG_ERROR("*** FI_SOCKETS_PE_AFFINITY is not supported on OS X\n");
-#endif
+	if (ofi_set_thread_affinity(sock_pe_affinity_str) == -FI_ENOSYS)
+		SOCK_LOG_ERROR("FI_SOCKETS_PE_AFFINITY is not supported on OS X and Windows\n");
 }
 
 static void *sock_pe_progress_thread(void *data)
@@ -2699,6 +2689,7 @@ static void sock_pe_init_table(struct sock_pe *pe)
 struct sock_pe *sock_pe_init(struct sock_domain *domain)
 {
 	struct sock_pe *pe;
+	int ret;
 
 	pe = calloc(1, sizeof(*pe));
 	if (!pe)
@@ -2712,15 +2703,19 @@ struct sock_pe *sock_pe_init(struct sock_domain *domain)
 	pthread_mutex_init(&pe->list_lock, NULL);
 	pe->domain = domain;
 
-	pe->pe_rx_pool = util_buf_pool_create(sizeof(struct sock_pe_entry), 16, 0, 1024);
-	if (!pe->pe_rx_pool) {
+	
+	ret = util_buf_pool_create(&pe->pe_rx_pool,
+				   sizeof(struct sock_pe_entry),
+				   16, 0, 1024);
+	if (ret) {
 		SOCK_LOG_ERROR("failed to create buffer pool\n");
 		goto err1;
 	}
 
-	pe->atomic_rx_pool = util_buf_pool_create(SOCK_EP_MAX_ATOMIC_SZ,
-						  16, 0, 32);
-	if (!pe->atomic_rx_pool) {
+	ret = util_buf_pool_create(&pe->atomic_rx_pool,
+				   SOCK_EP_MAX_ATOMIC_SZ,
+				   16, 0, 32);
+	if (ret) {
 		SOCK_LOG_ERROR("failed to create atomic rx buffer pool\n");
 		goto err2;
 	}

@@ -7,7 +7,7 @@ tagline: Libfabric Programmer's Manual
 
 # NAME
 
-The Verbs Fabric Provider
+fi_verbs \- The Verbs Fabric Provider
 
 # OVERVIEW
 
@@ -22,14 +22,22 @@ and data transfer operations.
 The verbs provider supports a subset of OFI features.
 
 ### Endpoint types
-FI_EP_MSG, FI_EP_RDM (Experimental support FI_MSG, FI_TAGGED, FI_RMA interfaces).
+FI_EP_MSG, FI_EP_RDM
+
+New change in libfabric v1.6:
+FI_EP_RDM is supported through the OFI RxM utility provider. This is done
+automatically when the app requests FI_EP_RDM endpoint. Please refer the
+man page for RxM provider to learn more. The provider's internal support
+for RDM endpoints is deprecated and would be removed from libfabric v1.7
+onwards. Till then apps can explicitly request the internal RDM support by
+disabling ofi_rxm provider through FI_PROVIDER env variable (FI_PROVIDER=^ofi_rxm).
 
 ### Endpoint capabilities and features
 
 #### MSG endpoints
 FI_MSG, FI_RMA, FI_ATOMIC and shared receive contexts.
 
-#### RDM endpoints
+#### RDM endpoints (internal - deprecated)
 FI_MSG, FI_TAGGED, FI_RMA
 
 #### DGRAM endpoints
@@ -38,16 +46,20 @@ FI_MSG
 ### Modes
 Verbs provider requires applications to support the following modes:
 
-  * FI_LOCAL_MR for all applications.
+#### FI_EP_MSG endpoint type
+
+  * FI_LOCAL_MR / FI_MR_LOCAL mr mode.
 
   * FI_RX_CQ_DATA for applications that want to use RMA. Applications must
     take responsibility of posting receives for any incoming CQ data.
 
-  * FI_CONTEXT for applications making uses of the experimental FI_EP_RDM capability.
+#### FI_EP_RDM endpoint type (internal - deprecated)
+
+  * FI_CONTEXT
 
 ### Addressing Formats
 Supported addressing formats include
-  * MSG and RDM EPs support:
+  * MSG and RDM (internal - deprecated) EPs support:
     FI_SOCKADDR, FI_SOCKADDR_IN, FI_SOCKADDR_IN6, FI_SOCKADDR_IB
   * DGRAM supports:
     FI_ADDR_IB_UD
@@ -88,6 +100,18 @@ for restrictions. It can be turned off by setting the FI_FORK_UNSAFE environment
 variable to "yes". This can improve the performance of memory registrations but it
 also makes the use of fork unsafe.
 
+### Memory Registration Cache
+The verbs provider features a memory registration cache. This speeds up memory
+registration calls from applications by caching registrations of frequently used
+memory regions. The user can control the maximum combined size of all cache entries
+and the maximum number of cache entries with the environment variables
+FI_VERBS_MR_MAX_CACHED_SIZE and FI_VERBS_MR_MAX_CACHED_CNT respectively. Look below
+in the environment variables section for details.
+
+Note:
+The memory registration cache framework hooks into alloc and free calls to monitor
+the memory regions. If this doesn't work as expected caching would not be optimal.
+
 # LIMITATIONS
 
 ### Memory Regions
@@ -117,7 +141,7 @@ Scalable endpoints, FABRIC_DIRECT
   * Completion flags are not reported if a request posted to an endpoint completes
     in error.
 
-#### Unsupported features specific to RDM endpoints
+#### Unsupported features specific to RDM (internal - deprecated) endpoints
 The RDM support for verbs have the following limitations:
 
   * Supports iovs of only size 1.
@@ -148,10 +172,10 @@ The verbs provider checks for the following environment variables.
 :  Default maximum rx context size (default: 384)
 
 *FI_VERBS_TX_IOV_LIMIT*
-: Default maximum tx iov_limit (default: 4). Note: RDM EP type supports only 1
+: Default maximum tx iov_limit (default: 4). Note: RDM (internal - deprecated) EP type supports only 1
 
 *FI_VERBS_RX_IOV_LIMIT*
-: Default maximum rx iov_limit (default: 4). Note: RDM EP type supports only 1
+: Default maximum rx iov_limit (default: 4). Note: RDM (internal - deprecated) EP type supports only 1
 
 *FI_VERBS_INLINE_SIZE*
 :  Default maximum inline size. Actual inject size returned in fi_info may be greater (default: 64)
@@ -170,8 +194,16 @@ The verbs provider checks for the following environment variables.
 : The prefix or the full name of the network interface associated with the verbs
   device (default: ib)
 
+*FI_VERBS_MR_CACHE_ENABLE*
+: Enable Memory Registration caching (default: 0)
 
-### Variables specific to RDM endpoints
+*FI_VERBS_MR_MAX_CACHED_CNT*
+: Maximum number of cache entries (default: 4096)
+
+*FI_VERBS_MR_MAX_CACHED_SIZE*
+: Maximum total size of cache entries (default: 4 GB)
+
+### Variables specific to RDM (internal - deprecated) endpoints
 
 *FI_VERBS_RDM_BUFFER_NUM*
 : The number of pre-registered buffers for buffered operations between the endpoints,
@@ -191,6 +223,9 @@ The verbs provider checks for the following environment variables.
   IBV_WR_RDMA_WRITE_WITH_IMM are supported. The last one is not applicable for iWarp.
   (default: IBV_WR_SEND)
 
+*FI_VERBS_RDM_CM_THREAD_AFFINITY*
+: If specified, bind the CM thread to the indicated range(s) of Linux virtual processor ID(s). This option is currently not supported on OS X. Usage: id_start[-id_end[:stride]][,]
+
 ### Variables specific to DGRAM endpoints
 
 *FI_VERBS_DGRAM_USE_NAME_SERVER*
@@ -198,7 +233,7 @@ The verbs provider checks for the following environment variables.
   resolve IP-addresses to provider specific addresses (default: 1, if "OMPI_COMM_WORLD_RANK"
   and "PMI_RANK" environment variables aren't defined)
 
-*FI_VERBS_NAME_SERVVER_PORT*
+*FI_VERBS_NAME_SERVER_PORT*
 : The port on which Name Server thread listens incoming connections and requests (default: 5678)
 
 ### Environment variables notes

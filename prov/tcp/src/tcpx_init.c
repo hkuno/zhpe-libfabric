@@ -32,13 +32,13 @@
 
 #include <rdma/fi_errno.h>
 
-#include <prov.h>
+#include <ofi_prov.h>
 #include "tcpx.h"
 
 #include <sys/types.h>
 #include <ifaddrs.h>
 #include <net/if.h>
-#include <fi_util.h>
+#include <ofi_util.h>
 
 /* TODO: merge with sock_get_list_of_addr() - sock_fabric.c */
 #if HAVE_GETIFADDRS
@@ -87,7 +87,8 @@ static void tcpx_getinfo_ifs(struct fi_info **info)
 			loopback = cur;
 		}
 
-		if ((cur->src_addr = mem_dup(ifa->ifa_addr, addrlen))) {
+		cur->src_addr = mem_dup(ifa->ifa_addr, addrlen);
+		if (cur->src_addr) {
 			cur->src_addrlen = addrlen;
 			cur->addr_format = addr_format;
 		}
@@ -140,7 +141,7 @@ static void fi_tcp_fini(void)
 struct fi_provider tcpx_prov = {
 	.name = "tcp",
 	.version = FI_VERSION(TCPX_MAJOR_VERSION,TCPX_MINOR_VERSION),
-	.fi_version = FI_VERSION(1,5),
+	.fi_version = FI_VERSION(1, 6),
 	.getinfo = tcpx_getinfo,
 	.fabric = tcpx_create_fabric,
 	.cleanup = fi_tcp_fini,

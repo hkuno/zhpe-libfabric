@@ -41,6 +41,7 @@
 #include <complex.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <sys/uio.h>
 
 /* MSG_NOSIGNAL doesn't exist on OS X */
 #ifndef MSG_NOSIGNAL
@@ -144,10 +145,27 @@ static inline ssize_t ofi_sendto_socket(SOCKET fd, const void *buf, size_t count
 	return sendto(fd, buf, count, flags, to, tolen);
 }
 
+static inline ssize_t ofi_writev_socket(SOCKET fd, struct iovec *iov, size_t iov_cnt)
+{
+	return writev(fd, iov, iov_cnt);
+}
+
+static inline ssize_t ofi_readv_socket(SOCKET fd, struct iovec *iov, int iov_cnt)
+{
+	return readv(fd, iov, iov_cnt);
+}
+
+static inline int ofi_shutdown(SOCKET socket, int how)
+{
+	return shutdown(socket, how);
+}
+
 static inline int ofi_close_socket(SOCKET socket)
 {
 	return close(socket);
 }
+
+int fi_fd_nonblock(int fd);
 
 static inline int ofi_sockerr(void)
 {
@@ -228,5 +246,39 @@ OFI_DEF_COMPLEX_OPS(long_double)
 #define ofi_atomic_add_and_fetch(radix, ptr, val) __sync_add_and_fetch((ptr), (val))
 #define ofi_atomic_sub_and_fetch(radix, ptr, val) __sync_sub_and_fetch((ptr), (val))
 #endif /* HAVE_BUILTIN_ATOMICS */
+
+int ofi_set_thread_affinity(const char *s);
+
+
+#if defined(HAVE_CPUID) && (defined(__x86_64__) || defined(__amd64__))
+
+#include <cpuid.h>
+
+static inline void
+ofi_cpuid(unsigned func, unsigned subfunc, unsigned cpuinfo[4])
+{
+	__cpuid_count(func, subfunc, cpuinfo[0], cpuinfo[1],
+		      cpuinfo[2], cpuinfo[3]);
+}
+
+#define ofi_clwb(addr) \
+	asm volatile(".byte 0x66; xsaveopt %0" : "+m" (*(volatile char *) (addr)))
+#define ofi_clflushopt(addr) \
+	asm volatile(".byte 0x66; clflush %0" : "+m" (*(volatile char *) addr))
+#define ofi_clflush(addr) \
+	asm volatile("clflush %0" : "+m" (*(volatile char *) addr))
+#define ofi_sfence() asm volatile("sfence" ::: "memory")
+
+#else /* defined(__x86_64__) || defined(__amd64__) */
+
+#define ofi_cpuid(func, subfunc, cpuinfo)
+#define ofi_clwb(addr)
+#define ofi_clflushopt(addr)
+#define ofi_clflush(addr)
+#define ofi_sfence()
+
+#endif /* defined(__x86_64__) || defined(__amd64__) */
+
+
 
 #endif /* _FI_UNIX_OSD_H_ */

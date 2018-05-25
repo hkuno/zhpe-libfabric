@@ -34,9 +34,9 @@
 
 #include "netdir.h"
 #include "netdir_buf.h"
-#include "prov.h"
-#include "fi_util.h"
-#include "fi_mem.h"
+#include "ofi_prov.h"
+#include "ofi_util.h"
+#include "ofi_mem.h"
 
 #include "netdir_ov.h"
 #include "netdir_iface.h"
@@ -123,7 +123,6 @@ static int ofi_nd_adapter_cb(const ND2_ADAPTER_INFO *adapter, const char *name)
 
 	info->caps = OFI_ND_CAPS;
 	info->addr_format = FI_SOCKADDR;
-	info->mode = FI_LOCAL_MR;
 
 	if (!ofi_nd_util_prov.info) {
 		ofi_nd_util_prov.info = info;

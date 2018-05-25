@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2017 Intel Corporation. All rights reserved.
+ * Copyright (c) 2013-2018 Intel Corporation. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -31,11 +31,12 @@
  */
 
 #include "psmx2.h"
+#include "psmx2_trigger.h"
 
 /* Atomics protocol:
  *
  * Atomics REQ:
- *	args[0].u32w0	cmd, dst_vl
+ *	args[0].u32w0	cmd
  *	args[0].u32w1	count
  *	args[1].u64	req
  *	args[2].u64	addr
@@ -409,9 +410,9 @@ static int psmx2_atomic_do_compwrite(void *dest, void *src, void *compare,
 	return 0;
 }
 
-int psmx2_am_atomic_handler_ext(psm2_am_token_t token,
+int psmx2_am_atomic_handler(psm2_am_token_t token,
 				psm2_amarg_t *args, int nargs, void *src,
-				uint32_t len, struct psmx2_trx_ctxt *trx_ctxt)
+				uint32_t len, void *hctx)
 {
 	psm2_amarg_t rep_args[8];
 	int count;
@@ -423,30 +424,19 @@ int psmx2_am_atomic_handler_ext(psm2_am_token_t token,
 	struct psmx2_am_request *req;
 	struct psmx2_cq_event *event;
 	struct psmx2_fid_mr *mr;
-	struct psmx2_fid_domain *domain;
-	struct psmx2_fid_ep *target_ep;
 	struct psmx2_fid_cntr *cntr = NULL;
 	struct psmx2_fid_cntr *mr_cntr = NULL;
 	void *tmp_buf;
 	psm2_epaddr_t epaddr;
-	uint8_t vlane;
 	int cmd;
+	struct psmx2_trx_ctxt *rx;
 
 	psm2_am_get_source(token, &epaddr);
-
 	cmd = PSMX2_AM_GET_OP(args[0].u32w0);
-	domain = psmx2_active_fabric->active_domain;
-
-	if (trx_ctxt->ep) {
-		vlane = 0;
-		target_ep = trx_ctxt->ep;
-	} else {
-		vlane = PSMX2_AM_GET_DST(args[0].u32w0);
-		target_ep = domain->eps[vlane];
-	}
 
 	switch (cmd) {
 	case PSMX2_AM_REQ_ATOMIC_WRITE:
+		rx = (struct psmx2_trx_ctxt *)hctx;
 		count = args[0].u32w1;
 		addr = (uint8_t *)(uintptr_t)args[2].u64;
 		key = args[3].u64;
@@ -454,7 +444,7 @@ int psmx2_am_atomic_handler_ext(psm2_am_token_t token,
 		op = args[4].u32w1;
 		assert(len == ofi_datatype_size(datatype) * count);
 
-		mr = psmx2_mr_get(domain, key);
+		mr = psmx2_mr_get(rx->domain, key);
 		op_error = mr ?
 			psmx2_mr_validate(mr, (uint64_t)addr, len, FI_REMOTE_WRITE) :
 			-FI_EINVAL;
@@ -463,7 +453,7 @@ int psmx2_am_atomic_handler_ext(psm2_am_token_t token,
 			addr += mr->offset;
 			psmx2_atomic_do_write(addr, src, datatype, op, count);
 
-			cntr = target_ep->remote_write_cntr;
+			cntr = rx->ep->remote_write_cntr;
 			mr_cntr = mr->cntr;
 
 			if (cntr)
@@ -482,6 +472,7 @@ int psmx2_am_atomic_handler_ext(psm2_am_token_t token,
 		break;
 
 	case PSMX2_AM_REQ_ATOMIC_READWRITE:
+		rx = (struct psmx2_trx_ctxt *)hctx;
 		count = args[0].u32w1;
 		addr = (uint8_t *)(uintptr_t)args[2].u64;
 		key = args[3].u64;
@@ -493,7 +484,7 @@ int psmx2_am_atomic_handler_ext(psm2_am_token_t token,
 
 		assert(len == ofi_datatype_size(datatype) * count);
 
-		mr = psmx2_mr_get(domain, key);
+		mr = psmx2_mr_get(rx->domain, key);
 		op_error = mr ?
 			psmx2_mr_validate(mr, (uint64_t)addr, len,
 					  FI_REMOTE_READ|FI_REMOTE_WRITE) :
@@ -509,9 +500,9 @@ int psmx2_am_atomic_handler_ext(psm2_am_token_t token,
 				op_error = -FI_ENOMEM;
 
 			if (op == FI_ATOMIC_READ) {
-				cntr = target_ep->remote_read_cntr;
+				cntr = rx->ep->remote_read_cntr;
 			} else {
-				cntr = target_ep->remote_write_cntr;
+				cntr = rx->ep->remote_write_cntr;
 				mr_cntr = mr->cntr;
 			}
 
@@ -534,6 +525,7 @@ int psmx2_am_atomic_handler_ext(psm2_am_token_t token,
 		break;
 
 	case PSMX2_AM_REQ_ATOMIC_COMPWRITE:
+		rx = (struct psmx2_trx_ctxt *)hctx;
 		count = args[0].u32w1;
 		addr = (uint8_t *)(uintptr_t)args[2].u64;
 		key = args[3].u64;
@@ -542,7 +534,7 @@ int psmx2_am_atomic_handler_ext(psm2_am_token_t token,
 		len /= 2;
 		assert(len == ofi_datatype_size(datatype) * count);
 
-		mr = psmx2_mr_get(domain, key);
+		mr = psmx2_mr_get(rx->domain, key);
 		op_error = mr ?
 			psmx2_mr_validate(mr, (uint64_t)addr, len,
 					  FI_REMOTE_READ|FI_REMOTE_WRITE) :
@@ -558,7 +550,7 @@ int psmx2_am_atomic_handler_ext(psm2_am_token_t token,
 			else
 				op_error = -FI_ENOMEM;
 
-			cntr = target_ep->remote_write_cntr;
+			cntr = rx->ep->remote_write_cntr;
 			mr_cntr = mr->cntr;
 
 			if (cntr)
@@ -604,7 +596,7 @@ int psmx2_am_atomic_handler_ext(psm2_am_token_t token,
 			psmx2_cntr_inc(req->ep->write_cntr);
 
 		free(req->tmpbuf);
-		psmx2_am_request_free(req->ep->trx_ctxt, req);
+		psmx2_am_request_free(req->ep->tx, req);
 		break;
 
 	case PSMX2_AM_REP_ATOMIC_READWRITE:
@@ -642,7 +634,7 @@ int psmx2_am_atomic_handler_ext(psm2_am_token_t token,
 			psmx2_cntr_inc(req->ep->read_cntr);
 
 		free(req->tmpbuf);
-		psmx2_am_request_free(req->ep->trx_ctxt, req);
+		psmx2_am_request_free(req->ep->tx, req);
 		break;
 
 	default:
@@ -653,7 +645,6 @@ int psmx2_am_atomic_handler_ext(psm2_am_token_t token,
 
 static int psmx2_atomic_self(int am_cmd,
 			     struct psmx2_fid_ep *ep,
-			     struct psmx2_fid_ep *target_ep,
 			     const void *buf,
 			     size_t count, void *desc,
 			     const void *compare, void *compare_desc,
@@ -681,7 +672,7 @@ static int psmx2_atomic_self(int am_cmd,
 		access = FI_REMOTE_READ | FI_REMOTE_WRITE;
 
 	len = ofi_datatype_size(datatype) * count;
-	mr = psmx2_mr_get(psmx2_active_fabric->active_domain, key);
+	mr = psmx2_mr_get(ep->domain, key);
 	op_error = mr ?  psmx2_mr_validate(mr, addr, len, access) : -FI_EINVAL;
 
 	if (op_error)
@@ -743,9 +734,9 @@ static int psmx2_atomic_self(int am_cmd,
 	}
 
 	if (op == FI_ATOMIC_READ) {
-		cntr = target_ep->remote_read_cntr;
+		cntr = ep->remote_read_cntr;
 	} else {
-		cntr = target_ep->remote_write_cntr;
+		cntr = ep->remote_write_cntr;
 		mr_cntr = mr->cntr;
 	}
 
@@ -805,94 +796,57 @@ ssize_t psmx2_atomic_write_generic(struct fid_ep *ep,
 	struct psmx2_am_request *req;
 	psm2_amarg_t args[8];
 	psm2_epaddr_t psm2_epaddr;
-	uint8_t vlane;
 	int am_flags = PSM2_AM_FLAG_ASYNC;
 	int chunk_size, len;
 	size_t idx;
 	int err;
-	int sep_target = 0;
 
 	ep_priv = container_of(ep, struct psmx2_fid_ep, ep);
 
-	if (flags & FI_TRIGGER) {
-		struct psmx2_trigger *trigger;
-		struct fi_triggered_context *ctxt = context;
+	if (flags & FI_TRIGGER)
+		return psmx2_trigger_queue_atomic_write(ep, buf, count, desc,
+							dest_addr, addr, key,
+							datatype, op, context,
+							flags);
 
-		trigger = calloc(1, sizeof(*trigger));
-		if (!trigger)
-			return -FI_ENOMEM;
-
-		trigger->op = PSMX2_TRIGGERED_ATOMIC_WRITE;
-		trigger->cntr = container_of(ctxt->trigger.threshold.cntr,
-					     struct psmx2_fid_cntr, cntr);
-		trigger->threshold = ctxt->trigger.threshold.threshold;
-		trigger->atomic_write.ep = ep;
-		trigger->atomic_write.buf = buf;
-		trigger->atomic_write.count = count;
-		trigger->atomic_write.desc = desc;
-		trigger->atomic_write.dest_addr = dest_addr;
-		trigger->atomic_write.addr = addr;
-		trigger->atomic_write.key = key;
-		trigger->atomic_write.datatype = datatype;
-		trigger->atomic_write.atomic_op = op;
-		trigger->atomic_write.context = context;
-		trigger->atomic_write.flags = flags & ~FI_TRIGGER;
-
-		psmx2_cntr_add_trigger(trigger->cntr, trigger);
-		return 0;
-	}
-
-	if (!buf)
-		return -FI_EINVAL;
-
-	if ((int)datatype < 0 || (int)datatype >= FI_DATATYPE_LAST)
-		return -FI_EINVAL;
-
-	if ((int)op < 0 || (int)op >= FI_ATOMIC_OP_LAST)
-		return -FI_EINVAL;
+	assert(buf);
+	assert((int)datatype >= 0 && (int)datatype < FI_DATATYPE_LAST);
+	assert((int)op >= 0 && (int)op < FI_ATOMIC_OP_LAST);
 
 	av = ep_priv->av;
 	if (av && PSMX2_SEP_ADDR_TEST(dest_addr)) {
-		psm2_epaddr = psmx2_av_translate_sep(av, ep_priv->trx_ctxt, dest_addr);
-		vlane = 0;
-		sep_target = 1;
+		psm2_epaddr = psmx2_av_translate_sep(av, ep_priv->tx, dest_addr);
 	} else  if (av && av->type == FI_AV_TABLE) {
 		idx = dest_addr;
-		if ((err = psmx2_av_check_table_idx(av, idx)))
+		if ((err = psmx2_av_check_table_idx(av, ep_priv->tx, idx)))
 			return err;
 
-		psm2_epaddr = av->epaddrs[idx];
-		vlane = av->vlanes[idx];
+		psm2_epaddr = av->tables[ep_priv->tx->id].epaddrs[idx];
 	} else {
-		 if (!dest_addr)
-			return -FI_EINVAL;
-
+		assert(dest_addr);
 		psm2_epaddr = PSMX2_ADDR_TO_EP(dest_addr);
-		vlane = PSMX2_ADDR_TO_VL(dest_addr);
 	}
 
 	epaddr_context = psm2_epaddr_getctxt((void *)psm2_epaddr);
-	if (epaddr_context->epid == ep_priv->trx_ctxt->psm2_epid)
+	if (epaddr_context->epid == ep_priv->tx->psm2_epid)
 		return psmx2_atomic_self(PSMX2_AM_REQ_ATOMIC_WRITE, ep_priv,
-					 (sep_target ? ep_priv :
-					   ep_priv->domain->eps[vlane]),
 					 buf, count, desc, NULL, NULL, NULL,
 					 NULL, addr, key, datatype, op,
 					 context, flags);
 
-	chunk_size = ep_priv->trx_ctxt->psm2_am_param.max_request_short;
+	chunk_size = ep_priv->tx->psm2_am_param.max_request_short;
 	len = ofi_datatype_size(datatype)* count;
 	if (len > chunk_size)
 		return -FI_EMSGSIZE;
 
-	req = psmx2_am_request_alloc(ep_priv->trx_ctxt);
+	req = psmx2_am_request_alloc(ep_priv->tx);
 	if (!req)
 		return -FI_ENOMEM;
 
 	if (flags & FI_INJECT) {
 		req->tmpbuf = malloc(len);
 		if (!req->tmpbuf) {
-			psmx2_am_request_free(ep_priv->trx_ctxt, req);
+			psmx2_am_request_free(ep_priv->tx, req);
 			return -FI_ENOMEM;
 		}
 
@@ -914,7 +868,6 @@ ssize_t psmx2_atomic_write_generic(struct fid_ep *ep,
 	req->cq_flags = FI_WRITE | FI_ATOMIC;
 
 	args[0].u32w0 = PSMX2_AM_REQ_ATOMIC_WRITE;
-	PSMX2_AM_SET_DST(args[0].u32w0, vlane);
 	args[0].u32w1 = count;
 	args[1].u64 = (uint64_t)(uintptr_t)req;
 	args[2].u64 = addr;
@@ -943,81 +896,47 @@ ssize_t psmx2_atomic_writev_generic(struct fid_ep *ep,
 	struct psmx2_am_request *req;
 	psm2_amarg_t args[8];
 	psm2_epaddr_t psm2_epaddr;
-	uint8_t vlane;
 	int am_flags = PSM2_AM_FLAG_ASYNC;
 	int chunk_size;
 	size_t idx;
 	size_t len;
 	uint8_t *buf;
 	int err;
-	int sep_target = 0;
 
 	ep_priv = container_of(ep, struct psmx2_fid_ep, ep);
 
-	if (flags & FI_TRIGGER) {
-		struct psmx2_trigger *trigger;
-		struct fi_triggered_context *ctxt = context;
+	if (flags & FI_TRIGGER)
+		return psmx2_trigger_queue_atomic_writev(ep, iov, desc, count,
+							 dest_addr, addr, key,
+							 datatype, op, context,
+							 flags);
 
-		trigger = calloc(1, sizeof(*trigger));
-		if (!trigger)
-			return -FI_ENOMEM;
-
-		trigger->op = PSMX2_TRIGGERED_ATOMIC_WRITEV;
-		trigger->cntr = container_of(ctxt->trigger.threshold.cntr,
-					     struct psmx2_fid_cntr, cntr);
-		trigger->threshold = ctxt->trigger.threshold.threshold;
-		trigger->atomic_writev.ep = ep;
-		trigger->atomic_writev.iov = iov;
-		trigger->atomic_writev.count = count;
-		trigger->atomic_writev.desc = desc;
-		trigger->atomic_writev.dest_addr = dest_addr;
-		trigger->atomic_writev.addr = addr;
-		trigger->atomic_writev.key = key;
-		trigger->atomic_writev.datatype = datatype;
-		trigger->atomic_writev.atomic_op = op;
-		trigger->atomic_writev.context = context;
-		trigger->atomic_writev.flags = flags & ~FI_TRIGGER;
-
-		psmx2_cntr_add_trigger(trigger->cntr, trigger);
-		return 0;
-	}
-
-	if (!iov || !count)
-		return -FI_EINVAL;
+	assert(iov);
+	assert(count);
+	assert((int)datatype >= 0 && (int)datatype < FI_DATATYPE_LAST);
+	assert((int)op >= 0 && (int)op < FI_ATOMIC_OP_LAST);
 
 	while (count && !iov[count-1].count)
 		count--;
 
-	if ((int)datatype < 0 || (int)datatype >= FI_DATATYPE_LAST)
-		return -FI_EINVAL;
-
-	if ((int)op < 0 || (int)op >= FI_ATOMIC_OP_LAST)
-		return -FI_EINVAL;
-
 	av = ep_priv->av;
 	if (av && PSMX2_SEP_ADDR_TEST(dest_addr)) {
-		psm2_epaddr = psmx2_av_translate_sep(av, ep_priv->trx_ctxt, dest_addr);
-		vlane = 0;
-		sep_target = 1;
+		psm2_epaddr = psmx2_av_translate_sep(av, ep_priv->tx, dest_addr);
 	} else if (av && av->type == FI_AV_TABLE) {
 		idx = dest_addr;
-		if ((err = psmx2_av_check_table_idx(av, idx)))
+		if ((err = psmx2_av_check_table_idx(av, ep_priv->tx, idx)))
 			return err;
 
-		psm2_epaddr = av->epaddrs[idx];
-		vlane = av->vlanes[idx];
+		psm2_epaddr = av->tables[ep_priv->tx->id].epaddrs[idx];
 	} else {
-		 if (!dest_addr)
-			return -FI_EINVAL;
-
+		assert(dest_addr);
 		psm2_epaddr = PSMX2_ADDR_TO_EP(dest_addr);
-		vlane = PSMX2_ADDR_TO_VL(dest_addr);
 	}
 
 	len = psmx2_ioc_size(iov, count, datatype);
 
 	epaddr_context = psm2_epaddr_getctxt((void *)psm2_epaddr);
-	if (epaddr_context->epid == ep_priv->trx_ctxt->psm2_epid) {
+	if (epaddr_context->epid == ep_priv->tx->psm2_epid) {
 		buf = malloc(len);
 		if (!buf)
 			return -FI_ENOMEM;
@@ -1025,8 +944,6 @@ ssize_t psmx2_atomic_writev_generic(struct fid_ep *ep,
 		psmx2_ioc_read(iov, count, datatype, buf, len);
 
 		err = psmx2_atomic_self(PSMX2_AM_REQ_ATOMIC_WRITE, ep_priv,
-					(sep_target ? ep_priv :
-					  ep_priv->domain->eps[vlane]),
 					buf, len / ofi_datatype_size(datatype),
 					NULL, NULL, NULL, NULL, NULL, addr,
 					key, datatype, op, context, flags);
@@ -1035,18 +952,18 @@ ssize_t psmx2_atomic_writev_generic(struct fid_ep *ep,
 		return err;
 	}
 
-	chunk_size = ep_priv->trx_ctxt->psm2_am_param.max_request_short;
+	chunk_size = ep_priv->tx->psm2_am_param.max_request_short;
 	if (len > chunk_size)
 		return -FI_EMSGSIZE;
 
-	req = psmx2_am_request_alloc(ep_priv->trx_ctxt);
+	req = psmx2_am_request_alloc(ep_priv->tx);
 	if (!req)
 		return -FI_ENOMEM;
 
 	if (count > 1) {
 		req->tmpbuf = malloc(len);
 		if (!req->tmpbuf) {
-			psmx2_am_request_free(ep_priv->trx_ctxt, req);
+			psmx2_am_request_free(ep_priv->tx, req);
 			return -FI_ENOMEM;
 		}
 
@@ -1070,7 +987,6 @@ ssize_t psmx2_atomic_writev_generic(struct fid_ep *ep,
 	req->cq_flags = FI_WRITE | FI_ATOMIC;
 
 	args[0].u32w0 = PSMX2_AM_REQ_ATOMIC_WRITE;
-	PSMX2_AM_SET_DST(args[0].u32w0, vlane);
 	args[0].u32w1 = len / ofi_datatype_size(datatype);
 	args[1].u64 = (uint64_t)(uintptr_t)req;
 	args[2].u64 = addr;
@@ -1104,9 +1020,11 @@ static ssize_t psmx2_atomic_writemsg(struct fid_ep *ep,
 				const struct fi_msg_atomic *msg,
 				uint64_t flags)
 {
-	if (!msg || !msg->iov_count || !msg->msg_iov || !msg->rma_iov ||
-	    msg->rma_iov_count != 1)
-		return -FI_EINVAL;
+	assert(msg);
+	assert(msg->iov_count);
+	assert(msg->msg_iov);
+	assert(msg->rma_iov);
+	assert(msg->rma_iov_count == 1);
 
 	if (msg->iov_count > 1)
 		return psmx2_atomic_writev_generic(ep, msg->msg_iov, msg->desc,
@@ -1136,8 +1054,8 @@ static ssize_t psmx2_atomic_writev(struct fid_ep *ep,
 
 	ep_priv = container_of(ep, struct psmx2_fid_ep, ep);
 
-	if (!iov || !count)
-		return -FI_EINVAL;
+	assert(iov);
+	assert(count);
 
 	if (count > 1)
 		return psmx2_atomic_writev_generic(ep, iov, desc, count,
@@ -1184,97 +1102,59 @@ ssize_t psmx2_atomic_readwrite_generic(struct fid_ep *ep,
 	struct psmx2_am_request *req;
 	psm2_amarg_t args[8];
 	psm2_epaddr_t psm2_epaddr;
-	uint8_t vlane;
 	int am_flags = PSM2_AM_FLAG_ASYNC;
 	int chunk_size, len;
 	size_t idx;
 	int err;
-	int sep_target = 0;
 
 	ep_priv = container_of(ep, struct psmx2_fid_ep, ep);
 
-	if (flags & FI_TRIGGER) {
-		struct psmx2_trigger *trigger;
-		struct fi_triggered_context *ctxt = context;
+	if (flags & FI_TRIGGER)
+		return psmx2_trigger_queue_atomic_readwrite(ep, buf, count,
+							    desc, result,
+							    result_desc,
+							    dest_addr, addr,
+							    key, datatype, op,
+							    context, flags);
 
-		trigger = calloc(1, sizeof(*trigger));
-		if (!trigger)
-			return -FI_ENOMEM;
-
-		trigger->op = PSMX2_TRIGGERED_ATOMIC_READWRITE;
-		trigger->cntr = container_of(ctxt->trigger.threshold.cntr,
-					     struct psmx2_fid_cntr, cntr);
-		trigger->threshold = ctxt->trigger.threshold.threshold;
-		trigger->atomic_readwrite.ep = ep;
-		trigger->atomic_readwrite.buf = buf;
-		trigger->atomic_readwrite.count = count;
-		trigger->atomic_readwrite.desc = desc;
-		trigger->atomic_readwrite.result = result;
-		trigger->atomic_readwrite.result_desc = result_desc;
-		trigger->atomic_readwrite.dest_addr = dest_addr;
-		trigger->atomic_readwrite.addr = addr;
-		trigger->atomic_readwrite.key = key;
-		trigger->atomic_readwrite.datatype = datatype;
-		trigger->atomic_readwrite.atomic_op = op;
-		trigger->atomic_readwrite.context = context;
-		trigger->atomic_readwrite.flags = flags & ~FI_TRIGGER;
-
-		psmx2_cntr_add_trigger(trigger->cntr, trigger);
-		return 0;
-	}
-
-	if (!buf && op != FI_ATOMIC_READ)
-		return -FI_EINVAL;
-
-	if ((int)datatype < 0 || (int)datatype >= FI_DATATYPE_LAST)
-		return -FI_EINVAL;
-
-	if ((int)op < 0 || (int)op >= FI_ATOMIC_OP_LAST)
-		return -FI_EINVAL;
+	assert(buf || op == FI_ATOMIC_READ);
+	assert((int)datatype >= 0 && (int)datatype < FI_DATATYPE_LAST);
+	assert((int)op >= 0 && (int)op < FI_ATOMIC_OP_LAST);
 
 	av = ep_priv->av;
 	if (av && PSMX2_SEP_ADDR_TEST(dest_addr)) {
-		psm2_epaddr = psmx2_av_translate_sep(av, ep_priv->trx_ctxt, dest_addr);
-		vlane = 0;
-		sep_target = 1;
+		psm2_epaddr = psmx2_av_translate_sep(av, ep_priv->tx, dest_addr);
 	} else if (av && av->type == FI_AV_TABLE) {
 		idx = dest_addr;
-		if ((err = psmx2_av_check_table_idx(av, idx)))
+		if ((err = psmx2_av_check_table_idx(av, ep_priv->tx, idx)))
 			return err;
 
-		psm2_epaddr = av->epaddrs[idx];
-		vlane = av->vlanes[idx];
+		psm2_epaddr = av->tables[ep_priv->tx->id].epaddrs[idx];
 	} else {
-		if (!dest_addr)
-			return -FI_EINVAL;
-
+		assert(dest_addr);
 		psm2_epaddr = PSMX2_ADDR_TO_EP(dest_addr);
-		vlane = PSMX2_ADDR_TO_VL(dest_addr);
 	}
 
 	epaddr_context = psm2_epaddr_getctxt((void *)psm2_epaddr);
-	if (epaddr_context->epid == ep_priv->trx_ctxt->psm2_epid)
-		return psmx2_atomic_self(PSMX2_AM_REQ_ATOMIC_READWRITE,
-					 ep_priv,
-					 (sep_target ? ep_priv :
-					   ep_priv->domain->eps[vlane]),
+	if (epaddr_context->epid == ep_priv->tx->psm2_epid)
+		return psmx2_atomic_self(PSMX2_AM_REQ_ATOMIC_READWRITE, ep_priv,
 					 buf, count, desc, NULL, NULL, result,
 					 result_desc, addr, key, datatype, op,
 					 context, flags);
 
-	chunk_size = ep_priv->trx_ctxt->psm2_am_param.max_request_short;
+	chunk_size = ep_priv->tx->psm2_am_param.max_request_short;
 	len = ofi_datatype_size(datatype) * count;
 	if (len > chunk_size)
 		return -FI_EMSGSIZE;
 
-	req = psmx2_am_request_alloc(ep_priv->trx_ctxt);
+	req = psmx2_am_request_alloc(ep_priv->tx);
 	if (!req)
 		return -FI_ENOMEM;
 
 	if ((flags & FI_INJECT) && op != FI_ATOMIC_READ) {
 		req->tmpbuf = malloc(len);
 		if (!req->tmpbuf) {
-			psmx2_am_request_free(ep_priv->trx_ctxt, req);
+			psmx2_am_request_free(ep_priv->tx, req);
 			return -FI_ENOMEM;
 		}
 
@@ -1300,7 +1180,6 @@ ssize_t psmx2_atomic_readwrite_generic(struct fid_ep *ep,
 		req->cq_flags = FI_WRITE | FI_ATOMIC;
 
 	args[0].u32w0 = PSMX2_AM_REQ_ATOMIC_READWRITE;
-	PSMX2_AM_SET_DST(args[0].u32w0, vlane);
 	args[0].u32w1 = count;
 	args[1].u64 = (uint64_t)(uintptr_t)req;
 	args[2].u64 = addr;
@@ -1332,7 +1211,6 @@ ssize_t psmx2_atomic_readwritev_generic(struct fid_ep *ep,
 	struct psmx2_am_request *req;
 	psm2_amarg_t args[8];
 	psm2_epaddr_t psm2_epaddr;
-	uint8_t vlane;
 	int am_flags = PSM2_AM_FLAG_ASYNC;
 	int chunk_size;
 	size_t idx;
@@ -1340,44 +1218,23 @@ ssize_t psmx2_atomic_readwritev_generic(struct fid_ep *ep,
 	uint8_t *buf, *result;
 	void *desc0, *result_desc0;
 	int err;
-	int sep_target = 0;
 
 	ep_priv = container_of(ep, struct psmx2_fid_ep, ep);
 
-	if (flags & FI_TRIGGER) {
-		struct psmx2_trigger *trigger;
-		struct fi_triggered_context *ctxt = context;
+	if (flags & FI_TRIGGER)
+		return psmx2_trigger_queue_atomic_readwritev(ep, iov, desc,
+							     count, resultv,
+							     result_desc,
+							     result_count,
+							     dest_addr, addr,
+							     key, datatype, op,
+							     context, flags);
 
-		trigger = calloc(1, sizeof(*trigger));
-		if (!trigger)
-			return -FI_ENOMEM;
-
-		trigger->op = PSMX2_TRIGGERED_ATOMIC_READWRITEV;
-		trigger->cntr = container_of(ctxt->trigger.threshold.cntr,
-					     struct psmx2_fid_cntr, cntr);
-		trigger->threshold = ctxt->trigger.threshold.threshold;
-		trigger->atomic_readwritev.ep = ep;
-		trigger->atomic_readwritev.iov = iov;
-		trigger->atomic_readwritev.count = count;
-		trigger->atomic_readwritev.desc = desc;
-		trigger->atomic_readwritev.resultv = resultv;
-		trigger->atomic_readwritev.result_desc = result_desc;
-		trigger->atomic_readwritev.result_count = result_count;
-		trigger->atomic_readwritev.dest_addr = dest_addr;
-		trigger->atomic_readwritev.addr = addr;
-		trigger->atomic_readwritev.key = key;
-		trigger->atomic_readwritev.datatype = datatype;
-		trigger->atomic_readwritev.atomic_op = op;
-		trigger->atomic_readwritev.context = context;
-		trigger->atomic_readwritev.flags = flags & ~FI_TRIGGER;
-
-		psmx2_cntr_add_trigger(trigger->cntr, trigger);
-		return 0;
-	}
-
-	if (((!iov || !count) && op != FI_ATOMIC_READ) || !resultv ||
-	    !result_count)
-		return -FI_EINVAL;
+	assert((iov && count) || op == FI_ATOMIC_READ);
+	assert(resultv);
+	assert(result_count);
+	assert((int)datatype >= 0 && (int)datatype < FI_DATATYPE_LAST);
+	assert((int)op >= 0 && (int)op < FI_ATOMIC_OP_LAST);
 
 	if (iov) {
 		while (count && !iov[count-1].count)
@@ -1386,12 +1243,6 @@ ssize_t psmx2_atomic_readwritev_generic(struct fid_ep *ep,
 
 	while (result_count && !resultv[result_count-1].count)
 		result_count--;
-
-	if ((int)datatype < 0 || (int)datatype >= FI_DATATYPE_LAST)
-		return -FI_EINVAL;
-
-	if ((int)op < 0 || (int)op >= FI_ATOMIC_OP_LAST)
-		return -FI_EINVAL;
 
 	result_len = psmx2_ioc_size(resultv, result_count, datatype);
 
@@ -1405,31 +1256,24 @@ ssize_t psmx2_atomic_readwritev_generic(struct fid_ep *ep,
 		desc0 = NULL;
 	}
 
-	if (result_len < len)
-		return -FI_EINVAL;
+	assert(result_len >= len);
 
 	av = ep_priv->av;
 	if (av && PSMX2_SEP_ADDR_TEST(dest_addr)) {
-		psm2_epaddr = psmx2_av_translate_sep(av, ep_priv->trx_ctxt, dest_addr);
-		vlane = 0;
-		sep_target = 1;
+		psm2_epaddr = psmx2_av_translate_sep(av, ep_priv->tx, dest_addr);
 	} else if (av && av->type == FI_AV_TABLE) {
 		idx = dest_addr;
-		if ((err = psmx2_av_check_table_idx(av, idx)))
+		if ((err = psmx2_av_check_table_idx(av, ep_priv->tx, idx)))
 			return err;
 
-		psm2_epaddr = av->epaddrs[idx];
-		vlane = av->vlanes[idx];
+		psm2_epaddr = av->tables[ep_priv->tx->id].epaddrs[idx];
 	} else {
-		if (!dest_addr)
-			return -FI_EINVAL;
-
+		assert(dest_addr);
 		psm2_epaddr = PSMX2_ADDR_TO_EP(dest_addr);
-		vlane = PSMX2_ADDR_TO_VL(dest_addr);
 	}
 
 	epaddr_context = psm2_epaddr_getctxt((void *)psm2_epaddr);
-	if (epaddr_context->epid == ep_priv->trx_ctxt->psm2_epid) {
+	if (epaddr_context->epid == ep_priv->tx->psm2_epid) {
 		if (buf && count > 1) {
 			buf = malloc(len);
 			psmx2_ioc_read(iov, count, datatype, buf, len);
@@ -1449,10 +1293,7 @@ ssize_t psmx2_atomic_readwritev_generic(struct fid_ep *ep,
 			result_desc0 = NULL;
 		}
 
-		err = psmx2_atomic_self(PSMX2_AM_REQ_ATOMIC_READWRITE,
-					ep_priv,
-					(sep_target ? ep_priv :
-					  ep_priv->domain->eps[vlane]),
+		err = psmx2_atomic_self(PSMX2_AM_REQ_ATOMIC_READWRITE, ep_priv,
 					buf, len / ofi_datatype_size(datatype),
 					desc0, NULL, NULL, result, result_desc0,
 					addr, key, datatype, op, context, flags);
@@ -1468,20 +1309,20 @@ ssize_t psmx2_atomic_readwritev_generic(struct fid_ep *ep,
 		return err;
 	}
 
-	chunk_size = ep_priv->trx_ctxt->psm2_am_param.max_request_short;
+	chunk_size = ep_priv->tx->psm2_am_param.max_request_short;
 	if (len > chunk_size)
 		return -FI_EMSGSIZE;
 
 	iov_size = result_count > 1 ? result_count * sizeof(struct fi_ioc) : 0;
 
-	req = psmx2_am_request_alloc(ep_priv->trx_ctxt);
+	req = psmx2_am_request_alloc(ep_priv->tx);
 	if (!req)
 		return -FI_ENOMEM;
 
 	if (((flags & FI_INJECT) || count > 1) && op != FI_ATOMIC_READ) {
 		req->tmpbuf = malloc(iov_size + len);
 		if (!req->tmpbuf) {
-			psmx2_am_request_free(ep_priv->trx_ctxt, req);
+			psmx2_am_request_free(ep_priv->tx, req);
 			return -FI_ENOMEM;
 		}
 
@@ -1490,7 +1331,7 @@ ssize_t psmx2_atomic_readwritev_generic(struct fid_ep *ep,
 	} else {
 		req->tmpbuf = malloc(iov_size);
 		if (!req->tmpbuf) {
-			psmx2_am_request_free(ep_priv->trx_ctxt, req);
+			psmx2_am_request_free(ep_priv->tx, req);
 			return -FI_ENOMEM;
 		}
 	}
@@ -1522,7 +1363,6 @@ ssize_t psmx2_atomic_readwritev_generic(struct fid_ep *ep,
 		req->cq_flags = FI_WRITE | FI_ATOMIC;
 
 	args[0].u32w0 = PSMX2_AM_REQ_ATOMIC_READWRITE;
-	PSMX2_AM_SET_DST(args[0].u32w0, vlane);
 	args[0].u32w1 = len / ofi_datatype_size(datatype);
 	args[1].u64 = (uint64_t)(uintptr_t)req;
 	args[2].u64 = addr;
@@ -1565,12 +1405,12 @@ static ssize_t psmx2_atomic_readwritemsg(struct fid_ep *ep,
 	size_t count;
 	void *desc;
 
-	if (!msg || !msg->rma_iov || msg->rma_iov_count !=1 || !resultv ||
-	    !result_count)
-		return -FI_EINVAL;
-
-	if ((msg->op != FI_ATOMIC_READ) && (!msg->msg_iov || !msg->iov_count))
-		return -FI_EINVAL;
+	assert(msg);
+	assert(msg->rma_iov);
+	assert(msg->rma_iov_count ==1);
+	assert(resultv);
+	assert(result_count);
+	assert((msg->msg_iov && msg->iov_count) || msg->op == FI_ATOMIC_READ);
 
 	if ((msg->op != FI_ATOMIC_READ && msg->iov_count > 1) ||
 	    result_count > 1)
@@ -1616,11 +1456,9 @@ static ssize_t psmx2_atomic_readwritev(struct fid_ep *ep,
 
 	ep_priv = container_of(ep, struct psmx2_fid_ep, ep);
 
-	if (!resultv || !result_count)
-		return -FI_EINVAL;
-
-	if ((op != FI_ATOMIC_READ) && (!iov || !count))
-		return -FI_EINVAL;
+	assert(resultv);
+	assert(result_count);
+	assert((iov && count) || op == FI_ATOMIC_READ);
 
 	if ((op != FI_ATOMIC_READ && count > 1) || result_count > 1)
 		return psmx2_atomic_readwritev_generic(ep, iov, desc, count,
@@ -1661,93 +1499,54 @@ ssize_t psmx2_atomic_compwrite_generic(struct fid_ep *ep,
 	struct psmx2_am_request *req;
 	psm2_amarg_t args[8];
 	psm2_epaddr_t psm2_epaddr;
-	uint8_t vlane;
 	int am_flags = PSM2_AM_FLAG_ASYNC;
 	int chunk_size, len;
 	size_t idx;
 	int err;
-	int sep_target = 0;
 
 	ep_priv = container_of(ep, struct psmx2_fid_ep, ep);
 
-	if (flags & FI_TRIGGER) {
-		struct psmx2_trigger *trigger;
-		struct fi_triggered_context *ctxt = context;
+	if (flags & FI_TRIGGER)
+		return psmx2_trigger_queue_atomic_compwrite(ep, buf, count,
+							    desc, compare,
+							    compare_desc,
+							    result, result_desc,
+							    dest_addr, addr,
+							    key, datatype, op,
+							    context, flags);
 
-		trigger = calloc(1, sizeof(*trigger));
-		if (!trigger)
-			return -FI_ENOMEM;
-
-		trigger->op = PSMX2_TRIGGERED_ATOMIC_COMPWRITE;
-		trigger->cntr = container_of(ctxt->trigger.threshold.cntr,
-					     struct psmx2_fid_cntr, cntr);
-		trigger->threshold = ctxt->trigger.threshold.threshold;
-		trigger->atomic_compwrite.ep = ep;
-		trigger->atomic_compwrite.buf = buf;
-		trigger->atomic_compwrite.count = count;
-		trigger->atomic_compwrite.desc = desc;
-		trigger->atomic_compwrite.compare = compare;
-		trigger->atomic_compwrite.compare_desc = compare_desc;
-		trigger->atomic_compwrite.result = result;
-		trigger->atomic_compwrite.result_desc = result_desc;
-		trigger->atomic_compwrite.dest_addr = dest_addr;
-		trigger->atomic_compwrite.addr = addr;
-		trigger->atomic_compwrite.key = key;
-		trigger->atomic_compwrite.datatype = datatype;
-		trigger->atomic_compwrite.atomic_op = op;
-		trigger->atomic_compwrite.context = context;
-		trigger->atomic_compwrite.flags = flags & ~FI_TRIGGER;
-
-		psmx2_cntr_add_trigger(trigger->cntr, trigger);
-		return 0;
-	}
-
-	if (!buf)
-		return -FI_EINVAL;
-
-	if ((int)datatype < 0 || (int)datatype >= FI_DATATYPE_LAST)
-		return -FI_EINVAL;
-
-	if ((int)op < 0 || (int)op >= FI_ATOMIC_OP_LAST)
-		return -FI_EINVAL;
+	assert(buf);
+	assert((int)datatype >= 0 && (int)datatype < FI_DATATYPE_LAST);
+	assert((int)op >= 0 && (int)op < FI_ATOMIC_OP_LAST);
 
 	av = ep_priv->av;
 	if (av && PSMX2_SEP_ADDR_TEST(dest_addr)) {
-		psm2_epaddr = psmx2_av_translate_sep(av, ep_priv->trx_ctxt, dest_addr);
-		vlane = 0;
-		sep_target = 1;
+		psm2_epaddr = psmx2_av_translate_sep(av, ep_priv->tx, dest_addr);
 	} else if (av && av->type == FI_AV_TABLE) {
 		idx = dest_addr;
-		if ((err = psmx2_av_check_table_idx(av, idx)))
+		if ((err = psmx2_av_check_table_idx(av, ep_priv->tx, idx)))
 			return err;
 
-		psm2_epaddr = av->epaddrs[idx];
-		vlane = av->vlanes[idx];
+		psm2_epaddr = av->tables[ep_priv->tx->id].epaddrs[idx];
 	} else {
-		if (!dest_addr)
-			return -FI_EINVAL;
-
+		assert(dest_addr);
 		psm2_epaddr = PSMX2_ADDR_TO_EP(dest_addr);
-		vlane = PSMX2_ADDR_TO_VL(dest_addr);
 	}
 
 	epaddr_context = psm2_epaddr_getctxt((void *)psm2_epaddr);
-	if (epaddr_context->epid == ep_priv->trx_ctxt->psm2_epid)
-		return psmx2_atomic_self(PSMX2_AM_REQ_ATOMIC_COMPWRITE,
-					 ep_priv,
-					 (sep_target ? ep_priv :
-					   ep_priv->domain->eps[vlane]),
+	if (epaddr_context->epid == ep_priv->tx->psm2_epid)
+		return psmx2_atomic_self(PSMX2_AM_REQ_ATOMIC_COMPWRITE, ep_priv,
 					 buf, count, desc, compare,
 					 compare_desc, result, result_desc,
 					 addr, key, datatype, op,
 					 context, flags);
 
-	chunk_size = ep_priv->trx_ctxt->psm2_am_param.max_request_short;
+	chunk_size = ep_priv->tx->psm2_am_param.max_request_short;
 	len = ofi_datatype_size(datatype) * count;
 	if (len * 2 > chunk_size)
 		return -FI_EMSGSIZE;
 
-	req = psmx2_am_request_alloc(ep_priv->trx_ctxt);
+	req = psmx2_am_request_alloc(ep_priv->tx);
 	if (!req)
 		return -FI_ENOMEM;
 
@@ -1755,7 +1554,7 @@ ssize_t psmx2_atomic_compwrite_generic(struct fid_ep *ep,
 	    ((uintptr_t)compare != (uintptr_t)buf + len)) {
 		req->tmpbuf = malloc(len * 2);
 		if (!req->tmpbuf) {
-			psmx2_am_request_free(ep_priv->trx_ctxt, req);
+			psmx2_am_request_free(ep_priv->tx, req);
 			return -FI_ENOMEM;
 		}
 		memcpy(req->tmpbuf, buf, len);
@@ -1779,7 +1578,6 @@ ssize_t psmx2_atomic_compwrite_generic(struct fid_ep *ep,
 	req->cq_flags = FI_WRITE | FI_ATOMIC;
 
 	args[0].u32w0 = PSMX2_AM_REQ_ATOMIC_COMPWRITE;
-	PSMX2_AM_SET_DST(args[0].u32w0, vlane);
 	args[0].u32w1 = count;
 	args[1].u64 = (uint64_t)(uintptr_t)req;
 	args[2].u64 = addr;
@@ -1815,7 +1613,6 @@ ssize_t psmx2_atomic_compwritev_generic(struct fid_ep *ep,
 	struct psmx2_am_request *req;
 	psm2_amarg_t args[8];
 	psm2_epaddr_t psm2_epaddr;
-	uint8_t vlane;
 	int am_flags = PSM2_AM_FLAG_ASYNC;
 	int chunk_size;
 	size_t idx;
@@ -1823,47 +1620,29 @@ ssize_t psmx2_atomic_compwritev_generic(struct fid_ep *ep,
 	uint8_t *buf, *compare, *result;
 	void *desc0, *compare_desc0, *result_desc0;
 	int err;
-	int sep_target = 0;
 
 	ep_priv = container_of(ep, struct psmx2_fid_ep, ep);
 
-	if (flags & FI_TRIGGER) {
-		struct psmx2_trigger *trigger;
-		struct fi_triggered_context *ctxt = context;
+	if (flags & FI_TRIGGER)
+		return psmx2_trigger_queue_atomic_compwritev(ep, iov, desc,
+							     count, comparev,
+							     compare_desc,
+							     compare_count,
+							     resultv,
+							     result_desc,
+							     result_count,
+							     dest_addr, addr,
+							     key, datatype, op,
+							     context, flags);
 
-		trigger = calloc(1, sizeof(*trigger));
-		if (!trigger)
-			return -FI_ENOMEM;
-
-		trigger->op = PSMX2_TRIGGERED_ATOMIC_COMPWRITEV;
-		trigger->cntr = container_of(ctxt->trigger.threshold.cntr,
-					     struct psmx2_fid_cntr, cntr);
-		trigger->threshold = ctxt->trigger.threshold.threshold;
-		trigger->atomic_compwritev.ep = ep;
-		trigger->atomic_compwritev.iov = iov;
-		trigger->atomic_compwritev.desc = desc;
-		trigger->atomic_compwritev.count = count;
-		trigger->atomic_compwritev.comparev = comparev;
-		trigger->atomic_compwritev.compare_desc = compare_desc;
-		trigger->atomic_compwritev.compare_count = compare_count;
-		trigger->atomic_compwritev.resultv = resultv;
-		trigger->atomic_compwritev.result_desc = result_desc;
-		trigger->atomic_compwritev.result_count = result_count;
-		trigger->atomic_compwritev.dest_addr = dest_addr;
-		trigger->atomic_compwritev.addr = addr;
-		trigger->atomic_compwritev.key = key;
-		trigger->atomic_compwritev.datatype = datatype;
-		trigger->atomic_compwritev.atomic_op = op;
-		trigger->atomic_compwritev.context = context;
-		trigger->atomic_compwritev.flags = flags & ~FI_TRIGGER;
-
-		psmx2_cntr_add_trigger(trigger->cntr, trigger);
-		return 0;
-	}
-
-	if (!iov || !count || !comparev || !compare_count || !resultv ||
-	    !result_count)
-		return -FI_EINVAL;
+	assert(iov);
+	assert(count);
+	assert(comparev);
+	assert(compare_count);
+	assert(resultv);
+	assert(result_count);
+	assert((int)datatype >= 0 && (int)datatype < FI_DATATYPE_LAST);
+	assert((int)op >= 0 && (int)op < FI_ATOMIC_OP_LAST);
 
 	while (count && !iov[count-1].count)
 		count--;
@@ -1874,41 +1653,29 @@ ssize_t psmx2_atomic_compwritev_generic(struct fid_ep *ep,
 	while (result_count && !resultv[result_count-1].count)
 		result_count--;
 
-	if ((int)datatype < 0 || (int)datatype >= FI_DATATYPE_LAST)
-		return -FI_EINVAL;
-
-	if ((int)op < 0 || (int)op >= FI_ATOMIC_OP_LAST)
-		return -FI_EINVAL;
-
 	len = psmx2_ioc_size(iov, count, datatype);
 	compare_len = psmx2_ioc_size(comparev, compare_count, datatype);
 	result_len = psmx2_ioc_size(resultv, result_count, datatype);
 
-	if (compare_len < len || result_len < len)
-		return -FI_EINVAL;
+	assert(compare_len >= len);
+	assert(result_len >= len);
 
 	av = ep_priv->av;
 	if (av && PSMX2_SEP_ADDR_TEST(dest_addr)) {
-		psm2_epaddr = psmx2_av_translate_sep(av, ep_priv->trx_ctxt, dest_addr);
-		vlane = 0;
-		sep_target = 1;
+		psm2_epaddr = psmx2_av_translate_sep(av, ep_priv->tx, dest_addr);
 	} else if (av && av->type == FI_AV_TABLE) {
 		idx = dest_addr;
-		if ((err = psmx2_av_check_table_idx(av, idx)))
+		if ((err = psmx2_av_check_table_idx(av, ep_priv->tx, idx)))
 			return err;
 
-		psm2_epaddr = av->epaddrs[idx];
-		vlane = av->vlanes[idx];
+		psm2_epaddr = av->tables[ep_priv->tx->id].epaddrs[idx];
 	} else {
-		if (!dest_addr)
-			return -FI_EINVAL;
-
+		assert(dest_addr);
 		psm2_epaddr = PSMX2_ADDR_TO_EP(dest_addr);
-		vlane = PSMX2_ADDR_TO_VL(dest_addr);
 	}
 
 	epaddr_context = psm2_epaddr_getctxt((void *)psm2_epaddr);
-	if (epaddr_context->epid == ep_priv->trx_ctxt->psm2_epid) {
+	if (epaddr_context->epid == ep_priv->tx->psm2_epid) {
 		if (count > 1) {
 			buf = malloc(len);
 			if (!buf)
@@ -1949,10 +1716,7 @@ ssize_t psmx2_atomic_compwritev_generic(struct fid_ep *ep,
 			result_desc0 = result_desc ? result_desc[0] : NULL;
 		}
 
-		err = psmx2_atomic_self(PSMX2_AM_REQ_ATOMIC_COMPWRITE,
-					ep_priv,
-					(sep_target ? ep_priv :
-					  ep_priv->domain->eps[vlane]),
+		err = psmx2_atomic_self(PSMX2_AM_REQ_ATOMIC_COMPWRITE, ep_priv,
 					buf, len / ofi_datatype_size(datatype), desc0,
 					compare, compare_desc0, result, result_desc0,
 					addr, key, datatype, op, context, flags);
@@ -1971,13 +1735,13 @@ ssize_t psmx2_atomic_compwritev_generic(struct fid_ep *ep,
 		return err;
 	}
 
-	chunk_size = ep_priv->trx_ctxt->psm2_am_param.max_request_short;
+	chunk_size = ep_priv->tx->psm2_am_param.max_request_short;
 	if (len * 2 > chunk_size)
 		return -FI_EMSGSIZE;
 
 	iov_size = result_count > 1 ? result_count * sizeof(struct fi_ioc) : 0;
 
-	req = psmx2_am_request_alloc(ep_priv->trx_ctxt);
+	req = psmx2_am_request_alloc(ep_priv->tx);
 	if (!req)
 		return -FI_ENOMEM;
 
@@ -1985,7 +1749,7 @@ ssize_t psmx2_atomic_compwritev_generic(struct fid_ep *ep,
 	    (uintptr_t)comparev[0].addr != (uintptr_t)iov[0].addr + len) {
 		req->tmpbuf = malloc(iov_size + len + len);
 		if (!req->tmpbuf) {
-			psmx2_am_request_free(ep_priv->trx_ctxt, req);
+			psmx2_am_request_free(ep_priv->tx, req);
 			return -FI_ENOMEM;
 		}
 		buf = (uint8_t *)req->tmpbuf + iov_size;
@@ -1994,7 +1758,7 @@ ssize_t psmx2_atomic_compwritev_generic(struct fid_ep *ep,
 	} else {
 		req->tmpbuf = malloc(iov_size);
 		if (!req->tmpbuf) {
-			psmx2_am_request_free(ep_priv->trx_ctxt, req);
+			psmx2_am_request_free(ep_priv->tx, req);
 			return -FI_ENOMEM;
 		}
 		buf = iov[0].addr;
@@ -2023,7 +1787,6 @@ ssize_t psmx2_atomic_compwritev_generic(struct fid_ep *ep,
 	req->cq_flags = FI_WRITE | FI_ATOMIC;
 
 	args[0].u32w0 = PSMX2_AM_REQ_ATOMIC_COMPWRITE;
-	PSMX2_AM_SET_DST(args[0].u32w0, vlane);
 	args[0].u32w1 = len / ofi_datatype_size(datatype);
 	args[1].u64 = (uint64_t)(uintptr_t)req;
 	args[2].u64 = addr;
@@ -2067,10 +1830,15 @@ static ssize_t psmx2_atomic_compwritemsg(struct fid_ep *ep,
 					 size_t result_count,
 					 uint64_t flags)
 {
-	if (!msg || !msg->msg_iov || !msg->iov_count ||
-	    !msg->rma_iov || msg->rma_iov_count != 1 ||
-	    !comparev || !compare_count || !resultv || !result_count)
-		return -FI_EINVAL;
+	assert(msg);
+	assert(msg->msg_iov);
+	assert(msg->iov_count);
+	assert(msg->rma_iov);
+	assert(msg->rma_iov_count == 1);
+	assert(comparev);
+	assert(compare_count);
+	assert(resultv);
+	assert(result_count);
 
 	if (msg->iov_count > 1 || compare_count > 1 || result_count > 1)
 		return psmx2_atomic_compwritev_generic(ep, msg->msg_iov, msg->desc,
@@ -2111,8 +1879,12 @@ static ssize_t psmx2_atomic_compwritev(struct fid_ep *ep,
 
 	ep_priv = container_of(ep, struct psmx2_fid_ep, ep);
 
-	if (!iov || !count || !comparev || !compare_count || !resultv || !result_count)
-		return -FI_EINVAL;
+	assert(iov);
+	assert(count);
+	assert(comparev);
+	assert(compare_count);
+	assert(resultv);
+	assert(result_count);
 
 	if (count > 1 || compare_count > 1 || result_count > 1)
 		return psmx2_atomic_compwritev_generic(ep, iov, desc, count,
@@ -2247,7 +2019,7 @@ static int psmx2_atomic_writevalid(struct fid_ep *ep,
 	size_t chunk_size;
 
 	ep_priv = container_of(ep, struct psmx2_fid_ep, ep);
-	chunk_size = ep_priv->trx_ctxt->psm2_am_param.max_request_short;
+	chunk_size = ep_priv->tx->psm2_am_param.max_request_short;
 	return psmx2_atomic_writevalid_internal(chunk_size, datatype, op, count);
 }
 
@@ -2259,7 +2031,7 @@ static int psmx2_atomic_readwritevalid(struct fid_ep *ep,
 	size_t chunk_size;
 
 	ep_priv = container_of(ep, struct psmx2_fid_ep, ep);
-	chunk_size = ep_priv->trx_ctxt->psm2_am_param.max_request_short;
+	chunk_size = ep_priv->tx->psm2_am_param.max_request_short;
 	return psmx2_atomic_readwritevalid_internal(chunk_size, datatype, op, count);
 }
 
@@ -2271,7 +2043,7 @@ static int psmx2_atomic_compwritevalid(struct fid_ep *ep,
 	size_t chunk_size;
 
 	ep_priv = container_of(ep, struct psmx2_fid_ep, ep);
-	chunk_size = ep_priv->trx_ctxt->psm2_am_param.max_request_short;
+	chunk_size = ep_priv->tx->psm2_am_param.max_request_short;
 	return psmx2_atomic_compwritevalid_internal(chunk_size, datatype, op, count);
 }
 
@@ -2284,7 +2056,7 @@ int psmx2_query_atomic(struct fid_domain *domain, enum fi_datatype datatype,
 	int ret;
 
 	domain_priv = container_of(domain, struct psmx2_fid_domain, util_domain.domain_fid);
-	chunk_size = domain_priv->base_trx_ctxt->psm2_am_param.max_request_short;
+	chunk_size = domain_priv->max_atomic_size;
 
 	if (flags & FI_TAGGED)
 		return -FI_EOPNOTSUPP;

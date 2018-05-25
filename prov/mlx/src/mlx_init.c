@@ -231,14 +231,15 @@ static int mlx_getinfo (
 	}
 
 	/* Only Pure MLX address and IPv4 are supported */
-	if (hints->addr_format == FI_ADDR_MLX) {
-		mlx_info.addr_format = FI_ADDR_MLX;
+	if (hints) {
+		if (hints->addr_format <= FI_SOCKADDR_IN) {
+			mlx_descriptor.use_ns = 1;
+			mlx_info.addr_format = FI_SOCKADDR_IN;
+		} else {
+			mlx_info.addr_format = FI_ADDR_MLX;
+		}
 	}
-
-	if (hints->addr_format <= FI_SOCKADDR_IN) {
-		mlx_descriptor.use_ns = 1;
-		mlx_info.addr_format = FI_SOCKADDR_IN;
-	}
+	
 
 	status = util_getinfo( &mlx_util_prov, version,
 				service, node, flags, hints, info);
@@ -259,7 +260,7 @@ void mlx_cleanup(void)
 struct fi_provider mlx_prov = {
 	.name = FI_MLX_FABRIC_NAME,
 	.version = FI_MLX_VERSION,
-	.fi_version = FI_VERSION(1, 5),
+	.fi_version = FI_VERSION(1, 6),
 	.getinfo = mlx_getinfo,
 	.fabric = mlx_fabric_open,
 	.cleanup = mlx_cleanup,

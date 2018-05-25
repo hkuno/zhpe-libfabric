@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2017 Intel Corporation. All rights reserved.
+ * Copyright (c) 2013-2018 Intel Corporation. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -47,12 +47,11 @@ static int psmx2_cm_getname(fid_t fid, void *addr, size_t *addrlen)
 	memset(&epname, 0, sizeof(epname));
 
 	if (ep->type == PSMX2_EP_REGULAR) {
-		epname.epid = ep->trx_ctxt->psm2_epid;
-		epname.vlane = ep->vlane;
+		epname.epid = ep->rx ? ep->rx->psm2_epid : 0;
 		epname.type = ep->type;
 	} else {
 		sep = (struct psmx2_fid_sep *)ep;
-		epname.epid = sep->domain->base_trx_ctxt->psm2_epid;
+		epname.epid = sep->ctxts[0].trx_ctxt->psm2_epid;
 		epname.sep_id = sep->id;
 		epname.type = sep->type;
 	}

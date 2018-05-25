@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2017, Cisco Systems, Inc. All rights reserved.
+ * Copyright (c) 2014-2018, Cisco Systems, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -53,9 +53,9 @@
 #include <rdma/fi_endpoint.h>
 #include <rdma/fi_rma.h>
 #include <rdma/fi_errno.h>
-#include "fi.h"
-#include "fi_enosys.h"
-#include "fi_util.h"
+#include "ofi.h"
+#include "ofi_enosys.h"
+#include "ofi_util.h"
 
 #include "usnic_direct.h"
 #include "usd.h"
@@ -117,7 +117,7 @@ static const struct fi_domain_attr msg_dflt_domain_attr = {
 	.control_progress = FI_PROGRESS_AUTO,
 	.data_progress = FI_PROGRESS_MANUAL,
 	.resource_mgmt = FI_RM_DISABLED,
-	.mr_mode = OFI_MR_BASIC_MAP | FI_MR_LOCAL,
+	.mr_mode = FI_MR_ALLOCATED | FI_MR_LOCAL | FI_MR_BASIC,
 	.cntr_cnt = USDF_MSG_CNTR_CNT,
 	.mr_iov_limit = USDF_MSG_MR_IOV_LIMIT,
 	.mr_cnt = USDF_MSG_MR_CNT,
@@ -245,7 +245,7 @@ int usdf_msg_fill_dom_attr(uint32_t version, const struct fi_info *hints,
 		return -FI_ENODATA;
 	}
 
-	if (usdf_check_mr_mode(version, hints, defaults.mr_mode))
+	if (ofi_check_mr_mode(&usdf_ops, version, defaults.mr_mode, hints))
 		return -FI_ENODATA;
 
 	if (hints->domain_attr->mr_cnt <= USDF_MSG_MR_CNT) {

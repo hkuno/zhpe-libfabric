@@ -5,7 +5,7 @@ dnl
 dnl Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.60])
-AC_INIT([libfabric], [1.6.0a1], [ofiwg@lists.openfabrics.org])
+AC_INIT([libfabric], [1.6.1], [ofiwg@lists.openfabrics.org])
 AC_CONFIG_SRCDIR([src/fabric.c])
 AC_CONFIG_AUX_DIR(config)
 AC_CONFIG_MACRO_DIR(config)
@@ -40,26 +40,24 @@ AM_CONDITIONAL([FREEBSD], [test "x$freebsd" = "x1"])
 
 base_c_warn_flags="-Wall -Wundef -Wpointer-arith"
 debug_c_warn_flags="-Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers"
+debug_c_other_flags="-fstack-protector-strong"
 picky_c_warn_flags="-Wno-long-long -Wmissing-prototypes -Wstrict-prototypes -Wcomment -pedantic"
 
-AC_ARG_ENABLE([debug],
-	      [AS_HELP_STRING([--enable-debug],
-			      [Enable debugging @<:@default=no@:>@])
-	      ],
-	      [],
-	      [enable_debug=no])
-
-AS_IF([test x"$enable_debug" != x"no"],
-      [dbg=1
-       CFLAGS="-g -O0 ${base_c_warn_flags} ${debug_c_warn_flags} $CFLAGS"],
-      [dbg=0])
-
-AC_DEFINE_UNQUOTED([ENABLE_DEBUG],[$dbg],
-                   [defined to 1 if libfabric was configured with --enable-debug, 0 otherwise])
+AC_ARG_WITH([build_id],
+	    [AC_HELP_STRING([--with-build_id],
+			    [Enable build_id annotation @<:@default=no@:>@])],
+	    [], [with_build_id=no])
+AS_IF([test x"$with_build_id" = x"no"], [with_build_id=""])
+AC_DEFINE_UNQUOTED([BUILD_ID],["$with_build_id"],
+                   [adds build_id to version if it was defined])
 
 # Fix autoconf's habit of setting CFLAGS="-g -O2" by default while still
 # allowing the user to explicitly set CFLAGS=""
 : ${CFLAGS="-fvisibility=hidden -O2 -DNDEBUG ${base_c_warn_flags}"}
+
+# AM_PROG_AS would set CFLAGS="-g -O2" by default if not set already so it
+# should not be called earlier
+AM_PROG_AS()
 
 # AM PROG_AR did not exist pre AM 1.11.x (where x is somewhere >0 and
 # <3), but it is necessary in AM 1.12.x.
@@ -89,6 +87,43 @@ AC_PROG_CC_C99
 AM_PROG_CC_C_O
 AC_PROG_CPP
 
+AC_ARG_ENABLE([debug],
+	      [AS_HELP_STRING([--enable-debug],
+			      [Enable debugging @<:@default=no@:>@])
+	      ],
+	      [],
+	      [enable_debug=no])
+
+AS_IF([test x"$enable_debug" != x"no"],
+      [dbg=1
+       CFLAGS_save=
+       # Remove -DNDEBUG flag if set
+       for flag in $CFLAGS; do
+           if test "$flag" != "-DNDEBUG"; then
+               CFLAGS_save="$CFLAGS_save $flag"
+           fi
+       done
+       # See if all the flags in $debug_c_other_flags work
+       good_flags=
+       for flag in $debug_c_other_flags; do
+           AC_MSG_CHECKING([to see if compiler supports $flag])
+           CFLAGS="$flag $CFLAGS_save"
+           AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[]], [[int i = 3;]])],
+	                     [AC_MSG_RESULT([yes])
+			      good_flags="$flag $good_flags"],
+			     [AC_MSG_RESULT([no])])
+       done
+       debug_c_other_flags=$good_flags
+       CFLAGS=$CFLAGS_save
+       unset good_flags
+       unset CFLAGS_save
+
+       CFLAGS="-g -O0 ${base_c_warn_flags} ${debug_c_warn_flags} ${debug_c_other_flags} $CFLAGS"],
+      [dbg=0])
+
+AC_DEFINE_UNQUOTED([ENABLE_DEBUG],[$dbg],
+                   [defined to 1 if libfabric was configured with --enable-debug, 0 otherwise])
+
 dnl Checks for header files.
 AC_HEADER_STDC
 
@@ -117,7 +152,8 @@ AC_ARG_ENABLE([picky],
                     [Enable developer-level compiler pickyness when building @<:@default=no@:>@])])
 AS_IF([test x"$enable_picky" = x"yes" && test x"$GCC" = x"yes"],
       [AS_IF([test x"$enable_debug" = x"no"],
-             [CFLAGS="${base_c_warn_flags} ${debug_c_warn_flags} ${picky_c_warn_flags} $CFLAGS"],
+             [CFLAGS="${base_c_warn_flags} ${debug_c_warn_flags}
+		      ${debug_c_other_flags} ${picky_c_warn_flags} $CFLAGS"],
              [CFLAGS="${picky_c_warn_flags} $CFLAGS"])
       ])
 
@@ -146,6 +182,21 @@ if test "$ac_cv_func_epoll_create" = yes; then
   AC_DEFINE([HAVE_EPOLL], [1], [Define if you have epoll support.])
 fi
 
+AC_CHECK_HEADER([linux/perf_event.h],
+    [AC_CHECK_DECL([__builtin_ia32_rdpmc],
+        [
+            AC_TRY_LINK([#include <linux/perf_event.h>],
+                [__builtin_ia32_rdpmc(0);],
+                [linux_perf_rdpmc=1],
+                [linux_perf_rdpmc=0])
+	],
+        [linux_perf_rdpmc=0],
+        [#include <linux/perf_event.h>])],
+    [linux_perf_rdpmc=0])
+AC_DEFINE_UNQUOTED(HAVE_LINUX_PERF_RDPMC, [$linux_perf_rdpmc],
+    [Whether we have __builtin_ia32_rdpmc() and linux/perf_event.h file or not])
+AM_CONDITIONAL([HAVE_LINUX_PERF_RDPMC], [test "x$linux_perf_rdpmc" = "x1"])
+
 dnl Check for gcc atomic intrinsics
 AC_MSG_CHECKING(compiler support for c11 atomics)
 AC_TRY_LINK([#include <stdatomic.h>],
@@ -163,6 +214,21 @@ AC_TRY_LINK([#include <stdatomic.h>],
     ],
     [AC_MSG_RESULT(no)])
 
+
+AC_MSG_CHECKING(compiler support for c11 atomic `least` types)
+AC_TRY_LINK([#include <stdatomic.h>],
+    [atomic_int_least32_t a;
+     atomic_int_least64_t b;
+    ],
+    [
+        AC_MSG_RESULT(yes)
+        AC_DEFINE(HAVE_ATOMICS_LEAST_TYPES, 1,
+                  [Set to 1 to use c11 atomic `least` types])
+    ],
+    [
+        AC_MSG_RESULT(no)
+    ])
+
 dnl Check for gcc built-in atomics
 AC_MSG_CHECKING(compiler support for built-in atomics)
 AC_TRY_LINK([#include <stdint.h>],
@@ -178,6 +244,36 @@ AC_TRY_LINK([#include <stdint.h>],
     [
 	AC_MSG_RESULT(yes)
         AC_DEFINE(HAVE_BUILTIN_ATOMICS, 1, [Set to 1 to use built-in intrincics atomics])
+    ],
+    [AC_MSG_RESULT(no)])
+
+dnl Check for gcc cpuid intrinsics
+AC_MSG_CHECKING(compiler support for cpuid)
+AC_TRY_LINK([
+     #include <stddef.h>
+     #include <cpuid.h>],
+    [
+     int a, b, c, d;
+     __cpuid_count(0, 0, a, b, c, d);
+    ],
+    [
+	AC_MSG_RESULT(yes)
+        AC_DEFINE(HAVE_CPUID, 1, [Set to 1 to to use cpuid])
+    ],
+    [AC_MSG_RESULT(no)])
+
+dnl Check for glibc malloc hooks
+AC_MSG_CHECKING(compiler support for glibc malloc hooks)
+AC_TRY_LINK([#include <malloc.h>],
+    [
+     __malloc_hook = NULL;
+     __realloc_hook = NULL;
+     __memalign_hook = NULL;
+     __free_hook = NULL;
+    ],
+    [
+	AC_MSG_RESULT(yes)
+        AC_DEFINE(HAVE_GLIBC_MALLOC_HOOKS, 1, [Set to 1 to use glibc malloc hooks])
     ],
     [AC_MSG_RESULT(no)])
 

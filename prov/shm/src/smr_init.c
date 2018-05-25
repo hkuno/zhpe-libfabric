@@ -32,35 +32,76 @@
 
 #include <rdma/fi_errno.h>
 
-#include <prov.h>
+#include <ofi_prov.h>
 #include "smr.h"
 
 
-int smr_check_info(struct fi_info *info)
+static void smr_resolve_addr(const char *node, const char *service,
+			     char **addr, size_t *addrlen)
 {
-	return ofi_prov_check_info(&smr_util_prov, smr_util_prov.prov->version, info);
+	char temp_name[SMR_NAME_SIZE];
+
+	if (service) {
+		if (node)
+			snprintf(temp_name, SMR_NAME_SIZE, "%s%s:%s",
+				 SMR_PREFIX_NS, node, service);
+		else
+			snprintf(temp_name, SMR_NAME_SIZE, "%s%s",
+				 SMR_PREFIX_NS, service);
+	} else {
+		if (node)
+			snprintf(temp_name, SMR_NAME_SIZE, "%s%s",
+				 SMR_PREFIX, node);
+		else
+			snprintf(temp_name, SMR_NAME_SIZE, "%s%d",
+				 SMR_PREFIX, getpid());
+	}
+
+	*addr = strdup(temp_name);
+	*addrlen = strlen(*addr);
 }
 
 static int smr_getinfo(uint32_t version, const char *node, const char *service,
-			uint64_t flags, const struct fi_info *hints, struct fi_info **info)
+		       uint64_t flags, const struct fi_info *hints,
+		       struct fi_info **info)
 {
-#if 0
-	/* A SHM address namespace is not yet defined.
-	 * We require FI_SOURCE with valid node and service parameters.
-	 * The proposed name space is:
-	 * process ID - unique for each process
-	 * &ep_cntr - handle case where app links against library more
-	 *            than once, e.g. libfabric is included by two libraries
-	 * cntr_val - unique value for each EP
-	 */
-	if (!(flags & FI_SOURCE) || !node | !service) {
-		FI_INFO(&smr_prov, FI_LOG_CORE,
-			"SHM requires FI_SOURCE + node + service\n");
-		return -FI_ENODATA;
-	}
-#endif
+	struct fi_info *cur;
+	uint64_t mr_mode, msg_order;
+	int fast_rma;
+	int ret;
 
-	return util_getinfo(&smr_util_prov, version, node, service, flags, hints, info);
+	mr_mode = hints && hints->domain_attr ? hints->domain_attr->mr_mode :
+						FI_MR_VIRT_ADDR;
+	msg_order = hints && hints->tx_attr ? hints->tx_attr->msg_order : 0;
+	fast_rma = smr_fast_rma_enabled(mr_mode, msg_order);
+
+	ret = util_getinfo(&smr_util_prov, version, node, service, flags,
+			   hints, info);
+	if (ret)
+		return ret;
+
+	for (cur = *info; cur; cur = cur->next) {
+		if (!(flags & FI_SOURCE) && !cur->dest_addr)
+			smr_resolve_addr(node, service, (char **) &cur->dest_addr,
+					 &cur->dest_addrlen);
+
+		if (!cur->src_addr) {
+			if (flags & FI_SOURCE)
+				smr_resolve_addr(node, service, (char **) &cur->src_addr,
+						 &cur->src_addrlen);
+			else
+				smr_resolve_addr(NULL, NULL, (char **) &cur->src_addr,
+						 &cur->src_addrlen);
+		}
+		if (fast_rma) {
+			cur->domain_attr->mr_mode = FI_MR_VIRT_ADDR;
+			cur->tx_attr->msg_order = FI_ORDER_SAS;
+			cur->ep_attr->max_order_raw_size = 0;
+			cur->ep_attr->max_order_waw_size = 0;
+			cur->ep_attr->max_order_war_size = 0;
+		}
+	}
+	return 0;
 }
 
 static void smr_fini(void)
@@ -71,7 +112,7 @@ static void smr_fini(void)
 struct fi_provider smr_prov = {
 	.name = "shm",
 	.version = FI_VERSION(SMR_MAJOR_VERSION, SMR_MINOR_VERSION),
-	.fi_version = FI_VERSION(1, 5),
+	.fi_version = FI_VERSION(1, 6),
 	.getinfo = smr_getinfo,
 	.fabric = smr_fabric,
 	.cleanup = smr_fini

@@ -32,7 +32,7 @@
 
 #include "config.h"
 
-#include <fi_mem.h>
+#include <ofi_mem.h>
 
 #include "fi_verbs.h"
 #include "ep_rdm/verbs_rdm.h"
@@ -48,6 +48,7 @@ struct fi_ibv_gl_data fi_ibv_gl_data = {
 	.def_rx_size		= 384,
 	.def_tx_iov_limit	= 4,
 	.def_rx_iov_limit	= 4,
+	.def_inline_size	= 256,
 	.min_rnr_timer		= VERBS_DEFAULT_MIN_RNR_TIMER,
 	.fork_unsafe		= 0,
 	/* Disable by default. Because this feature may corrupt
@@ -56,6 +57,10 @@ struct fi_ibv_gl_data fi_ibv_gl_data = {
 	.use_odp		= 0,
 	.cqread_bunch_size	= 8,
 	.iface			= NULL,
+	.mr_cache_enable	= 0,
+	.mr_max_cached_cnt	= 4096,
+	.mr_max_cached_size	= ULONG_MAX,
+	.mr_cache_merge_regions	= 0,
 
 	.rdm			= {
 		.buffer_num		= FI_IBV_RDM_TAGGED_DFLT_BUFFER_NUM,
@@ -63,6 +68,7 @@ struct fi_ibv_gl_data fi_ibv_gl_data = {
 		.rndv_seg_size		= FI_IBV_RDM_SEG_MAXSIZE,
 		.thread_timeout		= FI_IBV_RDM_CM_THREAD_TIMEOUT,
 		.eager_send_opcode	= "IBV_WR_SEND",
+		.cm_thread_affinity	= NULL,
 	},
 
 	.dgram			= {
@@ -74,7 +80,7 @@ struct fi_ibv_gl_data fi_ibv_gl_data = {
 struct fi_provider fi_ibv_prov = {
 	.name = VERBS_PROV_NAME,
 	.version = VERBS_PROV_VERS,
-	.fi_version = FI_VERSION(1, 5),
+	.fi_version = FI_VERSION(1, 6),
 	.getinfo = fi_ibv_getinfo,
 	.fabric = fi_ibv_fabric,
 	.cleanup = fi_ibv_fini
@@ -90,19 +96,10 @@ struct util_prov fi_ibv_util_prov = {
 
 int fi_ibv_sockaddr_len(struct sockaddr *addr)
 {
-	if (!addr)
-		return 0;
-
-	switch (addr->sa_family) {
-	case AF_INET:
-		return sizeof(struct sockaddr_in);
-	case AF_INET6:
-		return sizeof(struct sockaddr_in6);
-	case AF_IB:
+	if (addr->sa_family == AF_IB)
 		return sizeof(struct sockaddr_ib);
-	default:
-		return 0;
-	}
+	else
+		return ofi_sizeofaddr(addr);
 }
 
 int fi_ibv_rdm_cm_bind_ep(struct fi_ibv_rdm_cm *cm, struct fi_ibv_rdm_ep *ep)
@@ -245,165 +242,6 @@ void fi_ibv_destroy_ep(struct rdma_addrinfo *rai, struct rdma_cm_id **id)
 	rdma_destroy_ep(*id);
 }
 
-#define VERBS_SIGNAL_SEND(ep) \
-	(ofi_atomic_get32(&ep->unsignaled_send_cnt) >= VERBS_SEND_SIGNAL_THRESH(ep) && \
-	 !ofi_atomic_get32(&ep->comp_pending))
-
-static int fi_ibv_signal_send(struct fi_ibv_msg_ep *ep, struct ibv_send_wr *wr)
-{
-	struct fi_ibv_msg_epe *epe;
-
-	fastlock_acquire(&ep->scq->lock);
-	if (VERBS_SIGNAL_SEND(ep)) {
-		epe = util_buf_alloc(ep->scq->epe_pool);
-		if (!epe) {
-			fastlock_release(&ep->scq->lock);
-			return -FI_ENOMEM;
-		}
-		memset(epe, 0, sizeof(*epe));
-		wr->send_flags |= IBV_SEND_SIGNALED;
-		wr->wr_id = ep->ep_id;
-		epe->ep = ep;
-		slist_insert_tail(&epe->entry, &ep->scq->ep_list);
-		ofi_atomic_inc32(&ep->comp_pending);
-	}
-	fastlock_release(&ep->scq->lock);
-	return 0;
-}
-
-static int fi_ibv_reap_comp(struct fi_ibv_msg_ep *ep)
-{
-	struct fi_ibv_wce *wce = NULL;
-	int got_wc = 0;
-	int ret = 0;
-
-	fastlock_acquire(&ep->scq->lock);
-	while (ofi_atomic_get32(&ep->comp_pending) > 0) {
-		if (!wce) {
-			wce = util_buf_alloc(ep->scq->wce_pool);
-			if (!wce) {
-				fastlock_release(&ep->scq->lock);
-				return -FI_ENOMEM;
-			}
-			memset(wce, 0, sizeof(*wce));
-		}
-		ret = fi_ibv_poll_cq(ep->scq, &wce->wc);
-		if (ret < 0) {
-			VERBS_WARN(FI_LOG_EP_DATA,
-				   "Failed to read completion for signaled send\n");
-			util_buf_release(ep->scq->wce_pool, wce);
-			fastlock_release(&ep->scq->lock);
-			return ret;
-		} else if (ret > 0) {
-			slist_insert_tail(&wce->entry, &ep->scq->wcq);
-			got_wc = 1;
-			wce = NULL;
-		}
-	}
-	if (wce)
-		util_buf_release(ep->scq->wce_pool, wce);
-
-	if (got_wc && ep->scq->channel)
-		ret = fi_ibv_cq_signal(&ep->scq->cq_fid);
-
-	fastlock_release(&ep->scq->lock);
-	return ret;
-}
-
-// WR must be filled out by now except for context
-ssize_t
-fi_ibv_send(struct fi_ibv_msg_ep *ep, struct ibv_send_wr *wr, void *context)
-{
-	struct fi_ibv_wre *wre = NULL;
-	int ret;
-
-	if (ep->scq) {
-		if (wr->send_flags & IBV_SEND_SIGNALED) {
-			fastlock_acquire(&ep->wre_lock);
-			wre = util_buf_alloc(ep->wre_pool);
-			if (OFI_UNLIKELY(!wre)) {
-				fastlock_release(&ep->wre_lock);
-				return -FI_EAGAIN;
-			}
-			memset(wre, 0, sizeof(*wre));
-			dlist_insert_tail(&wre->entry, &ep->wre_list);
-			fastlock_release(&ep->wre_lock);
-
-			wre->context = context;
-			wr->wr_id = (uintptr_t)wre;
-			wre->ep = ep;
-			wre->context = context;
-			wre->wr.type = IBV_SEND_WR;
-			wre->wr.swr = *wr;
-
-			assert((wr->wr_id & ep->scq->wr_id_mask) !=
-			       ep->scq->send_signal_wr_id);
-			ofi_atomic_set32(&ep->unsignaled_send_cnt, 0);
-		} else {
-			if (VERBS_SIGNAL_SEND(ep)) {
-				ret = fi_ibv_signal_send(ep, wr);
-				if (ret)
-					return ret;
-			} else {
-				wr->wr_id = 0ULL;
-				ofi_atomic_inc32(&ep->unsignaled_send_cnt);
-
-				if (ofi_atomic_get32(&ep->unsignaled_send_cnt) >=
-						VERBS_SEND_COMP_THRESH(ep)) {
-					ret = fi_ibv_reap_comp(ep);
-					if (ret)
-						return ret;
-				}
-			}
-		}
-	}
-
-	return FI_IBV_INVOKE_POST(send, send, ep->id->qp, wr,
-				  FI_IBV_RELEASE_WRE(ep, wre));
-}
-
-ssize_t fi_ibv_send_buf(struct fi_ibv_msg_ep *ep, struct ibv_send_wr *wr,
-			const void *buf, size_t len, void *desc, void *context)
-{
-	struct ibv_sge sge = fi_ibv_init_sge(buf, len, desc);
-
-	wr->sg_list = &sge;
-	wr->num_sge = 1;
-
-	return fi_ibv_send(ep, wr, context);
-}
-
-ssize_t fi_ibv_send_buf_inline(struct fi_ibv_msg_ep *ep, struct ibv_send_wr *wr,
-			       const void *buf, size_t len)
-{
-	struct ibv_sge sge = fi_ibv_init_sge_inline(buf, len);
-
-	wr->sg_list = &sge;
-	wr->num_sge = 1;
-
-	return fi_ibv_send(ep, wr, NULL);
-}
-
-ssize_t fi_ibv_send_iov_flags(struct fi_ibv_msg_ep *ep, struct ibv_send_wr *wr,
-			      const struct iovec *iov, void **desc, int count,
-			      void *context, uint64_t flags)
-{
-	size_t len = 0;
-
-	if (!desc)
-		fi_ibv_set_sge_iov_inline(wr->sg_list, iov, count, len);
-	else
-		fi_ibv_set_sge_iov(wr->sg_list, iov, count, desc, len);
-
-	wr->num_sge = count;
-	wr->send_flags = VERBS_INJECT_FLAGS(ep, len, flags) | VERBS_COMP_FLAGS(ep, flags);
-
-	if (flags & FI_FENCE)
-		wr->send_flags |= IBV_SEND_FENCE;
-
-	return fi_ibv_send(ep, wr, context);
-}
-
 static int fi_ibv_param_define(const char *param_name, const char *param_str,
 			       enum fi_param_type type, void *param_default)
 {
@@ -430,6 +268,10 @@ static int fi_ibv_param_define(const char *param_name, const char *param_str,
 		case FI_PARAM_INT:
 		case FI_PARAM_BOOL:
 			snprintf(param_default_str, 256, "%d", *((int *)param_default));
+			param_default_sz = strlen(param_default_str);
+			break;
+		case FI_PARAM_SIZE_T:
+			snprintf(param_default_str, 256, "%zu", *((size_t *)param_default));
 			param_default_sz = strlen(param_default_str);
 			break;
 		default:
@@ -516,6 +358,80 @@ int fi_ibv_set_rnr_timer(struct ibv_qp *qp)
 	return 0;
 }
 
+int fi_ibv_find_max_inline(struct ibv_pd *pd, struct ibv_context *context,
+                           enum ibv_qp_type qp_type)
+{
+	struct ibv_qp_init_attr qp_attr;
+	struct ibv_qp *qp = NULL;
+	struct ibv_cq *cq = ibv_create_cq(context, 1, NULL, NULL, 0);
+	assert(cq);
+	int max_inline = 2;
+	int rst = 0;
+
+	memset(&qp_attr, 0, sizeof(qp_attr));
+	qp_attr.send_cq = cq;
+	qp_attr.recv_cq = cq;
+	qp_attr.qp_type = qp_type;
+	qp_attr.cap.max_send_wr = 1;
+	qp_attr.cap.max_recv_wr = 1;
+	qp_attr.cap.max_send_sge = 1;
+	qp_attr.cap.max_recv_sge = 1;
+	qp_attr.sq_sig_all = 1;
+
+	do {
+		if (qp)
+			ibv_destroy_qp(qp);
+		qp_attr.cap.max_inline_data = max_inline;
+		qp = ibv_create_qp(pd, &qp_attr);
+		if (qp) {
+			/*
+			 * truescale returns max_inline_data 0
+			 */
+			if (qp_attr.cap.max_inline_data == 0)
+				break;
+
+			/*
+			 * iWarp is able to create qp with unsupported
+			 * max_inline, lets take first returned value.
+			 */
+			if (context->device->transport_type == IBV_TRANSPORT_IWARP) {
+				max_inline = rst = qp_attr.cap.max_inline_data;
+				break;
+			}
+			rst = max_inline;
+		}
+	} while (qp && (max_inline < INT_MAX / 2) && (max_inline *= 2));
+
+	if (rst != 0) {
+		int pos = rst, neg = max_inline;
+		do {
+			max_inline = pos + (neg - pos) / 2;
+			if (qp)
+				ibv_destroy_qp(qp);
+
+			qp_attr.cap.max_inline_data = max_inline;
+			qp = ibv_create_qp(pd, &qp_attr);
+			if (qp)
+				pos = max_inline;
+			else
+				neg = max_inline;
+
+		} while (neg - pos > 2);
+
+		rst = pos;
+	}
+
+	if (qp) {
+		ibv_destroy_qp(qp);
+	}
+
+	if (cq) {
+		ibv_destroy_cq(cq);
+	}
+
+	return rst;
+}
+
 static int fi_ibv_get_param_int(const char *param_name,
 				const char *param_str,
 				int *param_default)
@@ -551,6 +467,25 @@ static int fi_ibv_get_param_bool(const char *param_name,
 		if ((*param_default != 1) && (*param_default != 0))
 			return -FI_EINVAL;
 	}
+
+	return 0;
+}
+
+static int fi_ibv_get_param_size_t(const char *param_name,
+				   const char *param_str,
+				   size_t *param_default)
+{
+	int ret;
+	size_t param;
+
+	ret = fi_ibv_param_define(param_name, param_str,
+				  FI_PARAM_SIZE_T,
+				  param_default);
+	if (ret)
+		return ret;
+
+	if (!fi_param_get_size_t(&fi_ibv_prov, param_name, &param))
+		*param_default = param;
 
 	return 0;
 }
@@ -655,6 +590,36 @@ static int fi_ibv_read_params(void)
 			   "Invalid value of iface\n");
 		return -FI_EINVAL;
 	}
+	if (fi_ibv_get_param_bool("mr_cache_enable",
+				  "Enable Memory Region caching",
+				  &fi_ibv_gl_data.mr_cache_enable)) {
+		VERBS_WARN(FI_LOG_CORE,
+			   "Invalid value of mr_cache_enable\n");
+		return -FI_EINVAL;
+	}
+	if (fi_ibv_get_param_int("mr_max_cached_cnt",
+				 "Maximum number of cache entries",
+				 &fi_ibv_gl_data.mr_max_cached_cnt) ||
+	    (fi_ibv_gl_data.mr_max_cached_cnt < 0)) {
+		VERBS_WARN(FI_LOG_CORE,
+			   "Invalid value of mr_max_cached_cnt\n");
+		return -FI_EINVAL;
+	}
+	if (fi_ibv_get_param_size_t("mr_max_cached_size",
+				    "Maximum total size of cache entries",
+				    &fi_ibv_gl_data.mr_max_cached_size)) {
+		VERBS_WARN(FI_LOG_CORE,
+			   "Invalid value of mr_max_cached_size\n");
+		return -FI_EINVAL;
+	}
+	if (fi_ibv_get_param_bool("mr_cache_merge_regions",
+				  "Enable the merging of MR regions for MR "
+				  "caching functionality",
+				  &fi_ibv_gl_data.mr_cache_merge_regions)) {
+		VERBS_WARN(FI_LOG_CORE,
+			   "Invalid value of mr_cache_merge_regions\n");
+		return -FI_EINVAL;
+	}
 
 	/* RDM-specific parameters */
 	if (fi_ibv_get_param_int("rdm_buffer_num", "The number of pre-registered "
@@ -698,6 +663,16 @@ static int fi_ibv_read_params(void)
 				 &fi_ibv_gl_data.rdm.eager_send_opcode)) {
 		VERBS_WARN(FI_LOG_CORE,
 			   "Invalid value of rdm_eager_send_opcode\n");
+		return -FI_EINVAL;
+	}
+	if (fi_ibv_get_param_str("rdm_cm_thread_affinity",
+				 "If specified, bind the CM thread to the indicated "
+				 "range(s) of Linux virtual processor ID(s). "
+				 "This option is currently not supported on OS X. "
+				 "Usage: id_start[-id_end[:stride]][,]",
+				 &fi_ibv_gl_data.rdm.cm_thread_affinity)) {
+		VERBS_WARN(FI_LOG_CORE,
+			   "Invalid thread affinity range provided in the rdm_cm_thread_affinity\n");
 		return -FI_EINVAL;
 	}
 

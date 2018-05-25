@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2015-2016 Intel Corporation. All rights reserved.
+ * Copyright (c) 2018, Cisco Systems, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -32,7 +33,10 @@
 
 #include <stdio.h>
 
-#include <fi_util.h>
+#include <ofi_util.h>
+
+#define OFI_MSG_CAPS	(FI_SEND | FI_RECV)
+#define OFI_RMA_CAPS	(FI_READ | FI_WRITE | FI_REMOTE_READ | FI_REMOTE_WRITE)
 
 static int fi_valid_addr_format(uint32_t prov_format, uint32_t user_format)
 {
@@ -230,11 +234,22 @@ static int ofi_info_to_util(uint32_t version, const struct fi_provider *prov,
 	if (ofi_dup_addr(core_info, *util_info))
 		goto err;
 
-	(*util_info)->domain_attr->name = strdup(core_info->domain_attr->name);
-	if (!(*util_info)->domain_attr->name) {
-		FI_WARN(prov, FI_LOG_FABRIC,
-			"Unable to allocate domain name\n");
-		goto err;
+	/* Release 1.4 brought standardized domain names across IP based
+	 * providers. Before this release, the usNIC provider would return a
+	 * NULL domain name from fi_getinfo. For compatibility reasons, allow a
+	 * NULL domain name when apps are requesting version < 1.4.
+	 */
+	assert(FI_VERSION_LT(1, 4) || core_info->domain_attr->name);
+
+	if (core_info->domain_attr->name) {
+		(*util_info)->domain_attr->name =
+			strdup(core_info->domain_attr->name);
+
+		if (!(*util_info)->domain_attr->name) {
+			FI_WARN(prov, FI_LOG_FABRIC,
+				"Unable to allocate domain name\n");
+			goto err;
+		}
 	}
 
 	(*util_info)->fabric_attr->name = strdup(core_info->fabric_attr->name);
@@ -344,7 +359,8 @@ int ofi_get_core_info_fabric(struct fi_fabric_attr *util_attr,
 	}
 	hints.mode = ~0;
 
-	ret = fi_getinfo(util_attr->api_version, NULL, NULL, 0, &hints, core_info);
+	ret = fi_getinfo(util_attr->api_version, NULL, NULL, OFI_CORE_PROV_ONLY,
+	                 &hints, core_info);
 
 	free(hints.fabric_attr->prov_name);
 out:
@@ -591,13 +607,13 @@ int ofi_check_domain_attr(const struct fi_provider *prov, uint32_t api_version,
 	}
 
 	if (user_attr->max_err_data > prov_attr->max_err_data) {
-		FI_INFO(prov, FI_LOG_CORE, "Max err data too large");
+		FI_INFO(prov, FI_LOG_CORE, "Max err data too large\n");
 		FI_INFO_CHECK_VAL(prov, prov_attr, user_attr, max_err_data);
 		return -FI_ENODATA;
 	}
 
 	if (user_attr->mr_cnt > prov_attr->mr_cnt) {
-		FI_INFO(prov, FI_LOG_CORE, "MR count too large");
+		FI_INFO(prov, FI_LOG_CORE, "MR count too large\n");
 		FI_INFO_CHECK_VAL(prov, prov_attr, user_attr, mr_cnt);
 		return -FI_ENODATA;
 	}
@@ -704,7 +720,7 @@ int ofi_check_ep_attr(const struct util_prov *util_prov, uint32_t api_version,
 
 	if (user_attr->auth_key_size &&
 	    (user_attr->auth_key_size != prov_attr->auth_key_size)) {
-		FI_INFO(prov, FI_LOG_CORE, "Unsupported authentification size.");
+		FI_INFO(prov, FI_LOG_CORE, "Unsupported authentication size.");
 		FI_INFO_CHECK_VAL(prov, prov_attr, user_attr, auth_key_size);
 		return -FI_ENODATA;
 	}
@@ -1029,6 +1045,12 @@ static uint64_t ofi_get_caps(uint64_t info_caps, uint64_t hint_caps,
 		caps = (hint_caps & FI_PRIMARY_CAPS) |
 		       (attr_caps & FI_SECONDARY_CAPS);
 	}
+
+	if (caps & (FI_MSG | FI_TAGGED) && !(caps & OFI_MSG_CAPS))
+		caps |= OFI_MSG_CAPS;
+	if (caps & (FI_RMA | FI_ATOMICS) && !(caps & OFI_RMA_CAPS))
+		caps |= OFI_RMA_CAPS;
+
 	return caps;
 }
 
@@ -1128,11 +1150,13 @@ static uint64_t ofi_get_info_caps(const struct fi_info *prov_info,
 	int prov_mode, user_mode;
 	uint64_t caps;
 
+	assert(user_info);
+
 	caps = ofi_get_caps(prov_info->caps, user_info->caps, prov_info->caps);
 
 	prov_mode = prov_info->domain_attr->mr_mode;
 
-	if (!user_info || !ofi_rma_target_allowed(caps) ||
+	if (!ofi_rma_target_allowed(caps) ||
 	    !(prov_mode & OFI_MR_MODE_RMA_TARGET))
 		return caps;
 
@@ -1144,7 +1168,7 @@ static uint64_t ofi_get_info_caps(const struct fi_info *prov_info,
 	if ((FI_VERSION_LT(api_version, FI_VERSION(1,5)) &&
 	    (user_mode == FI_MR_UNSPEC)) ||
 	    (user_mode == FI_MR_BASIC) ||
-	    ((user_mode & OFI_MR_MODE_RMA_TARGET) ==
+	    ((user_mode & prov_mode & OFI_MR_MODE_RMA_TARGET) == 
 	     (prov_mode & OFI_MR_MODE_RMA_TARGET)))
 		return caps;
 
@@ -1168,10 +1192,11 @@ void ofi_alter_info(struct fi_info *info, const struct fi_info *hints,
 		 * the checks depend on unmodified provider mr_mode attr */
 		info->caps = ofi_get_info_caps(info, hints, api_version);
 
-		if (FI_VERSION_LT(api_version, FI_VERSION(1, 5))) {
-			if (info->domain_attr->mr_mode & FI_MR_LOCAL)
-				info->mode |= FI_LOCAL_MR;
-		}
+		if ((info->domain_attr->mr_mode & FI_MR_LOCAL) &&
+		    (FI_VERSION_LT(api_version, FI_VERSION(1, 5)) ||
+		     (hints && hints->domain_attr &&
+		      (hints->domain_attr->mr_mode & (FI_MR_BASIC | FI_MR_SCALABLE)))))
+			info->mode |= FI_LOCAL_MR;
 
 		info->handle = hints->handle;
 

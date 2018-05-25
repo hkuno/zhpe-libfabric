@@ -1827,13 +1827,6 @@ struct zhpe_pe *zhpe_pe_init(struct zhpe_domain *domain)
 	mutex_init(&pe->list_lock, NULL);
 	pe->domain = domain;
 
-	pe->atomic_rx_pool = util_buf_pool_create(ZHPE_EP_MAX_ATOMIC_SZ,
-						  16, 0, 32);
-	if (!pe->atomic_rx_pool) {
-		ZHPE_LOG_ERROR("failed to create atomic rx buffer pool\n");
-		goto err2;
-	}
-
 	if (domain->progress_mode == FI_PROGRESS_AUTO) {
 		if (socketpair(AF_UNIX, SOCK_STREAM, 0, pe->signal_fds) < 0)
 			goto err3;
@@ -1854,16 +1847,9 @@ err5:
 	ofi_close_socket(pe->signal_fds[0]);
 	ofi_close_socket(pe->signal_fds[1]);
 err3:
-	util_buf_pool_destroy(pe->atomic_rx_pool);
-err2:
 	mutex_destroy(&pe->list_lock);
 	free(pe);
 	return NULL;
-}
-
-static void zhpe_pe_free_util_pool(struct zhpe_pe *pe)
-{
-	util_buf_pool_destroy(pe->atomic_rx_pool);
 }
 
 void zhpe_pe_finalize(struct zhpe_pe *pe)
@@ -1876,7 +1862,6 @@ void zhpe_pe_finalize(struct zhpe_pe *pe)
 		ofi_close_socket(pe->signal_fds[1]);
 	}
 
-	zhpe_pe_free_util_pool(pe);
 	fastlock_destroy(&pe->signal_lock);
 	mutex_destroy(&pe->list_lock);
 	free(pe);

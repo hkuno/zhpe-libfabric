@@ -45,14 +45,14 @@
 #include <stdio.h>
 #include <assert.h>
 
-#include <fi_util.h>
+#include <ofi_util.h>
 #include <rdma/fabric.h>
 #include <rdma/fi_cm.h>
 #include <rdma/fi_domain.h>
 #include <rdma/fi_endpoint.h>
 #include <rdma/fi_rma.h>
 #include <rdma/fi_errno.h>
-#include "prov.h"
+#include "ofi_prov.h"
 
 #include "gnix.h"
 #include "gnix_nic.h"
@@ -722,7 +722,7 @@ static void gnix_fini(void)
 struct fi_provider gnix_prov = {
 	.name = gnix_prov_name,
 	.version = FI_VERSION(GNI_MAJOR_VERSION, GNI_MINOR_VERSION),
-	.fi_version = FI_VERSION(1, 5),
+	.fi_version = FI_VERSION(1, 6),
 	.getinfo = gnix_getinfo,
 	.fabric = gnix_fabric_open,
 	.cleanup = gnix_fini

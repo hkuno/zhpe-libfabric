@@ -47,7 +47,7 @@
 #include <ifaddrs.h>
 #endif
 
-#include "fi_util.h"
+#include "ofi_util.h"
 #include "sock.h"
 #include "sock_util.h"
 
@@ -68,7 +68,7 @@ extern const struct fi_domain_attr sock_domain_attr;
 extern const struct fi_fabric_attr sock_fabric_attr;
 
 const struct fi_tx_attr sock_stx_attr = {
-	.caps = SOCK_EP_RDM_CAP,
+	.caps = SOCK_EP_RDM_CAP_BASE,
 	.mode = SOCK_MODE,
 	.op_flags = FI_TRANSMIT_COMPLETE,
 	.msg_order = SOCK_EP_MSG_ORDER,
@@ -79,7 +79,7 @@ const struct fi_tx_attr sock_stx_attr = {
 };
 
 const struct fi_rx_attr sock_srx_attr = {
-	.caps = SOCK_EP_RDM_CAP,
+	.caps = SOCK_EP_RDM_CAP_BASE,
 	.mode = SOCK_MODE,
 	.op_flags = 0,
 	.msg_order = SOCK_EP_MSG_ORDER,
@@ -1494,6 +1494,10 @@ static void sock_set_domain_attr(uint32_t api_version, void *src_addr,
 		attr->max_ep_tx_ctx = sock_domain_attr.max_ep_tx_ctx;
 	if (attr->max_ep_rx_ctx == 0)
 		attr->max_ep_rx_ctx = sock_domain_attr.max_ep_rx_ctx;
+	if (attr->max_ep_stx_ctx == 0)
+		attr->max_ep_stx_ctx = sock_domain_attr.max_ep_stx_ctx;
+	if (attr->max_ep_srx_ctx == 0)
+		attr->max_ep_srx_ctx = sock_domain_attr.max_ep_srx_ctx;
 	if (attr->cntr_cnt == 0)
 		attr->cntr_cnt = sock_domain_attr.cntr_cnt;
 	if (attr->mr_iov_limit == 0)
@@ -1833,15 +1837,22 @@ struct sock_conn *sock_ep_lookup_conn(struct sock_ep_attr *attr, fi_addr_t index
 	idx = (attr->ep_type == FI_EP_MSG) ? index : index & attr->av->mask;
 
 	conn = ofi_idm_lookup(&attr->av_idm, idx);
-	if (conn && conn != SOCK_CM_CONN_IN_PROGRESS)
+	if (conn && conn != SOCK_CM_CONN_IN_PROGRESS) {
+		if (conn->av_index == FI_ADDR_NOTAVAIL)
+			conn->av_index = idx;
 		return conn;
+	}
 
 	for (i = 0; i < attr->cmap.used; i++) {
 		if (!attr->cmap.table[i].connected)
 			continue;
 
-		if (ofi_equals_sockaddr(&attr->cmap.table[i].addr, addr))
-			return &attr->cmap.table[i];
+		if (ofi_equals_sockaddr(&attr->cmap.table[i].addr, addr)) {
+			conn = &attr->cmap.table[i];
+			if (conn->av_index == FI_ADDR_NOTAVAIL)
+				conn->av_index = idx;
+			break;
+		}
 	}
 	return conn;
 }

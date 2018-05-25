@@ -98,6 +98,12 @@
 /* Network Direct provider is built as DSO */
 /* #undef HAVE_NETDIR_DL */
 
+/* TCP provider is built */
+#define HAVE_TCP 1
+
+/* TCP provider is built as DSO */
+/* #undef HAVE_TCP_DL */
+
 /* Define to 1 if you have the <stdint.h> header file. */
 /* #undef HAVE_STDINT_H */
 
@@ -153,7 +159,7 @@
 #define PACKAGE_NAME "libfabric"
 
 /* Define to the full name and version of this package. */
-#define PACKAGE_STRING "libfabric 1.2.0"
+#define PACKAGE_STRING "libfabric 1.6.1"
 
 /* Define to the one symbol short name of this package. */
 #define PACKAGE_TARNAME "libfabric"
@@ -162,7 +168,7 @@
 #define PACKAGE_URL ""
 
 /* Define to the version of this package. */
-#define PACKAGE_VERSION "1.2.0"
+#define PACKAGE_VERSION "1.6.1rc1"
 
 /* Define to 1 if pthread_spin_init is available. */
 /* #undef PT_LOCK_SPIN */
@@ -185,4 +191,9 @@
 
 /* Version number of package */
 #define _FI_EXP(s) #s
-#define VERSION _FI_EXP(FI_MAJOR_VERSION) "." _FI_EXP(FI_MINOR_VERSION) ".0"
+#define _FI_TO_STRING(s) _FI_EXP(s)
+#define VERSION _FI_TO_STRING(FI_MAJOR_VERSION) "." _FI_TO_STRING(FI_MINOR_VERSION) ".0"
+
+#ifndef BUILD_ID
+#define BUILD_ID ""
+#endif

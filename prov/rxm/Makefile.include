@@ -8,7 +8,6 @@ _rxm_files = \
        prov/rxm/src/rxm_ep.c		\
        prov/rxm/src/rxm_cq.c		\
        prov/rxm/src/rxm_rma.c		\
-       prov/rxm/src/rxm.c		\
        prov/rxm/src/rxm.h
 
 if HAVE_RXM_DL
@@ -22,7 +21,8 @@ src_libfabric_la_SOURCES += $(_rxm_files)
 src_libfabric_la_LIBADD += $(rxm_shm_LIBS)
 endif !HAVE_RXM_DL
 
+prov_install_man_pages += man/man7/fi_rxm.7
 
 endif HAVE_RXM
 
-
+prov_dist_man_pages += man/man7/fi_rxm.7
