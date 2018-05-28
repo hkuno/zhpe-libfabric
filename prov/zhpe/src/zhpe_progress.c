@@ -1219,7 +1219,8 @@ int zhpe_pe_tx_handle_rma(struct zhpe_pe_root *pe_root,
 		    ((pe_entry->flags & (FI_INJECT | FI_READ)) ==
 		     (FI_INJECT | FI_READ)))
 			memcpy(pe_entry->rma.liov[0].iov_base,
-			       zq_cqe->result.data, pe_entry->rem);
+			       zq_cqe->result.data,
+			       pe_entry->rma.liov[0].iov_len);
 	}
 	zhpe_pe_tx_rma(pe_entry);
 
