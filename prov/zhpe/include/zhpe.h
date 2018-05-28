@@ -1293,10 +1293,10 @@ struct zhpe_host_list_entry {
 	struct slist_entry entry;
 };
 
-int zhpe_verify_info(uint32_t version, const struct fi_info *hints,
+int zhpe_verify_info(uint32_t api_version, const struct fi_info *hints,
 		     uint64_t flags);
 int zhpe_verify_fabric_attr(struct fi_fabric_attr *attr);
-int zhpe_verify_domain_attr(uint32_t version, const struct fi_info *info);
+int zhpe_verify_domain_attr(uint32_t api_version, const struct fi_info *info);
 
 int zhpe_rdm_verify_ep_attr(struct fi_ep_attr *ep_attr,
 			    struct fi_tx_attr *tx_attr,
@@ -1305,7 +1305,7 @@ int zhpe_msg_verify_ep_attr(struct fi_ep_attr *ep_attr,
 			    struct fi_tx_attr *tx_attr,
 			    struct fi_rx_attr *rx_attr);
 
-struct fi_info *zhpe_fi_info(uint32_t version,
+struct fi_info *zhpe_fi_info(uint32_t api_version,
 			     const struct fi_info *hints,
 			     const union sockaddr_in46 *src_addr,
 			     const union sockaddr_in46 *dest_addr,
@@ -1313,16 +1313,17 @@ struct fi_info *zhpe_fi_info(uint32_t version,
 			     const struct fi_ep_attr *ep_attr,
 			     const struct fi_tx_attr *tx_attr,
 			     const struct fi_rx_attr *rx_attr);
-int zhpe_msg_fi_info(uint32_t version, const union sockaddr_in46 *src_addr,
+int zhpe_msg_fi_info(uint32_t api_version, const union sockaddr_in46 *src_addr,
 		     const union sockaddr_in46 *dest_addr,
 		     const struct fi_info *hints, struct fi_info **info);
-int zhpe_rdm_fi_info(uint32_t version, const union sockaddr_in46 *src_addr,
+int zhpe_rdm_fi_info(uint32_t api_version, const union sockaddr_in46 *src_addr,
 		     const union sockaddr_in46 *dest_addr,
 		     const struct fi_info *hints, struct fi_info **info);
 void free_fi_info(struct fi_info *info);
 
-int zhpe_msg_getinfo(uint32_t version, const char *node, const char *service,
-		uint64_t flags, struct fi_info *hints, struct fi_info **info);
+int zhpe_msg_getinfo(uint32_t api_version, const char *node,
+		     const char *service, uint64_t flags,
+		     struct fi_info *hints, struct fi_info **info);
 
 int zhpe_domain(struct fid_fabric *fabric, struct fi_info *info,
 		struct fid_domain **dom, void *context);
