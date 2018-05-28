@@ -189,7 +189,7 @@ int zhpe_verify_fabric_attr(struct fi_fabric_attr *attr)
 	return 0;
 }
 
-int zhpe_verify_info(uint32_t version, const struct fi_info *hints,
+int zhpe_verify_info(uint32_t api_version, const struct fi_info *hints,
 		     uint64_t flags)
 {
 	int			ret = 0;
@@ -272,7 +272,7 @@ int zhpe_verify_info(uint32_t version, const struct fi_info *hints,
 			return -FI_ENODATA;
 		}
 	}
-	ret = zhpe_verify_domain_attr(version, hints);
+	ret = zhpe_verify_domain_attr(api_version, hints);
 	if (ret < 0)
 		return ret;
 
@@ -399,7 +399,7 @@ static bool hints_addr_valid(const struct fi_info *hints,
 	return sockaddr_valid(addr, addr_len, true);
 }
 
-static int zhpe_ep_getinfo(uint32_t version, const char *node,
+static int zhpe_ep_getinfo(uint32_t api_version, const char *node,
 			   const char *service, uint64_t flags,
 			   const struct fi_info *hints,
 			   enum fi_ep_type ep_type, struct fi_info **info)
@@ -465,11 +465,11 @@ static int zhpe_ep_getinfo(uint32_t version, const char *node,
 
 	switch (ep_type) {
 	case FI_EP_MSG:
-		ret = zhpe_msg_fi_info(version, src_addr, dest_addr,
+		ret = zhpe_msg_fi_info(api_version, src_addr, dest_addr,
 				       hints, info);
 		break;
 	case FI_EP_RDM:
-		ret = zhpe_rdm_fi_info(version, src_addr, dest_addr,
+		ret = zhpe_rdm_fi_info(api_version, src_addr, dest_addr,
 				       hints, info);
 		break;
 	default:
@@ -486,7 +486,7 @@ static int zhpe_ep_getinfo(uint32_t version, const char *node,
 	return ret;
 }
 
-static inline int do_ep_getinfo(uint32_t version, const char *node,
+static inline int do_ep_getinfo(uint32_t api_version, const char *node,
 				const char *service, uint64_t flags,
 				const struct fi_info *hints,
 				struct fi_info **info, struct fi_info **tail,
@@ -495,7 +495,7 @@ static inline int do_ep_getinfo(uint32_t version, const char *node,
 	int			ret;
 	struct fi_info		*cur;
 
-	ret = zhpe_ep_getinfo(version, node, service, flags,
+	ret = zhpe_ep_getinfo(api_version, node, service, flags,
 			      hints, ep_type,  &cur);
 	if (ret < 0)
 		goto done;
@@ -509,7 +509,7 @@ static inline int do_ep_getinfo(uint32_t version, const char *node,
 	return ret;
 }
 
-static int zhpe_node_getinfo(uint32_t version, const char *node,
+static int zhpe_node_getinfo(uint32_t api_version, const char *node,
 			     const char *service,
 			     uint64_t flags, const struct fi_info *hints,
 			     struct fi_info **info, struct fi_info **tail)
@@ -524,7 +524,7 @@ static int zhpe_node_getinfo(uint32_t version, const char *node,
 
 		case FI_EP_RDM:
 		case FI_EP_MSG:
-			ret = do_ep_getinfo(version, node, service, flags,
+			ret = do_ep_getinfo(api_version, node, service, flags,
 					    hints, info, tail, ep_type);
 			goto done;
 
@@ -537,7 +537,7 @@ static int zhpe_node_getinfo(uint32_t version, const char *node,
 		}
 	}
 	for (ep_type = FI_EP_MSG; ep_type <= FI_EP_RDM; ep_type++) {
-		ret = do_ep_getinfo(version, node, service, flags,
+		ret = do_ep_getinfo(api_version, node, service, flags,
 				    hints, info, tail, ep_type);
 		if (ret < 0) {
 			if (ret == -FI_ENODATA)
@@ -554,7 +554,7 @@ static int zhpe_node_getinfo(uint32_t version, const char *node,
 	return ret;
 }
 
-static int zhpe_getinfo(uint32_t version, const char *node,
+static int zhpe_getinfo(uint32_t api_version, const char *node,
 			const char *service,
 			uint64_t flags, const struct fi_info *hints,
 			struct fi_info **info)
@@ -571,7 +571,7 @@ static int zhpe_getinfo(uint32_t version, const char *node,
 
 	*info = tail = NULL;
 
-	ret = zhpe_verify_info(version, hints, flags);
+	ret = zhpe_verify_info(api_version, hints, flags);
 	if (ret < 0)
 		return ret;
 
@@ -583,7 +583,7 @@ static int zhpe_getinfo(uint32_t version, const char *node,
 			service = "0";
 	}
 
-	return zhpe_node_getinfo(version, node, service, flags, hints,
+	return zhpe_node_getinfo(api_version, node, service, flags, hints,
 				 info, &tail);
 }
 

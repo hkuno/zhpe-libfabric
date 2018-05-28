@@ -59,61 +59,10 @@ const struct fi_domain_attr zhpe_domain_attr = {
 	.mr_cnt = ZHPE_DOMAIN_MR_CNT,
 };
 
-static inline int user_mr_mode(uint32_t api_version,
-			       const struct fi_info *info, uint32_t *user_mode)
-{
-	*user_mode = info->domain_attr->mr_mode;
-
-	if (FI_VERSION_LT(api_version, FI_VERSION(1, 5))) {
-
-		switch (*user_mode) {
-
-		case FI_MR_UNSPEC:
-		case FI_MR_BASIC:
-			*user_mode = OFI_MR_BASIC_MAP;
-			if (info->mode & FI_LOCAL_MR)
-				*user_mode |= FI_MR_LOCAL;
-			break;
-
-		default:
-			return -FI_ENODATA;
-		}
-
-		return 0;
-	}
-	if (*user_mode & (FI_MR_BASIC | FI_MR_SCALABLE)) {
-		if (*user_mode == FI_MR_BASIC) {
-			*user_mode = OFI_MR_BASIC_MAP;
-			if (info->mode & FI_LOCAL_MR)
-				*user_mode |= FI_MR_LOCAL;
-		} else
-			return -FI_ENODATA;
-	}
-
-	return 0;
-}
-
-/* FIXME: Temporary, imported from master post v1.5.1
- * I'm not sure I completely agree with this, but the goal is to reduce
- * the required capabilities if the user hasn't asked to support
- * remote RMA operations. Importing this allows me to work with the
- * latest fabtests.
- */
-static inline void ofi_mr_mode_adjust(uint64_t info_caps, uint32_t *mr_mode)
-{
-	if (!(info_caps & (FI_RMA | FI_ATOMIC)) ||
-	    !(info_caps & (FI_REMOTE_READ | FI_REMOTE_WRITE))) {
-		*mr_mode &= ~(FI_MR_PROV_KEY | FI_MR_VIRT_ADDR);
-		if (!(*mr_mode & FI_MR_LOCAL))
-			*mr_mode &= ~FI_MR_ALLOCATED;
-	}
-}
-
-int zhpe_verify_domain_attr(uint32_t version, const struct fi_info *info)
+int zhpe_verify_domain_attr(uint32_t api_version, const struct fi_info *info)
 {
 	const struct fi_domain_attr *attr = info->domain_attr;
-	uint32_t		user32;
-	uint32_t		prov32;
+	int			rc;
 
 	if (!attr)
 		return 0;
@@ -175,14 +124,10 @@ int zhpe_verify_domain_attr(uint32_t version, const struct fi_info *info)
 		return -FI_ENODATA;
 	}
 
-	prov32 = zhpe_domain_attr.mr_mode;
-	ofi_mr_mode_adjust(info->caps, &prov32);
-	if (user_mr_mode(version, info, &user32) < 0 ||
-	    (user32 & prov32) != prov32) {
-		FI_INFO(&zhpe_prov, FI_LOG_CORE,
-			"Invalid memory registration mode\n");
-		return -FI_ENODATA;
-	}
+	rc = ofi_check_mr_mode(&zhpe_prov, api_version,
+			       zhpe_domain_attr.mr_mode | FI_MR_BASIC, info);
+	if (rc < 0)
+		return rc;
 
 	if (attr->mr_key_size > zhpe_domain_attr.mr_key_size)
 		return -FI_ENODATA;
@@ -605,7 +550,6 @@ int zhpe_domain(struct fid_fabric *fabric, struct fi_info *info,
 	struct zhpe_domain *zhpe_domain;
 	struct zhpe_fabric *fab;
 	int ret;
-	uint32_t		user32;
 
 	fab = container_of(fabric, struct zhpe_fabric, fab_fid);
 	if (info && info->domain_attr) {
@@ -653,10 +597,16 @@ int zhpe_domain(struct fid_fabric *fabric, struct fi_info *info,
 		zhpe_domain->attr = *(info->domain_attr);
 	else
 		zhpe_domain->attr = zhpe_domain_attr;
+	if (zhpe_domain->attr.mr_mode == FI_MR_UNSPEC ||
+	    zhpe_domain->attr.mr_mode == FI_MR_BASIC) {
+		zhpe_domain->attr.mr_mode = OFI_MR_BASIC_MAP;
+		if (info->mode & FI_LOCAL_MR)
+			zhpe_domain->attr.mr_mode |= FI_MR_LOCAL;
+	}
 
-	user_mr_mode(info->fabric_attr->api_version, info, &user32);
 	/* Disable key allocation in ofi_mr_map routines. */
-	ret = ofi_mr_map_init(&zhpe_prov, user32 & ~FI_MR_PROV_KEY,
+	ret = ofi_mr_map_init(&zhpe_prov,
+			      zhpe_domain->attr.mr_mode & ~FI_MR_PROV_KEY,
 			      &zhpe_domain->mr_map);
 	if (ret)
 		goto err2;

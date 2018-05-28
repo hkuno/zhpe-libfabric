@@ -1320,19 +1320,17 @@ static void zhpe_set_fabric_attr(void *src_addr,
 
 static void zhpe_set_domain_attr(uint32_t api_version, void *src_addr,
 				 const struct fi_domain_attr *hint_attr,
-				 struct fi_domain_attr *attr)
+				 struct fi_info *info)
 {
+	struct fi_domain_attr	*attr = info->domain_attr;
 	struct zhpe_domain *domain;
 
 	domain = zhpe_dom_list_head();
 	attr->domain = domain ? &domain->dom_fid : NULL;
 	if (!hint_attr) {
 		*attr = zhpe_domain_attr;
-		if (FI_VERSION_LT(api_version, FI_VERSION(1, 5))) {
+		if (FI_VERSION_LT(api_version, FI_VERSION(1, 5)))
 			attr->mr_mode = FI_MR_BASIC;
-			attr->mode |= FI_LOCAL_MR;
-		} else
-			attr->mr_mode |= FI_MR_LOCAL;
 		goto out;
 	}
 
@@ -1345,11 +1343,16 @@ static void zhpe_set_domain_attr(uint32_t api_version, void *src_addr,
 	}
 
 	*attr = *hint_attr;
-	if (attr->mr_mode == FI_MR_UNSPEC &&
-	    FI_VERSION_LT(api_version, FI_VERSION(1, 5))) {
-		attr->mr_mode = FI_MR_BASIC;
-		attr->mode |= FI_LOCAL_MR;
+	if (attr->mr_mode == FI_MR_UNSPEC || attr->mr_mode == FI_MR_BASIC) {
+		if (FI_VERSION_LT(api_version, FI_VERSION(1, 5)))
+			attr->mr_mode = FI_MR_BASIC;
+		else {
+			attr->mr_mode = OFI_MR_BASIC_MAP;
+			if (info->mode & FI_LOCAL_MR)
+				attr->mr_mode |= FI_MR_LOCAL;
+		}
 	}
+
 	if (attr->threading == FI_THREAD_UNSPEC)
 		attr->threading = zhpe_domain_attr.threading;
 	if (attr->control_progress == FI_PROGRESS_UNSPEC)
@@ -1481,14 +1484,13 @@ struct fi_info *zhpe_fi_info(uint32_t version,
 			info->handle = hints->handle;
 
 		zhpe_set_domain_attr(version, info->src_addr,
-				     hints->domain_attr, info->domain_attr);
+				     hints->domain_attr, info);
 		zhpe_set_fabric_attr(info->src_addr, hints->fabric_attr,
 				     info->fabric_attr);
 
 	} else {
 		info->mode = ZHPE_MODE;
-		zhpe_set_domain_attr(version, info->src_addr, NULL,
-				     info->domain_attr);
+		zhpe_set_domain_attr(version, info->src_addr, NULL, info);
 		zhpe_set_fabric_attr(info->src_addr, NULL, info->fabric_attr);
 		*info->ep_attr = *ep_attr;
 		*info->tx_attr = *tx_attr;
