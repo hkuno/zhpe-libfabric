@@ -503,7 +503,7 @@ int zhpe_cntr_open(struct fid_domain *domain, struct fi_cntr_attr *attr,
 	cond_init(&_cntr->cond, NULL);
 
 	if (attr == NULL)
-		memcpy(&_cntr->attr, &zhpe_cntr_add, sizeof(zhpe_cntr_attr));
+		memcpy(&_cntr->attr, &zhpe_cntr_attr, sizeof(zhpe_cntr_attr));
 	else
 		memcpy(&_cntr->attr, attr, sizeof(zhpe_cntr_attr));
 
