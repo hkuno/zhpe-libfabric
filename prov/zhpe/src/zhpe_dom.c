@@ -124,10 +124,13 @@ int zhpe_verify_domain_attr(uint32_t api_version, const struct fi_info *info)
 		return -FI_ENODATA;
 	}
 
-	rc = ofi_check_mr_mode(&zhpe_prov, api_version,
-			       zhpe_domain_attr.mr_mode | FI_MR_BASIC, info);
-	if (rc < 0)
-		return rc;
+	if (attr->mr_mode != FI_MR_UNSPEC) {
+		rc = ofi_check_mr_mode(&zhpe_prov, api_version,
+				       zhpe_domain_attr.mr_mode | FI_MR_BASIC,
+				       info);
+		if (rc < 0)
+			return rc;
+	}
 
 	if (attr->mr_key_size > zhpe_domain_attr.mr_key_size)
 		return -FI_ENODATA;
