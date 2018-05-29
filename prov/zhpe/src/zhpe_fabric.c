@@ -595,7 +595,7 @@ static void fi_zhpe_fini(void)
 struct fi_provider zhpe_prov = {
 	.name = zhpe_prov_name,
 	.version = FI_VERSION(ZHPE_MAJOR_VERSION, ZHPE_MINOR_VERSION),
-	.fi_version = FI_VERSION(1, 5),
+	.fi_version = FI_VERSION(1, 6),
 	.getinfo = zhpe_getinfo,
 	.fabric = zhpe_fabric,
 	.cleanup = fi_zhpe_fini
