@@ -145,12 +145,14 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 	pe_entry->pe_root.status = 0;
 	pe_entry->pe_root.completions = 0;
 	pe_entry->pe_root.flags = ZHPE_PE_NO_RINDEX;
+	pe_entry->zstate.cnt = 0;
 	pe_entry->cq_data = msg->data;
 	pe_entry->rx_id = zhpe_get_rx_id(tx_ctx, msg->addr);
 
 	pe_entry->rma.lstate.viov = pe_entry->rma.liov;
 	pe_entry->rma.lstate.off = 0;
 	pe_entry->rma.lstate.idx = 0;
+	pe_entry->rma.lstate.cnt = 0;
 
 	pe_entry->rem = 0;
 	for (i = 0, j = 0; i < msg->iov_count; i++) {
