@@ -550,9 +550,11 @@ static struct fi_ops_mr zhpe_dom_mr_ops = {
 int zhpe_domain(struct fid_fabric *fabric, struct fi_info *info,
 		struct fid_domain **dom, void *context)
 {
-	struct zhpe_domain *zhpe_domain;
-	struct zhpe_fabric *fab;
-	int ret;
+	int			ret;
+	union zhpeq_backend_params zhpeq_params = { ZHPEQ_BACKEND_MAX };
+	union zhpeq_backend_params *params = NULL;
+	struct zhpe_domain	*zhpe_domain;
+	struct zhpe_fabric	*fab;
 
 	fab = container_of(fabric, struct zhpe_fabric, fab_fid);
 	if (info && info->domain_attr) {
@@ -613,7 +615,17 @@ int zhpe_domain(struct fid_fabric *fabric, struct fi_info *info,
 			      &zhpe_domain->mr_map);
 	if (ret)
 		goto err2;
-	ret = zhpeq_domain_alloc(NULL, &zhpe_domain->zdom);
+	if (zhpe_fab_backend_prov) {
+		zhpeq_params.libfabric.provider_name = zhpe_fab_backend_prov;
+		zhpeq_params.backend = ZHPEQ_BACKEND_LIBFABRIC;
+		params = &zhpeq_params;
+	}
+	if (zhpe_fab_backend_dom) {
+		zhpeq_params.libfabric.domain_name = zhpe_fab_backend_dom;
+		zhpeq_params.backend = ZHPEQ_BACKEND_LIBFABRIC;
+		params = &zhpeq_params;
+	}
+	ret = zhpeq_domain_alloc(params, &zhpe_domain->zdom);
 	if (ret < 0)
 		goto err3;
 
