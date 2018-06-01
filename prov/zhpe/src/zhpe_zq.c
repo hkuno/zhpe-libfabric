@@ -890,10 +890,8 @@ int zhpe_iov_op(struct zhpe_pe_root *pe_root,
 		rc = zhpeq_reserve(zq, max_ops);
 		if (rc >= 0)
 			break;
-		if (max_ops == 1 || rc != -FI_EAGAIN) {
-			ret = rc;
+		if (max_ops == 1 || rc != -FI_EAGAIN)
 			goto done;
-		}
 		max_ops = 1;
 	}
 	zindex = rc;
@@ -930,8 +928,11 @@ int zhpe_iov_op(struct zhpe_pe_root *pe_root,
 	}
 	rc = zhpeq_commit(zq, zindex, max_ops);
  done:
-	if (rc < 0 && ret >= 0)
-		ret = rc;
+	if (rc) {
+		if (!ret)
+			ret = rc;
+	} else
+		ret = ops;
 
 	return ret;
 }
