@@ -323,6 +323,8 @@ extern int zhpe_av_def_sz;
 extern int zhpe_cq_def_sz;
 extern int zhpe_eq_def_sz;
 extern char *zhpe_pe_affinity_str;
+extern char *zhpe_fab_backend_prov;
+extern char *zhpe_fab_backend_dom;
 extern int zhpe_ep_max_eager_sz;
 
 static inline void *zhpe_mremap(void *old_address, size_t old_size,
