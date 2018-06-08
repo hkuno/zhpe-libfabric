@@ -409,17 +409,19 @@ static int zhpe_av_remove(struct fid_av *av, fi_addr_t *fi_addr, size_t count,
 		for (i = 0; i < count; i++) {
         		idx = fi_addr[i] & zhpe_ep->attr->av->mask;
 			conn = ofi_idm_lookup(&zhpe_ep->attr->av_idm, idx);
-			if (conn)
-				zhpe_conn_release_entry(zhpe_ep->attr, conn);
+			if (conn) {
+				ofi_idm_clear(&zhpe_ep->attr->av_idm, idx);
+				conn->fi_addr = FI_ADDR_NOTAVAIL;
+			}
 		}
 		mutex_release(&zhpe_ep->attr->cmap.mutex);
+		cond_broadcast(&zhpe_ep->attr->cmap.cond);
 	}
-	fastlock_release(&_av->list_lock);
-
 	for (i = 0; i < count; i++) {
 		av_addr = &_av->table[fi_addr[i]];
 		av_addr->addr.sa_family = AF_UNSPEC;
 	}
+	fastlock_release(&_av->list_lock);
 
 	return 0;
 }
