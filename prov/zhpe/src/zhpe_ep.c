@@ -1748,12 +1748,9 @@ static int zhpe_ep_lookup_conn(struct zhpe_ep_attr *attr, fi_addr_t fi_addr,
 		}
 		conn = zhpe_conn_map_lookup(attr, addr);
 		if (!conn) {
+			ret = 1;
 			conn = zhpe_conn_map_insert(attr, addr);
-			if (conn) {
-				ret = 1;
-				conn->fi_addr = fi_addr;
-				conn->av_index = av_index;
-			} else
+			if (!conn)
 				ret = -FI_ENOMEM;
 			break;
 		}
@@ -1763,7 +1760,10 @@ static int zhpe_ep_lookup_conn(struct zhpe_ep_attr *attr, fi_addr_t fi_addr,
 		}
 		ret = 0;
 		/* An error here should be noted, but not be fatal. */
-		if (ofi_idm_set(&attr->av_idm, av_index, conn) < 0)
+		if (ofi_idm_set(&attr->av_idm, av_index, conn) >= 0) {
+			conn->fi_addr = fi_addr;
+			conn->av_index = av_index;
+		} else
 			ZHPE_LOG_ERROR("ofi_idm_set() failed\n");
 		break;
 	}
