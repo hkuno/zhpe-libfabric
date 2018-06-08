@@ -124,13 +124,10 @@ int zhpe_verify_domain_attr(uint32_t api_version, const struct fi_info *info)
 		return -FI_ENODATA;
 	}
 
-	if (attr->mr_mode != FI_MR_UNSPEC) {
-		rc = ofi_check_mr_mode(&zhpe_prov, api_version,
-				       zhpe_domain_attr.mr_mode | FI_MR_BASIC,
-				       info);
-		if (rc < 0)
-			return rc;
-	}
+	rc = ofi_check_mr_mode(&zhpe_prov, api_version,
+			       zhpe_domain_attr.mr_mode | FI_MR_BASIC, info);
+	if (rc < 0)
+		return rc;
 
 	if (attr->mr_key_size > zhpe_domain_attr.mr_key_size)
 		return -FI_ENODATA;
@@ -602,8 +599,7 @@ int zhpe_domain(struct fid_fabric *fabric, struct fi_info *info,
 		zhpe_domain->attr = *(info->domain_attr);
 	else
 		zhpe_domain->attr = zhpe_domain_attr;
-	if (zhpe_domain->attr.mr_mode == FI_MR_UNSPEC ||
-	    zhpe_domain->attr.mr_mode == FI_MR_BASIC) {
+	if (zhpe_domain->attr.mr_mode == FI_MR_BASIC) {
 		zhpe_domain->attr.mr_mode = OFI_MR_BASIC_MAP;
 		if (info->mode & FI_LOCAL_MR)
 			zhpe_domain->attr.mr_mode |= FI_MR_LOCAL;

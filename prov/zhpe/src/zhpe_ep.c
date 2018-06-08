@@ -1343,15 +1343,8 @@ static void zhpe_set_domain_attr(uint32_t api_version, void *src_addr,
 	}
 
 	*attr = *hint_attr;
-	if (attr->mr_mode == FI_MR_UNSPEC || attr->mr_mode == FI_MR_BASIC) {
-		if (FI_VERSION_LT(api_version, FI_VERSION(1, 5)))
-			attr->mr_mode = FI_MR_BASIC;
-		else {
-			attr->mr_mode = OFI_MR_BASIC_MAP;
-			if (info->mode & FI_LOCAL_MR)
-				attr->mr_mode |= FI_MR_LOCAL;
-		}
-	}
+	if (FI_VERSION_LT(api_version, FI_VERSION(1, 5)))
+		attr->mr_mode = FI_MR_BASIC;
 
 	if (attr->threading == FI_THREAD_UNSPEC)
 		attr->threading = zhpe_domain_attr.threading;
