@@ -948,7 +948,7 @@ int zhpe_put_imm_to_iov(struct zhpe_pe_root *pe_root, void *lbuf,
 	struct zhpe_iov_state	lstate = { .viov = &liov, .cnt = 1 };
 
 	if (llen > ZHPEQ_IMM_MAX)
-		return -EINVAL;
+		return -FI_EINVAL;
 
 	return zhpe_iov_op(pe_root, &lstate, rstate, llen, 1,
 			   zhpe_iov_op_put, rem);
@@ -965,7 +965,7 @@ int zhpe_iov_to_get_imm(struct zhpe_pe_root *pe_root,
 	struct zhpe_iov_state	lstate = { .viov = &liov, .cnt = 1 };
 
 	if (llen > ZHPEQ_IMM_MAX)
-		return -EINVAL;
+		return -FI_EINVAL;
 
 	return zhpe_iov_op(pe_root, &lstate, rstate, llen, 1,
 			   zhpe_iov_op_get_imm, rem);
@@ -1251,7 +1251,7 @@ static int check_write(size_t req, ssize_t res)
 
 int zhpe_send_blob(int sock_fd, const void *blob, size_t blob_len)
 {
-	int			ret = -EINVAL;
+	int			ret = -FI_EINVAL;
 	uint32_t		wlen = blob_len;
 	size_t			req;
 	ssize_t			res;
