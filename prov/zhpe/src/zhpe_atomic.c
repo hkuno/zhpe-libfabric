@@ -189,12 +189,12 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 
 	hdr.rx_id = zhpe_get_rx_id(tx_ctx, msg->addr);
 	hdr.pe_entry_id = htons(tindex);
-	/* FIXME: get rid of the extra roundtrip. */
-	if (flags & FI_REMOTE_CQ_DATA) {
-		hdr.flags |= ZHPE_MSG_DELIVERY_COMPLETE;
-		pe_entry->cq_data = msg->data;
-		pe_entry->pe_root.completions++;
-	}
+	pe_entry->cq_data = msg->data;
+	/* We must wait for delivery complete to be consistent with
+	 * hardware.
+	 */
+	hdr.flags |= ZHPE_MSG_DELIVERY_COMPLETE;
+	pe_entry->pe_root.completions++;
 
 	zpay = zhpe_pay_ptr(conn, zhdr, 0, alignof(*zpay));
 
@@ -233,10 +233,6 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 						   ZHPEQ_MR_GET, &dontcare);
 			if (ret < 0)
 				goto done;
-		}
-		if (!(hdr.flags & ZHPE_MSG_DELIVERY_COMPLETE)) {
-			hdr.flags |= ZHPE_MSG_DELIVERY_COMPLETE;
-			pe_entry->pe_root.completions++;
 		}
 		pe_entry->result = vaddr;
 		pe_entry->result_type = datatype;
