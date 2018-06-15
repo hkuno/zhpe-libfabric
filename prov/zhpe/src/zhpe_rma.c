@@ -130,7 +130,7 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 			goto done;
 	}
 
- 	ret = zhpe_ep_get_conn(ep_attr, msg->addr, &conn);
+	ret = zhpe_ep_get_conn(ep_attr, msg->addr, &conn);
 	if (ret < 0)
 		goto done;
 

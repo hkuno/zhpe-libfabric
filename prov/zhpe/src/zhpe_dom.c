@@ -474,7 +474,7 @@ static int zhpe_dom_ctrl(struct fid *fid, int command, void *arg)
 	dom = container_of(fid, struct zhpe_domain, dom_fid.fid);
 
 	switch (command) {
-        /* FIXME: Revisit deferred work. */
+	/* FIXME: Revisit deferred work. */
 	case FI_QUEUE_WORK:
 #if 0
 		return zhpe_queue_work(dom, arg);

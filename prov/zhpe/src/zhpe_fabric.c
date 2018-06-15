@@ -383,11 +383,11 @@ static int zhpe_fabric(struct fi_fabric_attr *attr,
 static int zhpe_fi_checkinfo(struct fi_info *info, const struct fi_info *hints)
 {
 	if (hints && hints->domain_attr && hints->domain_attr->name &&
-             strcmp(info->domain_attr->name, hints->domain_attr->name))
+            strcmp(info->domain_attr->name, hints->domain_attr->name))
 		return -FI_ENODATA;
 
 	if (hints && hints->fabric_attr && hints->fabric_attr->name &&
-             strcmp(info->fabric_attr->name, hints->fabric_attr->name))
+            strcmp(info->fabric_attr->name, hints->fabric_attr->name))
 		return -FI_ENODATA;
 
 	return 0;

@@ -141,12 +141,13 @@ static ssize_t zhpe_eq_readerr(struct fid_eq *eq, struct fi_eq_err_entry *buf,
 		&& buf->err_data && buf->err_data_size) {
 		err_data = buf->err_data;
 		err_data_size = buf->err_data_size;
- 		*buf = *err_entry;
+		*buf = *err_entry;
 		buf->err_data = err_data;
 
 		/* Fill provided user's buffer */
- 		buf->err_data_size = MIN(err_entry->err_data_size, err_data_size);
- 		memcpy(buf->err_data, err_entry->err_data, buf->err_data_size);
+		buf->err_data_size = MIN(err_entry->err_data_size,
+					 err_data_size);
+		memcpy(buf->err_data, err_entry->err_data, buf->err_data_size);
 	} else {
 	    	*buf = *err_entry;
 	}

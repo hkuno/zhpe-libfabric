@@ -656,7 +656,7 @@ do {									\
 			(uint ## _size ## _t)o64);			\
 		break;							\
 	}								\
- } while(0)
+} while(0)
 
 static int zhpe_pe_rx_handle_atomic(struct zhpe_conn *conn,
 				    struct zhpe_msg_hdr *zhdr)
@@ -1480,7 +1480,7 @@ static int zhpe_pe_progress_rx_ep(struct zhpe_pe *pe,
 	uint8_t			valid;
 
 	map = &ep_attr->cmap;
-        if (!map->used)
+	if (!map->used)
 		goto done;
 
 	/* Poll all connections for traffic. */
@@ -1611,7 +1611,7 @@ int zhpe_pe_progress_tx_ctx(struct zhpe_pe *pe,
 	struct zhpe_pe_retry	*pe_retry;
 
 	map = &ep_attr->cmap;
-        if (!map->used)
+	if (!map->used)
 		goto done;
 
 	if (!ep_attr->ztx)
@@ -1699,7 +1699,7 @@ static void zhpe_pe_wait(struct zhpe_pe *pe)
 	pollfd.events = POLLIN;
 	rc = poll(&pollfd, 1, 1);
 	if (rc == -1)
-                ZHPE_LOG_ERROR("poll failed : %s\n", strerror(errno));
+		ZHPE_LOG_ERROR("poll failed : %s\n", strerror(errno));
 
 	if (rc > 0) {
 		fastlock_acquire(&pe->signal_lock);
