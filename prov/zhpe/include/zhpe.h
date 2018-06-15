@@ -2347,6 +2347,8 @@ int zhpe_getaddrinfo(const char *node, const char *service,
 		     struct addrinfo *hints, struct addrinfo **res);
 struct addrinfo *zhpe_findaddrinfo(struct addrinfo *res, int family);
 int zhpe_gethostaddr(uint32_t fi_addr_format, union sockaddr_in46 *addr);
+int zhpe_checklocaladdr(const struct ifaddrs *ifaddrs,
+			const union sockaddr_in46 *sa);
 
 static inline uint32_t zhpe_convert_access(uint64_t access) {
 	uint32_t		ret = ZHPEQ_MR_KEY_VALID;

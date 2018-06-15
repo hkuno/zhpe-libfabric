@@ -33,6 +33,12 @@
 
 #include <zhpe.h>
 
+#if HAVE_GETIFADDRS
+#include <net/if.h>
+#else
+#error getifaddrs() required
+#endif
+
 #define ZHPE_LOG_DBG(...) _ZHPE_LOG_DBG(FI_LOG_EP_CTRL, __VA_ARGS__)
 #define ZHPE_LOG_ERROR(...) _ZHPE_LOG_ERROR(FI_LOG_EP_CTRL, __VA_ARGS__)
 
@@ -92,7 +98,7 @@ void zhpe_conn_release_entry(struct zhpe_ep_attr *ep_attr,
 {
 	/* ep_attr->cmap.mutex should be held, */
 	zhpe_conn_z_free(conn);
-        conn->state = ZHPE_CONN_STATE_FREE;
+	conn->state = ZHPE_CONN_STATE_FREE;
 	if (conn->fi_addr != FI_ADDR_NOTAVAIL) {
 		if (ofi_idm_lookup(&ep_attr->av_idm, conn->av_index) == conn)
 			ofi_idm_clear(&ep_attr->av_idm, conn->av_index);
@@ -283,6 +289,7 @@ static void *_zhpe_conn_listen(void *arg)
 	struct pollfd		poll_fds[2];
 	struct zhpe_conn	*conn;
 	uint8_t			action;
+	bool			peer_local;
 #if ENABLE_DEBUG
 	char			ntop[INET6_ADDRSTRLEN];
 #endif
@@ -320,29 +327,27 @@ static void *_zhpe_conn_listen(void *arg)
 				       strerror(errno));
 			continue;
 		}
-		addr_len = sizeof(local46);
-		rc = getsockname(conn_fd, (struct sockaddr *)&local46,
-				 &addr_len);
-		if (rc == -1) {
-			ZHPE_LOG_ERROR("getsockname() failed: %s\n",
-				       strerror(errno));
-			continue;
-		}
 		ZHPE_LOG_DBG("ACCEPT: %s, %d\n",
 			     sockaddr_ntop(&remote46, ntop, sizeof(ntop)),
 			     ntohs(remote46.sin_port));
-		/* Using loopback can cause identity problems, just don't. */
-		if (ofi_is_loopback_addr((void *)&local46)) {
-			rc = zhpe_gethostaddr(ep_attr->info.addr_format,
-					      &local46);
-			if (rc < 0)
-				continue;
-			sockaddr_cpy(&remote46, &local46);
-		}
-
 		rc = zhpe_set_sockopts_accept(conn_fd);
 		if (rc < 0)
 			continue;
+
+		rc = zhpe_checklocaladdr(NULL, &remote46);
+		if (rc < 0)
+			continue;
+		peer_local = !!rc;
+		if (!peer_local) {
+			addr_len = sizeof(local46);
+			rc = getsockname(conn_fd, (struct sockaddr *)&local46,
+					 &addr_len);
+			if (rc == -1) {
+				ZHPE_LOG_ERROR("getsockname() failed: %s\n",
+					       strerror(errno));
+				continue;
+			}
+		}
 
 		/* remote46 has ephermeral port, but we need listening port.
 		 * connect() side will send it.
@@ -361,10 +366,9 @@ static void *_zhpe_conn_listen(void *arg)
 		conn = zhpe_conn_map_lookup(ep_attr, &remote46);
 		if (conn) {
 			assert(conn->state == ZHPE_CONN_STATE_INIT);
-			rc = sockaddr_cmp(&local46, &remote46);
-			if (!rc)
+			if (peer_local)
 				action = ZHPE_CONN_ACTION_SELF;
-			else if (rc < 0)
+			else if (sockaddr_cmp(&local46, &remote46) < 0)
 				action = ZHPE_CONN_ACTION_DROP;
 			if (action == ZHPE_CONN_ACTION_NEW) {
 				conn->state = ZHPE_CONN_STATE_RACED;
@@ -450,7 +454,9 @@ int zhpe_listen(const struct fi_info *info,
 		ZHPE_LOG_DBG("Bound to:%s:%u\n",
 			     sockaddr_ntop(ep_addr, ntop, sizeof(ntop)),
 			     ntohs(ep_addr->sin_port));
-		/* If the address is a wildcard, get a real address. */
+		/* Open MPI does a fi_getname() on the endpoint and
+		 * expects a usable address, so a wildcard won't do it.
+		 */
 		if (sockaddr_wildcard(ep_addr)) {
 			ret = zhpe_gethostaddr(info->addr_format, ep_addr);
 			if (ret < 0)
@@ -679,3 +685,35 @@ int zhpe_gethostaddr(uint32_t fi_addr_format, union sockaddr_in46 *addr)
 	return ret;
 }
 
+int zhpe_checklocaladdr(const struct ifaddrs *ifaddrs,
+			const union sockaddr_in46 *addr)
+{
+	int			ret = 1;
+	struct ifaddrs		*ifaddrs_local = NULL;
+	const struct ifaddrs	*ifa;
+
+	if (ofi_is_loopback_addr((struct sockaddr *)addr))
+		goto done;
+
+	if (!ifaddrs) {
+		ret = ofi_getifaddrs(&ifaddrs_local);
+		if (ret < 0) {
+			ZHPE_LOG_ERROR("ofi_getifaddrs() failed: %s\n",
+				       strerror(errno));
+			goto done;
+		}
+	}
+
+	ret = 0;
+	for (ifa = (ifaddrs ?: ifaddrs_local); ifa; ifa = ifa->ifa_next) {
+		if (!ifa->ifa_addr || !(ifa->ifa_flags & IFF_UP))
+			continue;
+		ret = !sockaddr_cmp_noport(addr, ifa->ifa_addr);
+		if (ret)
+			break;
+	}
+	if (ifaddrs_local)
+		freeifaddrs(ifaddrs_local);
+ done:
+	return ret;
+}

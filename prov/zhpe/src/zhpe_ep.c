@@ -1718,16 +1718,9 @@ static int zhpe_ep_lookup_conn(struct zhpe_ep_attr *attr, fi_addr_t fi_addr,
 {
 	int			ret = 0;
 	struct zhpe_conn	*conn;
-	union sockaddr_in46	hostaddr;
 	uint64_t		av_index = ((attr->ep_type == FI_EP_MSG) ? 0 :
 					    (fi_addr & attr->av->mask));
 	union sockaddr_in46	*addr;
-
-	if (attr->ep_type == FI_EP_MSG)
-		addr = &attr->dest_addr;
-	else
-		addr = (void *)&attr->av->table[av_index].addr;
-
 
 	/* attr->cmap.mutex must be held. */
 	for (;;) {
@@ -1735,17 +1728,10 @@ static int zhpe_ep_lookup_conn(struct zhpe_ep_attr *attr, fi_addr_t fi_addr,
 		if (conn)
 			/* Only in av_idm if conn fully ready. */
 			break;
-		/* Using loopback can cause identity problems, just don't.
-		 * FIXME: Deals with immediate problem, revisit.
-		 */
-		if (ofi_is_loopback_addr((void *)addr)) {
-			ret = zhpe_gethostaddr(attr->info.addr_format,
-					       &hostaddr);
-			if (ret < 0)
-				break;
-			hostaddr.sin_port = addr->sin_port;
-			addr = &hostaddr;
-		}
+		if (attr->ep_type == FI_EP_MSG)
+			addr = &attr->dest_addr;
+		else
+			addr = (void *)&attr->av->table[av_index].addr;
 		conn = zhpe_conn_map_lookup(attr, addr);
 		if (!conn) {
 			ret = 1;
