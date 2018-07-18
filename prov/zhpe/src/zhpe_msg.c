@@ -354,7 +354,7 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 	inline_size = ZHPE_RING_ENTRY_LEN;
 
 	if (flags & FI_REMOTE_CQ_DATA) {
-		hdr.flags |= ZHPE_MSG_REMOTE_CQ_DATA; 
+		hdr.flags |= ZHPE_MSG_REMOTE_CQ_DATA;
 		inline_size -= sizeof(cq_data);
 	}
 	if (tagged) {

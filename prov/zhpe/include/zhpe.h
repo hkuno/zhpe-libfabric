@@ -323,8 +323,6 @@ extern int zhpe_av_def_sz;
 extern int zhpe_cq_def_sz;
 extern int zhpe_eq_def_sz;
 extern char *zhpe_pe_affinity_str;
-extern char *zhpe_fab_backend_prov;
-extern char *zhpe_fab_backend_dom;
 extern size_t zhpe_ep_max_eager_sz;
 
 static inline void *zhpe_mremap(void *old_address, size_t old_size,
@@ -941,7 +939,6 @@ struct zhpe_ep_attr {
 	fastlock_t		pe_retry_lock;
 	struct dlist_entry	pe_retry_list;
 	/* Lower-level data */
-	pthread_mutex_t		conn_mutex;
 	struct zhpe_tx		*ztx;
 	/* We need to get back to the ep and it less pain to have a pointer.
 	 * I have no clue why the ep_attr is where everything hides.
@@ -1547,9 +1544,8 @@ int zhpe_iov_to_get_imm(struct zhpe_pe_root *pe_root,
 			size_t llen, struct zhpe_iov_state *rstate,
 			size_t *rem);
 
-/* Cannot conflict with legal access flags. */
-#define ZHPE_MR_KEY_FREEING	(1ULL << 62)
-#define ZHPE_MR_KEY_ONESHOT	(1ULL << 63)
+#define ZHPE_MR_FLAGS_FREEING	(1ULL << 63)
+#define ZHPE_MR_ACCESS_ONESHOT	(1ULL << 63)
 
 int zhpe_mr_reg_int(struct zhpe_domain *domain, const void *buf, size_t len,
 		    uint64_t access, struct fid_mr **mr);
@@ -2283,7 +2279,7 @@ static inline void zhpe_rkey_put(struct zhpe_rkey_data *rkey)
 	if (old > 1)
 		return;
 
-	zhpeq_zmmu_free(rkey->ztx->zq, rkey->kdata);
+	zhpeq_zmmu_free(zhpeq_dom(rkey->ztx->zq), rkey->kdata);
 	zhpe_tx_put(rkey->ztx);
 	free(rkey);
 }
@@ -2361,7 +2357,7 @@ static inline uint32_t zhpe_convert_access(uint64_t access) {
 		ret |= ZHPEQ_MR_GET_REMOTE;
 	if (access & FI_REMOTE_WRITE)
 		ret |= ZHPEQ_MR_PUT_REMOTE;
-	if (access & ZHPE_MR_KEY_ONESHOT)
+	if (access & ZHPE_MR_ACCESS_ONESHOT)
 		ret |= ZHPEQ_MR_KEY_ONESHOT;
 	return ret;
 }

@@ -531,7 +531,7 @@ int zhpe_pe_tx_handle_entry(struct zhpe_pe_root *pe_root,
 	struct zhpe_pe_entry	*pe_entry =
 		container_of(pe_root, struct zhpe_pe_entry, pe_root);
 
-	if (zq_cqe && zq_cqe->status != ZHPEQ_CQ_STATUS_SUCCESS)
+	if (zq_cqe && zq_cqe->z.status != ZHPEQ_CQ_STATUS_SUCCESS)
 		zhpe_pe_root_update_status(pe_root, -FI_EIO);
 	pe_root->completions--;
 	if (!pe_root->completions) {
@@ -797,7 +797,7 @@ static int zhpe_pe_tx_handle_rx_get(struct zhpe_pe_root *pe_root,
 	struct zhpe_rx_entry	*rx_entry =
 		container_of(pe_root, struct zhpe_rx_entry, pe_root);
 
-	if (zq_cqe->status != ZHPEQ_CQ_STATUS_SUCCESS)
+	if (zq_cqe->z.status != ZHPEQ_CQ_STATUS_SUCCESS)
 		zhpe_pe_root_update_status(&rx_entry->pe_root, -FI_EIO);
 	pe_root->completions--;
 	zhpe_pe_rx_get(rx_entry);
@@ -1213,13 +1213,13 @@ int zhpe_pe_tx_handle_rma(struct zhpe_pe_root *pe_root,
 	pe_root = &pe_entry->pe_root;
 	pe_root->completions--;
 	if (zq_cqe) {
-		if (zq_cqe->status != ZHPEQ_CQ_STATUS_SUCCESS)
+		if (zq_cqe->z.status != ZHPEQ_CQ_STATUS_SUCCESS)
 			zhpe_pe_root_update_status(pe_root, -FI_EIO);
 		if (!pe_root->completions &&
 		    ((pe_entry->flags & (FI_INJECT | FI_READ)) ==
 		     (FI_INJECT | FI_READ)))
 			memcpy(pe_entry->rma.liov[0].iov_base,
-			       zq_cqe->result.data,
+			       zq_cqe->z.result.data,
 			       pe_entry->rma.liov[0].iov_len);
 	}
 	zhpe_pe_tx_rma(pe_entry);
@@ -1357,7 +1357,7 @@ int zhpe_pe_tx_handle_atomic(struct zhpe_pe_root *pe_root,
 		container_of(pe_root, struct zhpe_pe_entry, pe_root);
 	int			rc;
 
-	if (zq_cqe && zq_cqe->status != ZHPEQ_CQ_STATUS_SUCCESS)
+	if (zq_cqe && zq_cqe->z.status != ZHPEQ_CQ_STATUS_SUCCESS)
 		zhpe_pe_root_update_status(pe_root, -FI_EIO);
 	pe_root->completions--;
 	if (!pe_root->completions) {
@@ -1611,9 +1611,7 @@ int zhpe_pe_progress_tx_ctx(struct zhpe_pe *pe,
 	struct zhpe_pe_retry	*pe_retry;
 
 	map = &ep_attr->cmap;
-	if (!map->used)
-		goto done;
-
+	mutex_acquire(&map->mutex);
 	if (!ep_attr->ztx)
 		goto done;
 	entries = zhpeq_cq_read(ep_attr->ztx->zq, zq_cqe, ARRAY_SIZE(zq_cqe));
@@ -1623,9 +1621,9 @@ int zhpe_pe_progress_tx_ctx(struct zhpe_pe *pe,
 		goto done;
 	}
 	for (i = 0; i < entries; i++) {
-		context = zq_cqe[i].context;
+		context = zq_cqe[i].z.context;
 		if (context == ZHPE_CONTEXT_IGNORE_PTR) {
-			if (zq_cqe[i].status == ZHPEQ_CQ_STATUS_SUCCESS)
+			if (zq_cqe[i].z.status == ZHPEQ_CQ_STATUS_SUCCESS)
 				continue;
 			ZHPE_LOG_ERROR("Send of control I/O failed\n");
 			ret = -EIO;
@@ -1651,6 +1649,7 @@ int zhpe_pe_progress_tx_ctx(struct zhpe_pe *pe,
 		}
 	}
  done:
+	mutex_release(&map->mutex);
 	if (ret < 0)
 		ZHPE_LOG_ERROR("failed to progress TX ctx\n");
 	return ret;

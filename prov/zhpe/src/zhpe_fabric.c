@@ -47,8 +47,6 @@ int zhpe_av_def_sz = ZHPE_AV_DEF_SZ;
 int zhpe_cq_def_sz = ZHPE_CQ_DEF_SZ;
 int zhpe_eq_def_sz = ZHPE_EQ_DEF_SZ;
 char *zhpe_pe_affinity_str = NULL;
-char *zhpe_fab_backend_prov;
-char *zhpe_fab_backend_dom;
 size_t zhpe_ep_max_eager_sz = ZHPE_EP_MAX_EAGER_SZ;
 
 const struct fi_fabric_attr zhpe_fabric_attr = {
@@ -343,12 +341,6 @@ static void zhpe_read_default_params()
 		if (fi_param_get_str(&zhpe_prov, "pe_affinity",
 				     &zhpe_pe_affinity_str) != FI_SUCCESS)
 			zhpe_pe_affinity_str = NULL;
-		if (fi_param_get_str(&zhpe_prov, "fab_backend_prov",
-				     &zhpe_fab_backend_prov) != FI_SUCCESS)
-			zhpe_fab_backend_prov = NULL;
-		if (fi_param_get_str(&zhpe_prov, "fab_backend_dom",
-				     &zhpe_fab_backend_dom) != FI_SUCCESS)
-			zhpe_fab_backend_dom = NULL;
 		fi_param_get_size_t(&zhpe_prov, "ep_max_eager_sz",
 				    &zhpe_ep_max_eager_sz);
 

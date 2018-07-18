@@ -1572,7 +1572,6 @@ int zhpe_alloc_endpoint(struct fid_domain *domain, struct fi_info *info,
 	zhpe_ep->attr->ep = zhpe_ep;
 	fastlock_init(&zhpe_ep->attr->pe_retry_lock);
 	dlist_init(&zhpe_ep->attr->pe_retry_list);
-	mutex_init(&zhpe_ep->attr->conn_mutex, NULL);
 	*ep = zhpe_ep;
 
 	if (info) {

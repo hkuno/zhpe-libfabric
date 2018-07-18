@@ -193,7 +193,7 @@ int mr_close(struct fid *fid, bool revoke_oneshot)
 	domain = zmr->domain;
 
 	fastlock_acquire(&domain->lock);
-	zmr->flags |= ZHPE_MR_KEY_FREEING;
+	zmr->flags |= ZHPE_MR_FLAGS_FREEING;
 	while (!dlist_empty(&zmr->kexp_list)) {
 	        kexp = container_of(zmr->kexp_list.next,
 				   struct zhpe_kexp_data, lentry);
@@ -212,7 +212,7 @@ int mr_close(struct fid *fid, bool revoke_oneshot)
 				cond_wait(&map->cond, &map->mutex);
 			mutex_release(&map->mutex);
 		}
-		if (!(zmr->kdata->access & ZHPEQ_MR_KEY_ONESHOT) ||
+		if (!(zmr->kdata->z.access & ZHPEQ_MR_KEY_ONESHOT) ||
 		    revoke_oneshot)
 			zhpe_send_key_revoke(kexp->conn, zmr->mr_fid.key);
 		zhpe_kexp_put(kexp);
@@ -243,7 +243,7 @@ int zhpe_mr_close_oneshot(struct zhpe_iov *ziov, uint32_t count, bool revoke)
 
 	for (i = 0; i < count; i++) {
 		zmr = ziov[i].iov_desc;
-		if (!zmr || !(zmr->kdata->access & ZHPEQ_MR_KEY_ONESHOT))
+		if (!zmr || !(zmr->kdata->z.access & ZHPEQ_MR_KEY_ONESHOT))
 			continue;
 		rc = mr_close(&zmr->mr_fid.fid, revoke);
 		if (rc < 0 && ret >= 0)
@@ -314,7 +314,7 @@ static inline int zhpe_regattr_int(struct zhpe_domain *domain,
 	if (ret < 0)
 		goto done;
 	/* FIXME: Hack. */
-	zmr->kdata->key = zmr->mr_fid.key;
+	zmr->kdata->z.key = zmr->mr_fid.key;
 	*mr_out = &zmr->mr_fid;
  done:
 	if (ret < 0) {
@@ -359,7 +359,7 @@ int zhpe_mr_reg_int_oneshot(struct zhpe_domain *domain, struct zhpe_iov *ziov,
 	struct fid_mr		*mr;
 	struct zhpe_mr		*zmr;
 
-	access |= ZHPE_MR_KEY_ONESHOT;
+	access |= ZHPE_MR_ACCESS_ONESHOT;
 	for (tlen = len, i = 0; tlen > 0; tlen -= rlen, i++) {
 		rlen = tlen;
 		if (rlen > ziov[i].iov_len)
@@ -548,8 +548,6 @@ int zhpe_domain(struct fid_fabric *fabric, struct fi_info *info,
 		struct fid_domain **dom, void *context)
 {
 	int			ret;
-	union zhpeq_backend_params zhpeq_params = { ZHPEQ_BACKEND_MAX };
-	union zhpeq_backend_params *params = NULL;
 	struct zhpe_domain	*zhpe_domain;
 	struct zhpe_fabric	*fab;
 
@@ -611,17 +609,7 @@ int zhpe_domain(struct fid_fabric *fabric, struct fi_info *info,
 			      &zhpe_domain->mr_map);
 	if (ret)
 		goto err2;
-	if (zhpe_fab_backend_prov) {
-		zhpeq_params.libfabric.provider_name = zhpe_fab_backend_prov;
-		zhpeq_params.backend = ZHPEQ_BACKEND_LIBFABRIC;
-		params = &zhpeq_params;
-	}
-	if (zhpe_fab_backend_dom) {
-		zhpeq_params.libfabric.domain_name = zhpe_fab_backend_dom;
-		zhpeq_params.backend = ZHPEQ_BACKEND_LIBFABRIC;
-		params = &zhpeq_params;
-	}
-	ret = zhpeq_domain_alloc(params, &zhpe_domain->zdom);
+	ret = zhpeq_domain_alloc(&zhpe_domain->zdom);
 	if (ret < 0)
 		goto err3;
 
