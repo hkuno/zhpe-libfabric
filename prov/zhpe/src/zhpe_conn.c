@@ -521,21 +521,12 @@ int zhpe_ep_connect(struct zhpe_ep_attr *ep_attr, struct zhpe_conn *conn)
 {
 	int			ret = 0;
 	int			conn_fd = -1;
-	union sockaddr_in46	addr;
 	uint8_t			action;
 #if ENABLE_DEBUG
 	char			ntop[INET6_ADDRSTRLEN];
 #endif
 
-	if (ep_attr->ep_type == FI_EP_MSG) {
-		/* Need to check that destination address has been
-		   passed to endpoint */
-		sockaddr_cpy(&addr, &ep_attr->dest_addr);
-		addr.sin_port = htons(ep_attr->msg_dest_port);
-	} else
-		addr = ep_attr->av->table[conn->av_index].addr;
-
-	conn_fd = ofi_socket(addr.sa_family, SOCK_STREAM, IPPROTO_TCP);
+	conn_fd = ofi_socket(conn->addr.sa_family, SOCK_STREAM, IPPROTO_TCP);
 	if (conn_fd == -1) {
 		ZHPE_LOG_ERROR("failed to create conn_fd, errno: %d\n", errno);
 		ret = -FI_EOTHER;
@@ -543,22 +534,17 @@ int zhpe_ep_connect(struct zhpe_ep_attr *ep_attr, struct zhpe_conn *conn)
 	}
 
 	ZHPE_LOG_DBG("Connecting to: %s:%d\n",
-		     sockaddr_ntop(&addr, ntop, sizeof(ntop)),
-		     ntohs(addr.sin_port));
+		     sockaddr_ntop(&conn->addr, ntop, sizeof(ntop)),
+		     ntohs(conn->addr.sin_port));
 	ZHPE_LOG_DBG("Connecting using address:%s\n",
 		     sockaddr_ntop(&ep_attr->src_addr, ntop, sizeof(ntop)));
 
-	ret = connect(conn_fd, (struct sockaddr *)&addr, sizeof(addr));
+	ret = connect(conn_fd, (struct sockaddr *)&conn->addr,
+		      sizeof(conn->addr));
 	if (ret == -1) {
 		ret = -errno;
-		ZHPE_LOG_DBG("connect() erro - %s: %d\n",
+		ZHPE_LOG_DBG("connect() error - %s: %d\n",
 			     strerror(-ret), conn_fd);
-		ZHPE_LOG_DBG("Connecting to: %s:%d\n",
-			     sockaddr_ntop(&addr, ntop, sizeof(ntop)),
-			     ntohs(addr.sin_port));
-		ZHPE_LOG_DBG("Connecting using address:%s\n",
-			     sockaddr_ntop(&ep_attr->src_addr, ntop,
-					   sizeof(ntop)));
 		goto done;
 	}
 
