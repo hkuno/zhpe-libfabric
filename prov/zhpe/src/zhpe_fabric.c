@@ -49,7 +49,7 @@ int zhpe_eq_def_sz = ZHPE_EQ_DEF_SZ;
 char *zhpe_pe_affinity_str = NULL;
 char *zhpe_fab_backend_prov;
 char *zhpe_fab_backend_dom;
-int zhpe_ep_max_eager_sz = ZHPE_EP_MAX_EAGER_SZ;
+size_t zhpe_ep_max_eager_sz = ZHPE_EP_MAX_EAGER_SZ;
 
 const struct fi_fabric_attr zhpe_fabric_attr = {
 	.fabric = NULL,
