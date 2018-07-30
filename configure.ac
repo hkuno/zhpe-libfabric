@@ -38,7 +38,7 @@ AM_CONDITIONAL([MACOS], [test "x$macos" = "x1"])
 AM_CONDITIONAL([LINUX], [test "x$linux" = "x1"])
 AM_CONDITIONAL([FREEBSD], [test "x$freebsd" = "x1"])
 
-base_c_warn_flags="-Wall -Wundef -Wpointer-arith"
+base_c_warn_flags="-Wall -Wundef -Wpointer-arith -Werror"
 debug_c_warn_flags="-Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers"
 debug_c_other_flags="-fstack-protector-strong"
 picky_c_warn_flags="-Wno-long-long -Wmissing-prototypes -Wstrict-prototypes -Wcomment -pedantic"
@@ -99,7 +99,7 @@ AS_IF([test x"$enable_debug" != x"no"],
        CFLAGS_save=
        # Remove -DNDEBUG flag if set
        for flag in $CFLAGS; do
-           if test "$flag" != "-DNDEBUG"; then
+           if test "$flag" != "-DNDEBUG" && test "$flag" != "-O2"; then
                CFLAGS_save="$CFLAGS_save $flag"
            fi
        done
