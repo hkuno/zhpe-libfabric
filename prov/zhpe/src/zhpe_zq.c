@@ -681,14 +681,15 @@ int zhpe_slab_init(struct zhpe_slab *slab, size_t size,
 	}
 	slab->zmr = fi_mr_desc(mr);
  done:
-	return 0;
+	return ret;
 }
 
 void zhpe_slab_destroy(struct zhpe_slab *slab)
 {
 	if (slab->mem) {
 		slab_check(slab);
-		zhpe_mr_close(&slab->zmr->mr_fid.fid);
+		if (slab->zmr)
+			zhpe_mr_close(&slab->zmr->mr_fid.fid);
 		slab->zmr = NULL;
 		free(slab->mem);
 		slab->mem = NULL;
@@ -741,8 +742,8 @@ int zhpe_slab_alloc(struct zhpe_slab *slab, size_t size,
 	slab_check(slab);
 	fastlock_release(&slab->lock);
 	iov->iov_desc = slab->zmr;
-	iov->iov_zaddr = (slab->zmr->kdata->z.zaddr +
-			  ((char *)iov->iov_base - (char *)slab->mem));
+	(void)zhpeq_lcl_key_access(slab->zmr->kdata, iov->iov_base, size,
+				   0, &iov->iov_zaddr);
 	ret = 0;
  done:
 	return ret;

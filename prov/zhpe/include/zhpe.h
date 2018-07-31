@@ -517,7 +517,6 @@ struct zhpe_slab {
 	uint32_t		size;
 	struct dlist_entry	free_list;
 	struct zhpe_mr		*zmr;
-	uint64_t		zaddr;
 	fastlock_t		lock;
 	int32_t			use_count;
 };
