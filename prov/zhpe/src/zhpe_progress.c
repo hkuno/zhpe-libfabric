@@ -130,7 +130,7 @@ static void zhpe_pe_report_complete(struct zhpe_cqe *zcqe,
 		break;
 
 	case FI_REMOTE_WRITE:
-		cq = NULL;
+		cq = comp->recv_cq;
 		event = 0;
 		cntr = zcqe->comp->rem_write_cntr;
 		break;
@@ -572,51 +572,26 @@ static int zhpe_pe_rx_handle_status(struct zhpe_conn *conn,
 	return pe_entry->pe_root.handler(&pe_entry->pe_root, NULL);
 }
 
-static int zhpe_pe_rx_handle_send(struct zhpe_conn *conn,
-				  struct zhpe_msg_hdr *zhdr);
-
 static int zhpe_pe_rx_handle_writedata(struct zhpe_conn *conn,
 				       struct zhpe_msg_hdr *zhdr)
 {
-	int			ret = 0;
-	bool			rx_cq_data = false;
 	struct zhpe_cqe		zcqe = {
+		.addr = conn->fi_addr,
 		.comp = &conn->rx_ctx->comp,
 	};
 	union zhpe_msg_payload	*zpay;
-	struct zhpe_msg_hdr	*fhdr;
-	uint64_t		*data;
-	struct {
-		char		data[ZHPE_RING_ENTRY_LEN];
-	} __attribute__ ((aligned(ZHPE_RING_ENTRY_LEN))) fake_zmsg;
 
 	zpay = zhpe_pay_ptr(conn, zhdr, 0, alignof(*zpay));
 	zcqe.cqe.flags = (be64toh(zpay->writedata.flags) &
 			  (FI_REMOTE_READ | FI_REMOTE_WRITE |
-			   FI_REMOTE_CQ_DATA));
-	if (zcqe.cqe.flags & FI_REMOTE_CQ_DATA) {
-		zcqe.cqe.flags &= ~FI_REMOTE_CQ_DATA;
-		if (conn->ep_attr->info.mode & FI_RX_CQ_DATA)
-			rx_cq_data = true;
-	}
-	if (zcqe.cqe.flags) {
-		zcqe.cqe.data = be64toh(zpay->writedata.cq_data);
-		zhpe_pe_report_complete(&zcqe, 0, 0);
-	}
-	if (!rx_cq_data)
-		goto done;
-	/* Create fake receive; can't reuse real zhdr because of
-	 * double delivery problem.
-	 */
-	fhdr = (void *)(fake_zmsg.data + conn->hdr_off);
-	fhdr->op_type = ZHPE_OP_SEND;
-	fhdr->rx_id  = zhdr->rx_id;
-	fhdr->flags = ZHPE_MSG_INLINE | ZHPE_MSG_REMOTE_CQ_DATA;
-	data = zhpe_pay_ptr(conn, zhdr, 0, alignof(*data));
-	*data = zpay->writedata.cq_data;
-	ret = zhpe_pe_rx_handle_send(conn, fhdr);
- done:
-	return ret;
+			   FI_REMOTE_CQ_DATA | FI_RMA | FI_ATOMIC));
+	if ((zcqe.cqe.flags & (FI_REMOTE_WRITE |FI_REMOTE_CQ_DATA)) ==
+	     FI_REMOTE_CQ_DATA)
+	    zcqe.cqe.flags |= FI_REMOTE_WRITE;
+	zcqe.cqe.data = be64toh(zpay->writedata.cq_data);
+	zhpe_pe_report_complete(&zcqe, 0, 0);
+
+	return 0;
 }
 
 #define ATOMIC_OP(_size)						\
