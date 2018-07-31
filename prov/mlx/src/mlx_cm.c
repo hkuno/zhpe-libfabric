@@ -119,7 +119,7 @@ static int mlx_cm_getname_ai_format(
 					"Unable to resolve hostname:%s\n",hostname);
 		}
 		FI_INFO(&mlx_prov, FI_LOG_CORE,
-			"Loaded IPv4 address: [%"PRIu64"]%s:%d\n",
+			"Loaded IPv4 address: [%"PRIu32"]%s:%d\n",
 			res->ai_addrlen, hostname, service);
 
 		memcpy(addr,res->ai_addr,res->ai_addrlen);
