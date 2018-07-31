@@ -292,15 +292,10 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 	struct zhpe_ep_attr	*ep_attr;
 	struct zhpe_mr		*zmr;
 	void			*context;
-	static int		called;
 
 	ZHPEQ_TIMING_UPDATE(&zhpeq_timing_tx_start,
 			    NULL, &zhpeq_timing_tx_start_stamp,
 			    ZHPEQ_TIMING_UPDATE_OLD_CPU);
-	if (!called) {
-		ZHPE_LOG_ERROR("send called\n");
-		called = 1;
-	}
 
 	switch (ep->fid.fclass) {
 	case FI_CLASS_EP:
