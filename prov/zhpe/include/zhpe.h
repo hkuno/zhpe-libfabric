@@ -94,7 +94,6 @@
 #include <ofi_rbuf.h>
 #include <ofi_util.h>
 
-
 #define _ZHPE_LOG_DBG(subsys, ...) FI_DBG(&zhpe_prov, subsys, __VA_ARGS__)
 #define _ZHPE_LOG_ERROR(subsys, ...) FI_WARN(&zhpe_prov, subsys, __VA_ARGS__)
 
@@ -208,10 +207,11 @@ static inline int sockaddr_cmp(const void *addr1, const void *addr2)
 	return ret;
 }
 
-static inline const char *sockaddr_ntop(const union sockaddr_in46 *sa,
+static inline const char *sockaddr_ntop(const void *addr,
 					char *buf, size_t len)
 {
 	const char		*ret = NULL;
+	const union sockaddr_in46 *sa = addr;
 
 	switch (sa->sa_family) {
 
@@ -233,9 +233,10 @@ static inline const char *sockaddr_ntop(const union sockaddr_in46 *sa,
 	return ret;
 }
 
-static inline bool sockaddr_wildcard(const union sockaddr_in46 *sa)
+static inline bool sockaddr_wildcard(const void *addr)
 {
 	bool			ret = false;
+	const union sockaddr_in46 *sa = addr;
 
 	switch (sa->sa_family) {
 
@@ -246,6 +247,37 @@ static inline bool sockaddr_wildcard(const union sockaddr_in46 *sa)
 	case AF_INET6:
 		ret = !memcmp(&sa->addr6.sin6_addr, &in6addr_any,
 			      sizeof(in6addr_any));
+		break;
+
+	default:
+		break;
+	}
+
+	return ret;
+}
+
+static inline bool sockaddr_loopback6(const struct sockaddr_in6 *sa)
+{
+	return !memcmp(&sa->sin6_addr, &in6addr_loopback,
+		       sizeof(sa->sin6_addr));
+}
+
+static inline bool sockaddr_loopback(const void *addr, bool loopany)
+{
+	bool			ret = false;
+	const union sockaddr_in46 *sa = addr;
+	uint32_t		netmask;
+
+	switch (sa->sa_family) {
+
+	case AF_INET:
+		netmask = (loopany ? IN_CLASSA_NET : ~(uint32_t)0);
+		ret = ((ntohl(sa->addr4.sin_addr.s_addr) & netmask) ==
+		       (INADDR_LOOPBACK & netmask));
+		break;
+
+	case AF_INET6:
+		ret = sockaddr_loopback6(&sa->addr6);
 		break;
 
 	default:

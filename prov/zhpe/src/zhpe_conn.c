@@ -80,17 +80,16 @@ void zhpe_conn_map_destroy(struct zhpe_ep_attr *ep_attr)
 	int			i;
 	struct zhpe_conn_map	*cmap = &ep_attr->cmap;
 
-	mutex_acquire(&cmap->mutex);
 	for (i = 0; i < cmap->used; i++) {
 		if (cmap->table[i].state != ZHPE_CONN_STATE_FREE)
 			zhpe_conn_release_entry(ep_attr, &cmap->table[i]);
 	}
-	mutex_release(&cmap->mutex);
 
 	free(cmap->table);
 	cmap->table = NULL;
 	cmap->used = cmap->size = 0;
 	mutex_destroy(&cmap->mutex);
+	cond_destroy(&cmap->cond);
 }
 
 void zhpe_conn_release_entry(struct zhpe_ep_attr *ep_attr,
@@ -658,23 +657,47 @@ int zhpe_gethostaddr(uint32_t fi_addr_format, union sockaddr_in46 *addr)
 	struct addrinfo		*rai;
 	in_port_t		port;
 	char			hostname[HOST_NAME_MAX];
+	struct ifaddrs		*ifaddrs;
+	struct ifaddrs		*ifa;
 
 	/* FIXME: How to bulletproof this. */
 	if (gethostname(hostname, sizeof(hostname)) == -1) {
 		ret = -errno;
 		ZHPE_LOG_ERROR("gethostname failed:error %d:%s\n",
 			       ret, strerror(-ret));
-		goto done;
+		goto getifs;
 	}
 	zhpe_getaddrinfo_hints_init(&ai, fi_addr_format);
 	ret = zhpe_getaddrinfo(hostname, NULL, &ai, &rai);
 	if (ret < 0)
-		goto done;
+		goto getifs;
 	/* Copy address, preserve port. */
+	if (sockaddr_loopback(rai->ai_addr, true))
+		goto getifs;
 	port = addr->sin_port;
 	sockaddr_cpy(addr, rai->ai_addr);
 	addr->sin_port = port;
 	freeaddrinfo(rai);
+	goto done;
+ getifs:
+	ret = ofi_getifaddrs(&ifaddrs);
+	if (ret < 0) {
+		ZHPE_LOG_ERROR("ofi_getifaddrs() failed: %s\n",
+			       strerror(errno));
+		goto done;
+	}
+	for (ifa = ifaddrs ; ifa ; ifa = ifa->ifa_next) {
+		if (!ifa->ifa_addr || !(ifa->ifa_flags & IFF_UP) ||
+		    !sockaddr_valid(ifa->ifa_addr, 0, false) ||
+		    sockaddr_loopback(ifa->ifa_addr, true))
+			continue;
+		port = addr->sin_port;
+		sockaddr_cpy(addr, ifa->ifa_addr);
+		addr->sin_port = port;
+		break;
+	}
+	freeifaddrs(ifaddrs);
+
  done:
 	return ret;
 }
@@ -686,7 +709,7 @@ int zhpe_checklocaladdr(const struct ifaddrs *ifaddrs,
 	struct ifaddrs		*ifaddrs_local = NULL;
 	const struct ifaddrs	*ifa;
 
-	if (ofi_is_loopback_addr((struct sockaddr *)addr))
+	if (sockaddr_loopback(addr, true))
 		goto done;
 
 	if (!ifaddrs) {
