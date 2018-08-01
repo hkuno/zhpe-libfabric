@@ -45,11 +45,16 @@
 int zhpe_conn_map_init(struct zhpe_ep *ep, int init_size)
 {
 	struct zhpe_conn_map *map = &ep->attr->cmap;
+	pthread_mutexattr_t	mattr;
+
 	map->table = calloc(init_size, sizeof(*map->table));
 	if (!map->table)
 		return -FI_ENOMEM;
 
-	mutex_init(&map->mutex, NULL);
+	mutexattr_init(&mattr);
+	mutexattr_settype(&mattr, PTHREAD_MUTEX_RECURSIVE);
+	mutex_init(&map->mutex, &mattr);
+	mutexattr_destroy(&mattr);
 	cond_init(&map->cond, NULL);
 	map->used = 0;
 	map->size = init_size;

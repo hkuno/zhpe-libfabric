@@ -2463,6 +2463,16 @@ static inline int abort_timedwait(int ret, const char *func, uint line)
 	abort();
 }
 
+#define mutexattr_settype(...) \
+    abort_if_nonzero(pthread_mutexattr_settype(__VA_ARGS__), __func__, __LINE__)
+
+#define mutexattr_init(...) \
+    abort_if_nonzero(pthread_mutexattr_init(__VA_ARGS__), __func__, __LINE__)
+
+#define mutexattr_destroy(...) \
+    abort_if_nonzero(pthread_mutexattr_destroy(__VA_ARGS__), \
+		     __func__, __LINE__)
+
 #define mutex_init(...) \
     abort_if_nonzero(pthread_mutex_init(__VA_ARGS__), __func__, __LINE__)
 
