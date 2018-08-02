@@ -335,7 +335,7 @@ void zhpe_pe_rx_peek_recv(struct zhpe_rx_ctx *rx_ctx,
 	goto done;
  found:
 	zcqe.addr = rx_buffered->addr;
-	zcqe.cqe.flags = rx_buffered->flags;
+	zcqe.cqe.flags = rx_buffered->flags | (flags & FI_COMPLETION);
 	zcqe.cqe.len = rx_buffered->total_len;
 	zcqe.cqe.data = rx_buffered->cq_data;
 	zcqe.cqe.tag = rx_buffered->tag;
@@ -393,6 +393,7 @@ static inline void rx_user_claim(struct zhpe_rx_entry *rx_buffered,
 	state = rx_buffered->rx_state;
 	if (state == ZHPE_RX_STATE_EAGER)
 		state = rx_buffered->rx_state = ZHPE_RX_STATE_EAGER_CLAIMED;
+	rx_buffered->flags |= (rx_user->flags & FI_COMPLETION);
 	rx_buffered->context = rx_user->context;
 	/* FIXME: Assume 1 iov for now. */
 	rx_buffered->ustate = rx_user->lstate;

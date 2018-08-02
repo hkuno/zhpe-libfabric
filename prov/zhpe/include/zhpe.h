@@ -447,7 +447,6 @@ enum {
 #define ZHPE_EP_MSG_ORDER	(FI_ORDER_SAS)
 
 #define ZHPE_EP_COMP_ORDER	(FI_ORDER_NONE)
-#define ZHPE_EP_DEFAULT_OP_FLAGS (FI_TRANSMIT_COMPLETE)
 
 #define ZHPE_EP_CQ_FLAGS (FI_SEND | FI_TRANSMIT | FI_RECV | \
 			FI_SELECTIVE_COMPLETION)
@@ -458,6 +457,8 @@ enum {
 #define ZHPE_NO_COMPLETION	(1ULL << 60)
 #define ZHPE_USE_OP_FLAGS	(1ULL << 61)
 #define ZHPE_TRIGGERED_OP	(1ULL << 62)
+
+#define ZHPE_BAD_FLAGS_MASK	(0xFULL << 60)
 
 /* it must be adjusted if error data size in CQ/EQ 
  * will be larger than ZHPE_EP_MAX_CM_DATA_SZ */
@@ -2164,8 +2165,17 @@ void zhpe_pe_retry_tx_ring2(struct zhpe_pe_retry *pe_retry);
 #define ZHPE_MASK_COMPLETE \
 	(FI_INJECT_COMPLETE | FI_TRANSMIT_COMPLETE | FI_DELIVERY_COMPLETE)
 
-static inline uint64_t zhpe_tx_fixup_completion(uint64_t flags)
+static inline uint64_t
+zhpe_tx_fixup_completion(uint64_t flags, uint64_t op_flags,
+			 struct zhpe_tx_ctx *tx_ctx)
 {
+	/* Not sendmsg (no OP_FLAGS) or no selective completion, default to
+	 * FI_TRANSMIT_COMPLETE.
+	 */
+	if (flags & ZHPE_USE_OP_FLAGS)
+		flags |= op_flags | FI_TRANSMIT_COMPLETE;
+	else if (!tx_ctx->comp.send_cq_event)
+		flags |= FI_TRANSMIT_COMPLETE;
 	if (flags & FI_DELIVERY_COMPLETE)
 		flags &= ~(FI_INJECT_COMPLETE | FI_TRANSMIT_COMPLETE);
 	else if (flags & FI_TRANSMIT_COMPLETE)

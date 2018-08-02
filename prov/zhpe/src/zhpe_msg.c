@@ -92,6 +92,9 @@ static inline ssize_t do_recvmsg(struct fid_ep *ep, const void *vmsg,
 
 		if (flags & ZHPE_USE_OP_FLAGS)
 			flags |= op_flags;
+		else if (!rx_ctx->comp.recv_cq_event)
+			/* recvmsg && no FI_SELECTIVE_COMPLETION */
+			flags |= FI_COMPLETION;
 	}
 
 	if (flags & FI_TRIGGER) {
@@ -225,7 +228,9 @@ ssize_t zhpe_do_recvmsg(struct fid_ep *ep, const void *vmsg,
 static ssize_t zhpe_ep_recvmsg(struct fid_ep *ep, const struct fi_msg *msg,
 			       uint64_t flags)
 {
-	/* FIXME: Check for provider flags. */
+	if (flags & ZHPE_BAD_FLAGS_MASK)
+		return -EINVAL;
+
 	return do_recvmsg(ep, msg, flags, false);
 }
 
@@ -244,7 +249,8 @@ static ssize_t zhpe_ep_recv(struct fid_ep *ep, void *buf, size_t len,
 	msg.addr = src_addr;
 	msg.context = context;
 	msg.data = 0;
-	return zhpe_ep_recvmsg(ep, &msg, ZHPE_USE_OP_FLAGS);
+
+	return do_recvmsg(ep, &msg, ZHPE_USE_OP_FLAGS, false);
 }
 
 static ssize_t zhpe_ep_recvv(struct fid_ep *ep, const struct iovec *iov,
@@ -259,7 +265,8 @@ static ssize_t zhpe_ep_recvv(struct fid_ep *ep, const struct iovec *iov,
 	msg.addr = src_addr;
 	msg.context = context;
 	msg.data = 0;
-	return zhpe_ep_recvmsg(ep, &msg, ZHPE_USE_OP_FLAGS);
+
+	return do_recvmsg(ep, &msg, ZHPE_USE_OP_FLAGS, false);
 }
 
 static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
@@ -331,10 +338,7 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 			goto done;
 		flags |= (FI_MSG | FI_SEND);
 
-		if (flags & ZHPE_USE_OP_FLAGS)
-			flags |= op_flags;
-
-		flags = zhpe_tx_fixup_completion(flags);
+		flags = zhpe_tx_fixup_completion(flags, op_flags, tx_ctx);
 	}
 
 	if (flags & FI_TRIGGER) {
@@ -493,12 +497,14 @@ ssize_t zhpe_do_sendmsg(struct fid_ep *ep, const void *vmsg,
 static ssize_t zhpe_ep_sendmsg(struct fid_ep *ep, const struct fi_msg *msg,
 			       uint64_t flags)
 {
-	/* FIXME: Check for provider flags. */
+	if (flags & ZHPE_BAD_FLAGS_MASK)
+		return -EINVAL;
+
 	return do_sendmsg(ep, msg, flags, false);
 }
 
 static ssize_t zhpe_ep_send(struct fid_ep *ep, const void *buf, size_t len,
-		      void *desc, fi_addr_t dest_addr, void *context)
+			    void *desc, fi_addr_t dest_addr, void *context)
 {
 	struct fi_msg msg;
 	struct iovec msg_iov;
@@ -511,12 +517,12 @@ static ssize_t zhpe_ep_send(struct fid_ep *ep, const void *buf, size_t len,
 	msg.addr = dest_addr;
 	msg.context = context;
 
-	return zhpe_ep_sendmsg(ep, &msg, ZHPE_USE_OP_FLAGS);
+	return do_sendmsg(ep, &msg, ZHPE_USE_OP_FLAGS, false);
 }
 
 static ssize_t zhpe_ep_sendv(struct fid_ep *ep, const struct iovec *iov,
-		       void **desc, size_t count, fi_addr_t dest_addr,
-		       void *context)
+			     void **desc, size_t count, fi_addr_t dest_addr,
+			     void *context)
 {
 	struct fi_msg msg;
 	memset(&msg, 0, sizeof(msg));
@@ -525,12 +531,13 @@ static ssize_t zhpe_ep_sendv(struct fid_ep *ep, const struct iovec *iov,
 	msg.iov_count = count;
 	msg.addr = dest_addr;
 	msg.context = context;
-	return zhpe_ep_sendmsg(ep, &msg, ZHPE_USE_OP_FLAGS);
+
+	return do_sendmsg(ep, &msg, ZHPE_USE_OP_FLAGS, false);
 }
 
 static ssize_t zhpe_ep_senddata(struct fid_ep *ep, const void *buf, size_t len,
-			  void *desc, uint64_t data, fi_addr_t dest_addr,
-			  void *context)
+				void *desc, uint64_t data, fi_addr_t dest_addr,
+				void *context)
 {
 	struct fi_msg msg;
 	struct iovec msg_iov;
@@ -545,12 +552,12 @@ static ssize_t zhpe_ep_senddata(struct fid_ep *ep, const void *buf, size_t len,
 	msg.context = context;
 	msg.data = data;
 
-	return zhpe_ep_sendmsg(ep, &msg,
-			       FI_REMOTE_CQ_DATA | ZHPE_USE_OP_FLAGS);
+	return do_sendmsg(ep, &msg, FI_REMOTE_CQ_DATA | ZHPE_USE_OP_FLAGS,
+			  false);
 }
 
 static ssize_t zhpe_ep_inject(struct fid_ep *ep, const void *buf, size_t len,
-			fi_addr_t dest_addr)
+			      fi_addr_t dest_addr)
 {
 	struct fi_msg msg;
 	struct iovec msg_iov;
@@ -562,12 +569,14 @@ static ssize_t zhpe_ep_inject(struct fid_ep *ep, const void *buf, size_t len,
 	msg.iov_count = 1;
 	msg.addr = dest_addr;
 
-	return zhpe_ep_sendmsg(ep, &msg, FI_INJECT |
-			       ZHPE_NO_COMPLETION | ZHPE_USE_OP_FLAGS);
+	return do_sendmsg(ep, &msg,
+			  FI_INJECT | ZHPE_NO_COMPLETION | ZHPE_USE_OP_FLAGS,
+			  false);
 }
 
-static ssize_t	zhpe_ep_injectdata(struct fid_ep *ep, const void *buf,
-				size_t len, uint64_t data, fi_addr_t dest_addr)
+static ssize_t zhpe_ep_injectdata(struct fid_ep *ep, const void *buf,
+				  size_t len, uint64_t data,
+				  fi_addr_t dest_addr)
 {
 	struct fi_msg msg;
 	struct iovec msg_iov;
@@ -581,8 +590,9 @@ static ssize_t	zhpe_ep_injectdata(struct fid_ep *ep, const void *buf,
 	msg.addr = dest_addr;
 	msg.data = data;
 
-	return zhpe_ep_sendmsg(ep, &msg, FI_REMOTE_CQ_DATA | FI_INJECT |
-			       ZHPE_NO_COMPLETION | ZHPE_USE_OP_FLAGS);
+	return do_sendmsg(ep, &msg,
+			  (FI_REMOTE_CQ_DATA | FI_INJECT |
+			   ZHPE_NO_COMPLETION | ZHPE_USE_OP_FLAGS), false);
 }
 
 struct fi_ops_msg zhpe_ep_msg_ops = {
@@ -602,13 +612,15 @@ static ssize_t zhpe_ep_trecvmsg(struct fid_ep *ep,
 				const struct fi_msg_tagged *msg,
 				uint64_t flags)
 {
-	/* FIXME: Check for provider flags. */
+	if (flags & ZHPE_BAD_FLAGS_MASK)
+		return -EINVAL;
+
 	return do_recvmsg(ep, msg, flags, true);
 }
 
 static ssize_t zhpe_ep_trecv(struct fid_ep *ep, void *buf, size_t len,
-			void *desc, fi_addr_t src_addr, uint64_t tag,
-			uint64_t ignore, void *context)
+			     void *desc, fi_addr_t src_addr, uint64_t tag,
+			     uint64_t ignore, void *context)
 {
 	struct fi_msg_tagged msg;
 	struct iovec msg_iov;
@@ -625,7 +637,8 @@ static ssize_t zhpe_ep_trecv(struct fid_ep *ep, void *buf, size_t len,
 	msg.tag = tag;
 	msg.ignore = ignore;
 	msg.data = 0;
-	return zhpe_ep_trecvmsg(ep, &msg, ZHPE_USE_OP_FLAGS);
+
+	return do_recvmsg(ep, &msg, ZHPE_USE_OP_FLAGS, true);
 }
 
 static ssize_t zhpe_ep_trecvv(struct fid_ep *ep, const struct iovec *iov,
@@ -643,20 +656,23 @@ static ssize_t zhpe_ep_trecvv(struct fid_ep *ep, const struct iovec *iov,
 	msg.tag = tag;
 	msg.ignore = ignore;
 	msg.data = 0;
-	return zhpe_ep_trecvmsg(ep, &msg, ZHPE_USE_OP_FLAGS);
+
+	return do_recvmsg(ep, &msg, ZHPE_USE_OP_FLAGS, true);
 }
 
 static ssize_t zhpe_ep_tsendmsg(struct fid_ep *ep,
 				const struct fi_msg_tagged *msg,
 				uint64_t flags)
 {
-	/* FIXME: Check for provider flags. */
+	if (flags & ZHPE_BAD_FLAGS_MASK)
+		return -EINVAL;
+
 	return do_sendmsg(ep, msg, flags, true);
 }
 
 static ssize_t zhpe_ep_tsend(struct fid_ep *ep, const void *buf, size_t len,
-			void *desc, fi_addr_t dest_addr, uint64_t tag,
-			void *context)
+			     void *desc, fi_addr_t dest_addr, uint64_t tag,
+			     void *context)
 {
 	struct fi_msg_tagged msg;
 	struct iovec msg_iov;
@@ -671,12 +687,12 @@ static ssize_t zhpe_ep_tsend(struct fid_ep *ep, const void *buf, size_t len,
 	msg.context = context;
 	msg.tag = tag;
 
-	return zhpe_ep_tsendmsg(ep, &msg, ZHPE_USE_OP_FLAGS);
+	return do_sendmsg(ep, &msg, ZHPE_USE_OP_FLAGS, true);
 }
 
 static ssize_t zhpe_ep_tsendv(struct fid_ep *ep, const struct iovec *iov,
-			       void **desc, size_t count, fi_addr_t dest_addr,
-			       uint64_t tag, void *context)
+			      void **desc, size_t count, fi_addr_t dest_addr,
+			      uint64_t tag, void *context)
 {
 	struct fi_msg_tagged msg;
 
@@ -687,12 +703,13 @@ static ssize_t zhpe_ep_tsendv(struct fid_ep *ep, const struct iovec *iov,
 	msg.addr = dest_addr;
 	msg.context = context;
 	msg.tag = tag;
-	return zhpe_ep_tsendmsg(ep, &msg, ZHPE_USE_OP_FLAGS);
+
+	return do_sendmsg(ep, &msg, ZHPE_USE_OP_FLAGS, true);
 }
 
 static ssize_t zhpe_ep_tsenddata(struct fid_ep *ep, const void *buf, size_t len,
-				void *desc, uint64_t data, fi_addr_t dest_addr,
-				uint64_t tag, void *context)
+				 void *desc, uint64_t data, fi_addr_t dest_addr,
+				 uint64_t tag, void *context)
 {
 	struct fi_msg_tagged msg;
 	struct iovec msg_iov;
@@ -708,8 +725,8 @@ static ssize_t zhpe_ep_tsenddata(struct fid_ep *ep, const void *buf, size_t len,
 	msg.data = data;
 	msg.tag = tag;
 
-	return zhpe_ep_tsendmsg(ep, &msg,
-				FI_REMOTE_CQ_DATA | ZHPE_USE_OP_FLAGS);
+	return do_sendmsg(ep, &msg, FI_REMOTE_CQ_DATA | ZHPE_USE_OP_FLAGS,
+			  true);
 }
 
 static ssize_t zhpe_ep_tinject(struct fid_ep *ep, const void *buf, size_t len,
@@ -725,13 +742,15 @@ static ssize_t zhpe_ep_tinject(struct fid_ep *ep, const void *buf, size_t len,
 	msg.iov_count = 1;
 	msg.addr = dest_addr;
 	msg.tag = tag;
-	return zhpe_ep_tsendmsg(ep, &msg, FI_INJECT |
-				ZHPE_NO_COMPLETION | ZHPE_USE_OP_FLAGS);
+
+	return do_sendmsg(ep, &msg,
+			  FI_INJECT | ZHPE_NO_COMPLETION | ZHPE_USE_OP_FLAGS,
+			  true);
 }
 
-static ssize_t	zhpe_ep_tinjectdata(struct fid_ep *ep, const void *buf,
-				size_t len, uint64_t data, fi_addr_t dest_addr,
-				uint64_t tag)
+static ssize_t zhpe_ep_tinjectdata(struct fid_ep *ep, const void *buf,
+				   size_t len, uint64_t data,
+				   fi_addr_t dest_addr, uint64_t tag)
 {
 	struct fi_msg_tagged msg;
 	struct iovec msg_iov;
@@ -746,8 +765,9 @@ static ssize_t	zhpe_ep_tinjectdata(struct fid_ep *ep, const void *buf,
 	msg.data = data;
 	msg.tag = tag;
 
-	return zhpe_ep_tsendmsg(ep, &msg, FI_REMOTE_CQ_DATA | FI_INJECT |
-				ZHPE_NO_COMPLETION | ZHPE_USE_OP_FLAGS);
+	return do_sendmsg(ep, &msg,
+			  (FI_REMOTE_CQ_DATA | FI_INJECT |
+			   ZHPE_NO_COMPLETION | ZHPE_USE_OP_FLAGS), true);
 }
 
 

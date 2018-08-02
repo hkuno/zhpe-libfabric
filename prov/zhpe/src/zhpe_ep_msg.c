@@ -53,7 +53,6 @@ static const struct fi_ep_attr zhpe_msg_ep_attr = {
 static const struct fi_tx_attr zhpe_msg_tx_attr = {
 	.caps = ZHPE_EP_MSG_CAP,
 	.mode = ZHPE_MODE,
-	.op_flags = ZHPE_EP_DEFAULT_OP_FLAGS,
 	.msg_order = ZHPE_EP_MSG_ORDER,
 	.inject_size = ZHPE_EP_MAX_INJECT_SZ,
 	.size = ZHPE_EP_TX_SZ,
