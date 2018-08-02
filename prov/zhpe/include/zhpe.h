@@ -287,7 +287,7 @@ static inline bool sockaddr_loopback(const void *addr, bool loopany)
 	return ret;
 }
 
-static inline bool zhpe_sa_family(const struct fi_info *info)
+static inline int zhpe_sa_family(const struct fi_info *info)
 {
 	return (info->addr_format == FI_SOCKADDR_IN6 ? AF_INET6 : AF_INET);
 }

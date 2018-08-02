@@ -1069,11 +1069,11 @@ static int zhpe_pe_rx_handle_send(struct zhpe_conn *conn,
 	struct zhpe_rx_ctx	*rx_ctx = conn->rx_ctx;
 	uint64_t		tag = 0;
 	uint64_t		cq_data = 0;
+	union zhpe_msg_payload	*zpay = NULL;
 	struct zhpe_rx_entry	*rx_entry;
 	struct zhpe_rx_entry	*rx_posted;
 	uint64_t		msg_len;
 	uint64_t		*data;
-	union zhpe_msg_payload	*zpay;
 	void			*src;
 	ZHPEQ_TIMING_CODE(struct zhpeq_timing_stamp handler_stamp);
 
