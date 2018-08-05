@@ -1740,18 +1740,19 @@ static int zhpe_ep_lookup_conn(struct zhpe_ep_attr *attr, fi_addr_t fi_addr,
 			conn = zhpe_conn_map_insert(attr, &addr);
 			if (!conn)
 				ret = -FI_ENOMEM;
+			conn->fi_addr = fi_addr;
+			conn->av_index = av_index;
 			break;
 		}
+		conn->fi_addr = fi_addr;
+		conn->av_index = av_index;
 		if (conn->state != ZHPE_CONN_STATE_READY) {
 			cond_wait(&attr->cmap.cond, &attr->cmap.mutex);
 			continue;
 		}
 		ret = 0;
 		/* An error here should be noted, but not be fatal. */
-		if (ofi_idm_set(&attr->av_idm, av_index, conn) >= 0) {
-			conn->fi_addr = fi_addr;
-			conn->av_index = av_index;
-		} else
+		if (ofi_idm_set(&attr->av_idm, av_index, conn) >= 0)
 			ZHPE_LOG_ERROR("ofi_idm_set() failed\n");
 		break;
 	}

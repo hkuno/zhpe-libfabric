@@ -1821,21 +1821,36 @@ zhpe_rx_local_release(struct zhpe_conn *conn, uint32_t rindex)
 }
 
 static inline bool
-zhpe_rx_match_entry(struct zhpe_rx_entry *rx_entry, fi_addr_t addr,
-		    uint64_t tag,uint64_t ignore, uint64_t flags)
+zhpe_rx_match_entry(struct zhpe_rx_entry *rx_entry, bool entry_buffered,
+		    fi_addr_t addr, uint64_t tag, uint64_t ignore,
+		    uint64_t flags)
 {
-
-	struct zhpe_av		*av;
+	fi_addr_t		oaddr;
 
 	if ((rx_entry->flags & FI_TAGGED) != (flags & FI_TAGGED))
 		return false;
 	if ((rx_entry->tag & ~ignore) != (tag & ~ignore))
 		return false;
-	if (rx_entry->addr == FI_ADDR_UNSPEC || addr == FI_ADDR_UNSPEC ||
-	    rx_entry->addr == addr)
-		return true;
-	av = rx_entry->pe_root.conn->rx_ctx->av;
-	return (av && !zhpe_av_compare_addr(av, rx_entry->addr, addr));
+	if (entry_buffered) {
+		/* addr is from user and sanitized. */
+		if (addr == FI_ADDR_UNSPEC)
+			return true;
+		oaddr = rx_entry->pe_root.conn->fi_addr;
+		/* Racing, but do_recvmsg will fix it. */
+		if (oaddr == FI_ADDR_NOTAVAIL)
+			return false;
+	} else {
+		/* rx_entry->addr is from user and sanitized */
+		oaddr = rx_entry->addr;
+		if (oaddr == FI_ADDR_UNSPEC)
+			return true;
+		/* Racing, but do_recvmsg will fix it. */
+		if (addr == FI_ADDR_NOTAVAIL)
+			return false;
+	}
+
+	/* XXX: Allow different fi_addrs with the same address? */
+	return (addr == oaddr);
 }
 
 static inline void *zhpe_iov_entry(const void *viov,

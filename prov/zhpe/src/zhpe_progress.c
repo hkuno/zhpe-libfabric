@@ -321,13 +321,15 @@ void zhpe_pe_rx_peek_recv(struct zhpe_rx_ctx *rx_ctx,
 		},
 	};
 
+	fastlock_acquire(&rx_ctx->lock);
 	dlist_foreach_container(&rx_ctx->rx_buffered_list,
 				struct zhpe_rx_entry, rx_buffered, lentry) {
-		if (!zhpe_rx_match_entry(rx_buffered, fiaddr,
-					 tag, ignore, flags))
+		if (!zhpe_rx_match_entry(rx_buffered, true, fiaddr, tag,
+					 ignore, flags))
 			continue;
 		goto found;
 	}
+	fastlock_release(&rx_ctx->lock);
 	zcqe.addr = fiaddr;
 	zcqe.cqe.flags = flags;
 	zcqe.cqe.tag = tag;
@@ -489,7 +491,7 @@ void zhpe_pe_rx_post_recv(struct zhpe_rx_ctx *rx_ctx,
 	fastlock_acquire(&rx_ctx->lock);
 	dlist_foreach_container(&rx_ctx->rx_buffered_list,
 				struct zhpe_rx_entry, rx_buffered, lentry) {
-		if (!zhpe_rx_match_entry(rx_buffered, rx_user->addr,
+		if (!zhpe_rx_match_entry(rx_buffered, true, rx_user->addr,
 					 rx_user->tag, rx_user->ignore,
 					 rx_user->flags))
 			continue;
@@ -1107,8 +1109,8 @@ static int zhpe_pe_rx_handle_send(struct zhpe_conn *conn,
 	fastlock_acquire(&rx_ctx->lock);
 	dlist_foreach_container(&rx_ctx->rx_posted_list, struct zhpe_rx_entry,
 				rx_entry, lentry) {
-		if (!zhpe_rx_match_entry(rx_entry, conn->fi_addr,
-					 tag, rx_entry->ignore, flags))
+		if (!zhpe_rx_match_entry(rx_entry, false, conn->fi_addr, tag,
+					 rx_entry->ignore, flags))
 			continue;
 		goto found;
 	}

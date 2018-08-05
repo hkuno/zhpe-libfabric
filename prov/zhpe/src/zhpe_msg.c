@@ -44,6 +44,7 @@ static inline ssize_t do_recvmsg(struct fid_ep *ep, const void *vmsg,
 	size_t			i;
 	size_t			j;
 	struct zhpe_ep		*zhpe_ep;
+	struct zhpe_ep_attr	*ep_attr;
 	uint64_t		op_flags;
 	const struct fi_msg	*msg;
 	const struct fi_msg_tagged *tmsg;
@@ -57,16 +58,19 @@ static inline ssize_t do_recvmsg(struct fid_ep *ep, const void *vmsg,
 	struct zhpe_rx_ctx	*rx_ctx;
 	struct zhpe_mr		*zmr;
 	struct zhpe_rx_entry	*rx_claimed;
+	struct zhpe_conn	*conn;
 
 	switch (ep->fid.fclass) {
 	case FI_CLASS_EP:
 		zhpe_ep = container_of(ep, struct zhpe_ep, ep);
-		rx_ctx = zhpe_ep->attr->rx_ctx;
+		ep_attr = zhpe_ep->attr;
+		rx_ctx = ep_attr->rx_ctx;
 		op_flags = zhpe_ep->rx_attr.op_flags;
 		break;
 	case FI_CLASS_RX_CTX:
 	case FI_CLASS_SRX_CTX:
 		rx_ctx = container_of(ep, struct zhpe_rx_ctx, ctx);
+		ep_attr = rx_ctx->ep_attr;
 		op_flags = rx_ctx->attr.op_flags;
 		break;
 	default:
@@ -136,6 +140,14 @@ static inline ssize_t do_recvmsg(struct fid_ep *ep, const void *vmsg,
 
 	fiaddr = ((rx_ctx->attr.caps & FI_DIRECTED_RECV) ?
 		  fiaddr : FI_ADDR_UNSPEC);
+	/* XXX: Temporary fix before locking change:
+	 * Make sure conn has valid fi_addr set by getting conn.
+	 */
+	if (fiaddr != FI_ADDR_UNSPEC) {
+		ret = zhpe_ep_get_conn(ep_attr, fiaddr, &conn);
+		if (ret < 0)
+			goto done;
+	}
 
 	if (flags & FI_PEEK) {
 		zhpe_pe_rx_peek_recv(rx_ctx, fiaddr, tag, ignore, flags,
