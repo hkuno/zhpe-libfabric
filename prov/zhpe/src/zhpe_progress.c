@@ -236,7 +236,7 @@ void zhpe_pe_rx_complete(struct zhpe_rx_ctx *rx_ctx,
 	struct dlist_entry	dcomplete;
 	struct dlist_entry	ddrop;
 	size_t			i;
-	ZHPEQ_TIMING_CODE(struct zhpeq_timing_stamp sent_stamp);
+	ZHPEQ_TIMING_CODE(struct zhpe_timing_stamp sent_stamp);
 
 	/* Assumed:rx_entry on work list and we are only user. */
 	if (!locked)
@@ -271,7 +271,7 @@ void zhpe_pe_rx_complete(struct zhpe_rx_ctx *rx_ctx,
 
 #ifdef ZHPEQ_TIMING
 		if (status >= 0 && rx_cur->total_len >= sizeof(sent_stamp)) {
-			sent_stamp = *(struct zhpeq_timing_stamp *)rx_cur->buf;
+			sent_stamp = *(struct zhpe_timing_stamp *)rx_cur->buf;
 			zhpeq_timing_update(&zhpeq_timing_rx_recv,
 					    &rx_cur->handler_timestamp,
 					    &sent_stamp,
@@ -1077,7 +1077,7 @@ static int zhpe_pe_rx_handle_send(struct zhpe_conn *conn,
 	uint64_t		msg_len;
 	uint64_t		*data;
 	void			*src;
-	ZHPEQ_TIMING_CODE(struct zhpeq_timing_stamp handler_stamp);
+	ZHPEQ_TIMING_CODE(struct zhpe_timing_stamp handler_stamp);
 
 	/* Save timestamp for entry into handler. */
 	ZHPEQ_TIMING_UPDATE_STAMP(&handler_stamp);
