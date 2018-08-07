@@ -309,6 +309,7 @@ static inline int zhpe_sa_family(const struct fi_info *info)
 		case FI_SOCKADDR_IN6:
 			return AF_INET6;
 
+		case FI_SOCKADDR:
 		case FI_FORMAT_UNSPEC:
 			return AF_UNSPEC;
 
