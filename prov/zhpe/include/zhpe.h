@@ -192,6 +192,17 @@ static inline int sockaddr_cmp_noport(const void *addr1, const void *addr2)
 	return ret;
 }
 
+static inline int sockaddr_portcmp(const void *addr1, const void *addr2)
+{
+	int			ret;
+	const union sockaddr_in46 *sa1 = addr1;
+	const union sockaddr_in46 *sa2 = addr2;
+
+	ret = memcmp(&sa1->sin_port, &sa2->sin_port, sizeof(sa1->sin_port));
+
+	return ret;
+}
+
 static inline int sockaddr_cmp(const void *addr1, const void *addr2)
 {
 	int			ret;
@@ -202,7 +213,7 @@ static inline int sockaddr_cmp(const void *addr1, const void *addr2)
 	if (ret)
 		goto done;
 
-	ret = memcmp(&sa1->sin_port, &sa2->sin_port, sizeof(sa1->sin_port));
+	ret = sockaddr_portcmp(sa1, sa2);
  done:
 	return ret;
 }
@@ -289,7 +300,24 @@ static inline bool sockaddr_loopback(const void *addr, bool loopany)
 
 static inline int zhpe_sa_family(const struct fi_info *info)
 {
-	return (info->addr_format == FI_SOCKADDR_IN6 ? AF_INET6 : AF_INET);
+	if (info) {
+		switch (info->addr_format) {
+
+		case FI_SOCKADDR_IN:
+			return AF_INET;
+
+		case FI_SOCKADDR_IN6:
+			return AF_INET6;
+
+		case FI_FORMAT_UNSPEC:
+			return AF_UNSPEC;
+
+		default:
+			assert(0);
+		}
+	}
+
+	return AF_UNSPEC;
 }
 
 /* FIXME. */
@@ -623,6 +651,7 @@ struct zhpe_conn {
 	pthread_cond_t		cond;
 	uint8_t			hdr_off;
 	uint8_t			state;
+	bool			local;
 };
 
 struct zhpe_conn_map {
@@ -1457,9 +1486,11 @@ int zhpe_ep_get_conn(struct zhpe_ep_attr *ep_attr, fi_addr_t index,
 		     struct zhpe_conn **pconn);
 int zhpe_ep_connect(struct zhpe_ep_attr *attr, struct zhpe_conn *conn);
 struct zhpe_conn *zhpe_conn_map_lookup(struct zhpe_ep_attr *ep_attr,
-				       const union sockaddr_in46 *addr);
+				       const union sockaddr_in46 *addr,
+				       bool local);
 struct zhpe_conn *zhpe_conn_map_insert(struct zhpe_ep_attr *ep_attr,
-				       const union sockaddr_in46 *addr);
+				       const union sockaddr_in46 *addr,
+				       bool local);
 ssize_t zhpe_conn_send_src_addr(struct zhpe_ep_attr *ep_attr,
 				struct zhpe_tx_ctx *tx_ctx,
 				struct zhpe_conn *conn);
@@ -2394,11 +2425,11 @@ int zhpe_send_blob(int sock_fd, const void *blob, size_t blob_len);
 int zhpe_recv_fixed_blob(int sock_fd, void *blob, size_t blob_len);
 
 const char *zhpe_ntop(const union sockaddr_in46 *sin46, char *buf, size_t len);
-void zhpe_getaddrinfo_hints_init(struct addrinfo *hints, uint32_t addr_format);
+void zhpe_getaddrinfo_hints_init(struct addrinfo *hints, int family);
 int zhpe_getaddrinfo(const char *node, const char *service,
 		     struct addrinfo *hints, struct addrinfo **res);
 struct addrinfo *zhpe_findaddrinfo(struct addrinfo *res, int family);
-int zhpe_gethostaddr(uint32_t fi_addr_format, union sockaddr_in46 *addr);
+int zhpe_gethostaddr(sa_family_t family, union sockaddr_in46 *addr);
 int zhpe_checklocaladdr(const struct ifaddrs *ifaddrs,
 			const union sockaddr_in46 *sa);
 

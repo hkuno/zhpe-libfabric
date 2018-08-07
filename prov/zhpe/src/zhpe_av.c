@@ -305,7 +305,7 @@ static int _zhpe_av_insertsvc(struct fid_av *av, const char *node,
 
 	_av = container_of(av, struct zhpe_av, av_fid);
 
-	zhpe_getaddrinfo_hints_init(&hints, _av->domain->info.addr_format);
+	zhpe_getaddrinfo_hints_init(&hints, zhpe_sa_family(&_av->domain->info));
 	ret = zhpe_getaddrinfo(node, service, &hints, &result);
 	if (ret < 0) {
 		if (_av->eq) {

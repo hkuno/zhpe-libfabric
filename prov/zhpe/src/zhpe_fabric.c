@@ -250,7 +250,7 @@ int zhpe_verify_info(uint32_t api_version, const struct fi_info *hints,
 
 	case FI_SOCKADDR_IN6:
 		/* Are IPV6 addresses configured? */
-		zhpe_getaddrinfo_hints_init(&ai, FI_SOCKADDR_IN6);
+		zhpe_getaddrinfo_hints_init(&ai, AF_INET6);
 		ai.ai_flags |= AI_PASSIVE;
 		ret = zhpe_getaddrinfo(NULL, "0", &ai, &rai);
 		if (ret < 0)
@@ -413,9 +413,7 @@ static int zhpe_ep_getinfo(uint32_t api_version, const char *node,
 	char			ntop[INET6_ADDRSTRLEN];
 #endif
 
-	zhpe_getaddrinfo_hints_init(&ai,
-				    (hints ? hints->addr_format :
-				     FI_FORMAT_UNSPEC));
+	zhpe_getaddrinfo_hints_init(&ai, zhpe_sa_family(hints));
 
 	if (flags & FI_NUMERICHOST)
 		ai.ai_flags |= AI_NUMERICHOST;

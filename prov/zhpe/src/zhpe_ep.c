@@ -1716,10 +1716,12 @@ static int zhpe_ep_lookup_conn(struct zhpe_ep_attr *attr, fi_addr_t fi_addr,
 			       struct zhpe_conn **pconn)
 {
 	int			ret = 0;
-	struct zhpe_conn	*conn;
+	bool			first = true;
 	uint64_t		av_index = ((attr->ep_type == FI_EP_MSG) ? 0 :
 					    (fi_addr & attr->av->mask));
+	struct zhpe_conn	*conn;
 	union sockaddr_in46	addr;
+	bool			rem_local;
 
 	/* attr->cmap.mutex must be held. */
 	for (;;) {
@@ -1728,16 +1730,25 @@ static int zhpe_ep_lookup_conn(struct zhpe_ep_attr *attr, fi_addr_t fi_addr,
 			/* Only in av_idm if conn fully ready. */
 			break;
 
-		if (attr->ep_type == FI_EP_MSG) {
-			sockaddr_cpy(&addr, &attr->dest_addr);
-			addr.sin_port = htons(attr->msg_dest_port);
-		} else
-			sockaddr_cpy(&addr, &attr->av->table[av_index].addr);
+		if (first) {
+			if (attr->ep_type == FI_EP_MSG) {
+				sockaddr_cpy(&addr, &attr->dest_addr);
+				addr.sin_port = htons(attr->msg_dest_port);
+			} else
+				sockaddr_cpy(&addr,
+					     &attr->av->table[av_index].addr);
 
-		conn = zhpe_conn_map_lookup(attr, &addr);
+			ret = zhpe_checklocaladdr(NULL, &addr);
+			if (ret < 0)
+				break;
+			rem_local = !!ret;
+			first = false;
+		}
+
+		conn = zhpe_conn_map_lookup(attr, &addr, rem_local);
 		if (!conn) {
 			ret = 1;
-			conn = zhpe_conn_map_insert(attr, &addr);
+			conn = zhpe_conn_map_insert(attr, &addr, rem_local);
 			if (!conn)
 				ret = -FI_ENOMEM;
 			conn->fi_addr = fi_addr;
