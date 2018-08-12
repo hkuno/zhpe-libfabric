@@ -349,7 +349,8 @@ void zhpe_pe_rx_peek_recv(struct zhpe_rx_ctx *rx_ctx,
 		dlist_remove(&rx_buffered->lentry);
 		dlist_insert_tail(&rx_buffered->lentry, &rx_ctx->rx_work_list);
 		fastlock_release(&rx_ctx->lock);
-	}
+	} else
+		fastlock_release(&rx_ctx->lock);
 	zhpe_pe_report_complete(&zcqe, 0, 0);
  done:
 	return;
