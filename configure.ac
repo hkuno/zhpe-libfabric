@@ -264,6 +264,15 @@ AC_TRY_LINK([
 
 dnl Check for glibc malloc hooks
 AC_MSG_CHECKING(compiler support for glibc malloc hooks)
+CFLAGS_save="$CFLAGS"
+CFLAGS_test=
+# Remove -Wrrror flag if set
+for flag in $CFLAGS; do
+    if test "$flag" != "-Werror"; then
+        CFLAGS_test="$CFLAGS_test $flag"
+    fi
+done
+CFLAGS="$CFLAGS_test"
 AC_TRY_LINK([#include <malloc.h>],
     [
      __malloc_hook = NULL;
@@ -276,7 +285,7 @@ AC_TRY_LINK([#include <malloc.h>],
         AC_DEFINE(HAVE_GLIBC_MALLOC_HOOKS, 1, [Set to 1 to use glibc malloc hooks])
     ],
     [AC_MSG_RESULT(no)])
-
+CFLAGS="$CFLAGS_save"
 if test "$with_valgrind" != "" && test "$with_valgrind" != "no"; then
 AC_CHECK_HEADER(valgrind/memcheck.h, [],
     AC_MSG_ERROR([valgrind requested but <valgrind/memcheck.h> not found.]))
