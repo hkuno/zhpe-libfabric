@@ -105,7 +105,7 @@ static int do_tx_setup(struct zhpe_ep_attr *ep_attr, struct zhpe_tx **ztx_out)
 	}
 
 	/* Allocate queue from bridge. */
-	ret = zhpeq_alloc(ep_attr->domain->zdom, qlen * 2, qlen * 2,
+	ret = zhpeq_alloc(ep_attr->domain->zdom, qlen, qlen,
 			  0, 0, 0, &ztx->zq);
 	if (ret < 0)  {
 		ZHPE_LOG_ERROR("zhpeq_alloc() error %d\n", ret);
