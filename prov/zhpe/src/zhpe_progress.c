@@ -130,7 +130,7 @@ static void zhpe_pe_report_complete(struct zhpe_cqe *zcqe,
 		break;
 
 	case FI_REMOTE_WRITE:
-		cq = NULL;
+		cq = comp->recv_cq;
 		event = 0;
 		cntr = zcqe->comp->rem_write_cntr;
 		break;
@@ -236,7 +236,7 @@ void zhpe_pe_rx_complete(struct zhpe_rx_ctx *rx_ctx,
 	struct dlist_entry	dcomplete;
 	struct dlist_entry	ddrop;
 	size_t			i;
-	ZHPEQ_TIMING_CODE(struct zhpeq_timing_stamp sent_stamp);
+	ZHPEQ_TIMING_CODE(struct zhpe_timing_stamp sent_stamp);
 
 	/* Assumed:rx_entry on work list and we are only user. */
 	if (!locked)
@@ -271,7 +271,7 @@ void zhpe_pe_rx_complete(struct zhpe_rx_ctx *rx_ctx,
 
 #ifdef ZHPEQ_TIMING
 		if (status >= 0 && rx_cur->total_len >= sizeof(sent_stamp)) {
-			sent_stamp = *(struct zhpeq_timing_stamp *)rx_cur->buf;
+			sent_stamp = *(struct zhpe_timing_stamp *)rx_cur->buf;
 			zhpeq_timing_update(&zhpeq_timing_rx_recv,
 					    &rx_cur->handler_timestamp,
 					    &sent_stamp,
@@ -321,13 +321,15 @@ void zhpe_pe_rx_peek_recv(struct zhpe_rx_ctx *rx_ctx,
 		},
 	};
 
+	fastlock_acquire(&rx_ctx->lock);
 	dlist_foreach_container(&rx_ctx->rx_buffered_list,
 				struct zhpe_rx_entry, rx_buffered, lentry) {
-		if (!zhpe_rx_match_entry(rx_buffered, fiaddr,
-					 tag, ignore, flags))
+		if (!zhpe_rx_match_entry(rx_buffered, true, fiaddr, tag,
+					 ignore, flags))
 			continue;
 		goto found;
 	}
+	fastlock_release(&rx_ctx->lock);
 	zcqe.addr = fiaddr;
 	zcqe.cqe.flags = flags;
 	zcqe.cqe.tag = tag;
@@ -335,7 +337,7 @@ void zhpe_pe_rx_peek_recv(struct zhpe_rx_ctx *rx_ctx,
 	goto done;
  found:
 	zcqe.addr = rx_buffered->addr;
-	zcqe.cqe.flags = rx_buffered->flags;
+	zcqe.cqe.flags = rx_buffered->flags | (flags & FI_COMPLETION);
 	zcqe.cqe.len = rx_buffered->total_len;
 	zcqe.cqe.data = rx_buffered->cq_data;
 	zcqe.cqe.tag = rx_buffered->tag;
@@ -347,7 +349,8 @@ void zhpe_pe_rx_peek_recv(struct zhpe_rx_ctx *rx_ctx,
 		dlist_remove(&rx_buffered->lentry);
 		dlist_insert_tail(&rx_buffered->lentry, &rx_ctx->rx_work_list);
 		fastlock_release(&rx_ctx->lock);
-	}
+	} else
+		fastlock_release(&rx_ctx->lock);
 	zhpe_pe_report_complete(&zcqe, 0, 0);
  done:
 	return;
@@ -393,6 +396,7 @@ static inline void rx_user_claim(struct zhpe_rx_entry *rx_buffered,
 	state = rx_buffered->rx_state;
 	if (state == ZHPE_RX_STATE_EAGER)
 		state = rx_buffered->rx_state = ZHPE_RX_STATE_EAGER_CLAIMED;
+	rx_buffered->flags |= (rx_user->flags & FI_COMPLETION);
 	rx_buffered->context = rx_user->context;
 	/* FIXME: Assume 1 iov for now. */
 	rx_buffered->ustate = rx_user->lstate;
@@ -488,7 +492,7 @@ void zhpe_pe_rx_post_recv(struct zhpe_rx_ctx *rx_ctx,
 	fastlock_acquire(&rx_ctx->lock);
 	dlist_foreach_container(&rx_ctx->rx_buffered_list,
 				struct zhpe_rx_entry, rx_buffered, lentry) {
-		if (!zhpe_rx_match_entry(rx_buffered, rx_user->addr,
+		if (!zhpe_rx_match_entry(rx_buffered, true, rx_user->addr,
 					 rx_user->tag, rx_user->ignore,
 					 rx_user->flags))
 			continue;
@@ -531,7 +535,7 @@ int zhpe_pe_tx_handle_entry(struct zhpe_pe_root *pe_root,
 	struct zhpe_pe_entry	*pe_entry =
 		container_of(pe_root, struct zhpe_pe_entry, pe_root);
 
-	if (zq_cqe && zq_cqe->status != ZHPEQ_CQ_STATUS_SUCCESS)
+	if (zq_cqe && zq_cqe->z.status != ZHPEQ_CQ_STATUS_SUCCESS)
 		zhpe_pe_root_update_status(pe_root, -FI_EIO);
 	pe_root->completions--;
 	if (!pe_root->completions) {
@@ -572,51 +576,26 @@ static int zhpe_pe_rx_handle_status(struct zhpe_conn *conn,
 	return pe_entry->pe_root.handler(&pe_entry->pe_root, NULL);
 }
 
-static int zhpe_pe_rx_handle_send(struct zhpe_conn *conn,
-				  struct zhpe_msg_hdr *zhdr);
-
 static int zhpe_pe_rx_handle_writedata(struct zhpe_conn *conn,
 				       struct zhpe_msg_hdr *zhdr)
 {
-	int			ret = 0;
-	bool			rx_cq_data = false;
 	struct zhpe_cqe		zcqe = {
+		.addr = conn->fi_addr,
 		.comp = &conn->rx_ctx->comp,
 	};
 	union zhpe_msg_payload	*zpay;
-	struct zhpe_msg_hdr	*fhdr;
-	uint64_t		*data;
-	struct {
-		char		data[ZHPE_RING_ENTRY_LEN];
-	} __attribute__ ((aligned(ZHPE_RING_ENTRY_LEN))) fake_zmsg;
 
 	zpay = zhpe_pay_ptr(conn, zhdr, 0, alignof(*zpay));
 	zcqe.cqe.flags = (be64toh(zpay->writedata.flags) &
 			  (FI_REMOTE_READ | FI_REMOTE_WRITE |
-			   FI_REMOTE_CQ_DATA));
-	if (zcqe.cqe.flags & FI_REMOTE_CQ_DATA) {
-		zcqe.cqe.flags &= ~FI_REMOTE_CQ_DATA;
-		if (conn->ep_attr->info.mode & FI_RX_CQ_DATA)
-			rx_cq_data = true;
-	}
-	if (zcqe.cqe.flags) {
-		zcqe.cqe.data = be64toh(zpay->writedata.cq_data);
-		zhpe_pe_report_complete(&zcqe, 0, 0);
-	}
-	if (!rx_cq_data)
-		goto done;
-	/* Create fake receive; can't reuse real zhdr because of
-	 * double delivery problem.
-	 */
-	fhdr = (void *)(fake_zmsg.data + conn->hdr_off);
-	fhdr->op_type = ZHPE_OP_SEND;
-	fhdr->rx_id  = zhdr->rx_id;
-	fhdr->flags = ZHPE_MSG_INLINE | ZHPE_MSG_REMOTE_CQ_DATA;
-	data = zhpe_pay_ptr(conn, zhdr, 0, alignof(*data));
-	*data = zpay->writedata.cq_data;
-	ret = zhpe_pe_rx_handle_send(conn, fhdr);
- done:
-	return ret;
+			   FI_REMOTE_CQ_DATA | FI_RMA | FI_ATOMIC));
+	if ((zcqe.cqe.flags & (FI_REMOTE_WRITE |FI_REMOTE_CQ_DATA)) ==
+	     FI_REMOTE_CQ_DATA)
+	    zcqe.cqe.flags |= FI_REMOTE_WRITE;
+	zcqe.cqe.data = be64toh(zpay->writedata.cq_data);
+	zhpe_pe_report_complete(&zcqe, 0, 0);
+
+	return 0;
 }
 
 #define ATOMIC_OP(_size)						\
@@ -656,7 +635,7 @@ do {									\
 			(uint ## _size ## _t)o64);			\
 		break;							\
 	}								\
- } while(0)
+} while(0)
 
 static int zhpe_pe_rx_handle_atomic(struct zhpe_conn *conn,
 				    struct zhpe_msg_hdr *zhdr)
@@ -797,7 +776,7 @@ static int zhpe_pe_tx_handle_rx_get(struct zhpe_pe_root *pe_root,
 	struct zhpe_rx_entry	*rx_entry =
 		container_of(pe_root, struct zhpe_rx_entry, pe_root);
 
-	if (zq_cqe->status != ZHPEQ_CQ_STATUS_SUCCESS)
+	if (zq_cqe->z.status != ZHPEQ_CQ_STATUS_SUCCESS)
 		zhpe_pe_root_update_status(&rx_entry->pe_root, -FI_EIO);
 	pe_root->completions--;
 	zhpe_pe_rx_get(rx_entry);
@@ -1093,13 +1072,13 @@ static int zhpe_pe_rx_handle_send(struct zhpe_conn *conn,
 	struct zhpe_rx_ctx	*rx_ctx = conn->rx_ctx;
 	uint64_t		tag = 0;
 	uint64_t		cq_data = 0;
+	union zhpe_msg_payload	*zpay = NULL;
 	struct zhpe_rx_entry	*rx_entry;
 	struct zhpe_rx_entry	*rx_posted;
 	uint64_t		msg_len;
 	uint64_t		*data;
-	union zhpe_msg_payload	*zpay;
 	void			*src;
-	ZHPEQ_TIMING_CODE(struct zhpeq_timing_stamp handler_stamp);
+	ZHPEQ_TIMING_CODE(struct zhpe_timing_stamp handler_stamp);
 
 	/* Save timestamp for entry into handler. */
 	ZHPEQ_TIMING_UPDATE_STAMP(&handler_stamp);
@@ -1131,8 +1110,8 @@ static int zhpe_pe_rx_handle_send(struct zhpe_conn *conn,
 	fastlock_acquire(&rx_ctx->lock);
 	dlist_foreach_container(&rx_ctx->rx_posted_list, struct zhpe_rx_entry,
 				rx_entry, lentry) {
-		if (!zhpe_rx_match_entry(rx_entry, conn->fi_addr,
-					 tag, rx_entry->ignore, flags))
+		if (!zhpe_rx_match_entry(rx_entry, false, conn->fi_addr, tag,
+					 rx_entry->ignore, flags))
 			continue;
 		goto found;
 	}
@@ -1213,13 +1192,13 @@ int zhpe_pe_tx_handle_rma(struct zhpe_pe_root *pe_root,
 	pe_root = &pe_entry->pe_root;
 	pe_root->completions--;
 	if (zq_cqe) {
-		if (zq_cqe->status != ZHPEQ_CQ_STATUS_SUCCESS)
+		if (zq_cqe->z.status != ZHPEQ_CQ_STATUS_SUCCESS)
 			zhpe_pe_root_update_status(pe_root, -FI_EIO);
 		if (!pe_root->completions &&
 		    ((pe_entry->flags & (FI_INJECT | FI_READ)) ==
 		     (FI_INJECT | FI_READ)))
 			memcpy(pe_entry->rma.liov[0].iov_base,
-			       zq_cqe->result.data,
+			       zq_cqe->z.result.data,
 			       pe_entry->rma.liov[0].iov_len);
 	}
 	zhpe_pe_tx_rma(pe_entry);
@@ -1357,7 +1336,7 @@ int zhpe_pe_tx_handle_atomic(struct zhpe_pe_root *pe_root,
 		container_of(pe_root, struct zhpe_pe_entry, pe_root);
 	int			rc;
 
-	if (zq_cqe && zq_cqe->status != ZHPEQ_CQ_STATUS_SUCCESS)
+	if (zq_cqe && zq_cqe->z.status != ZHPEQ_CQ_STATUS_SUCCESS)
 		zhpe_pe_root_update_status(pe_root, -FI_EIO);
 	pe_root->completions--;
 	if (!pe_root->completions) {
@@ -1480,7 +1459,7 @@ static int zhpe_pe_progress_rx_ep(struct zhpe_pe *pe,
 	uint8_t			valid;
 
 	map = &ep_attr->cmap;
-        if (!map->used)
+	if (!map->used)
 		goto done;
 
 	/* Poll all connections for traffic. */
@@ -1611,9 +1590,7 @@ int zhpe_pe_progress_tx_ctx(struct zhpe_pe *pe,
 	struct zhpe_pe_retry	*pe_retry;
 
 	map = &ep_attr->cmap;
-        if (!map->used)
-		goto done;
-
+	mutex_acquire(&map->mutex);
 	if (!ep_attr->ztx)
 		goto done;
 	entries = zhpeq_cq_read(ep_attr->ztx->zq, zq_cqe, ARRAY_SIZE(zq_cqe));
@@ -1623,9 +1600,9 @@ int zhpe_pe_progress_tx_ctx(struct zhpe_pe *pe,
 		goto done;
 	}
 	for (i = 0; i < entries; i++) {
-		context = zq_cqe[i].context;
+		context = zq_cqe[i].z.context;
 		if (context == ZHPE_CONTEXT_IGNORE_PTR) {
-			if (zq_cqe[i].status == ZHPEQ_CQ_STATUS_SUCCESS)
+			if (zq_cqe[i].z.status == ZHPEQ_CQ_STATUS_SUCCESS)
 				continue;
 			ZHPE_LOG_ERROR("Send of control I/O failed\n");
 			ret = -EIO;
@@ -1651,6 +1628,7 @@ int zhpe_pe_progress_tx_ctx(struct zhpe_pe *pe,
 		}
 	}
  done:
+	mutex_release(&map->mutex);
 	if (ret < 0)
 		ZHPE_LOG_ERROR("failed to progress TX ctx\n");
 	return ret;
@@ -1699,7 +1677,7 @@ static void zhpe_pe_wait(struct zhpe_pe *pe)
 	pollfd.events = POLLIN;
 	rc = poll(&pollfd, 1, 1);
 	if (rc == -1)
-                ZHPE_LOG_ERROR("poll failed : %s\n", strerror(errno));
+		ZHPE_LOG_ERROR("poll failed : %s\n", strerror(errno));
 
 	if (rc > 0) {
 		fastlock_acquire(&pe->signal_lock);

@@ -116,10 +116,7 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 			goto done;
 		}
 
-		if (flags & ZHPE_USE_OP_FLAGS)
-			flags |= op_flags;
-
-		flags = zhpe_tx_fixup_completion(flags);
+		flags = zhpe_tx_fixup_completion(flags, op_flags, tx_ctx);
 	}
 
 	if (flags & FI_TRIGGER) {
@@ -130,7 +127,7 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 			goto done;
 	}
 
- 	ret = zhpe_ep_get_conn(ep_attr, msg->addr, &conn);
+	ret = zhpe_ep_get_conn(ep_attr, msg->addr, &conn);
 	if (ret < 0)
 		goto done;
 
@@ -260,16 +257,15 @@ static ssize_t zhpe_ep_rma_readmsg(struct fid_ep *ep,
 				   const struct fi_msg_rma *msg,
 				   uint64_t flags)
 {
-	/* FIXME: Check for provider flags. */
-	if (flags & FI_WRITE)
-		return -FI_EINVAL;
+	if (flags & (ZHPE_BAD_FLAGS_MASK | FI_WRITE))
+		return -EINVAL;
 
 	return do_rma_msg(ep, msg, flags | FI_READ);
 }
 
 static ssize_t zhpe_ep_rma_read(struct fid_ep *ep, void *buf, size_t len,
-				 void *desc, fi_addr_t src_addr, uint64_t addr,
-				 uint64_t key, void *context)
+				void *desc, fi_addr_t src_addr, uint64_t addr,
+				uint64_t key, void *context)
 {
 	struct fi_msg_rma msg;
 	struct iovec msg_iov;
@@ -291,12 +287,12 @@ static ssize_t zhpe_ep_rma_read(struct fid_ep *ep, void *buf, size_t len,
 	msg.addr = src_addr;
 	msg.context = context;
 
-	return zhpe_ep_rma_readmsg(ep, &msg, ZHPE_USE_OP_FLAGS);
+	return do_rma_msg(ep, &msg, ZHPE_USE_OP_FLAGS | FI_READ);
 }
 
 static ssize_t zhpe_ep_rma_readv(struct fid_ep *ep, const struct iovec *iov,
-				void **desc, size_t count,
-				fi_addr_t src_addr, uint64_t addr,
+				 void **desc, size_t count,
+				 fi_addr_t src_addr, uint64_t addr,
 				 uint64_t key,void *context)
 {
 	size_t len, i;
@@ -320,23 +316,22 @@ static ssize_t zhpe_ep_rma_readv(struct fid_ep *ep, const struct iovec *iov,
 	msg.addr = src_addr;
 	msg.context = context;
 
-	return zhpe_ep_rma_readmsg(ep, &msg, ZHPE_USE_OP_FLAGS);
+	return do_rma_msg(ep, &msg, ZHPE_USE_OP_FLAGS | FI_READ);
 }
 
 static ssize_t zhpe_ep_rma_writemsg(struct fid_ep *ep,
 				    const struct fi_msg_rma *msg,
 				    uint64_t flags)
 {
-	/* FIXME: Check for provider flags. */
-	if (flags & FI_READ)
-		return -FI_EINVAL;
+	if (flags & (ZHPE_BAD_FLAGS_MASK | FI_READ))
+		return -EINVAL;
 
 	return do_rma_msg(ep, msg, flags | FI_WRITE);
 }
 
 static ssize_t zhpe_ep_rma_write(struct fid_ep *ep, const void *buf,
-				  size_t len, void *desc, fi_addr_t dest_addr,
-				  uint64_t addr, uint64_t key, void *context)
+				 size_t len, void *desc, fi_addr_t dest_addr,
+				 uint64_t addr, uint64_t key, void *context)
 {
 	struct fi_msg_rma msg;
 	struct iovec msg_iov;
@@ -360,12 +355,13 @@ static ssize_t zhpe_ep_rma_write(struct fid_ep *ep, const void *buf,
 	msg.addr = dest_addr;
 	msg.context = context;
 
-	return zhpe_ep_rma_writemsg(ep, &msg, ZHPE_USE_OP_FLAGS);
+	return do_rma_msg(ep, &msg, ZHPE_USE_OP_FLAGS | FI_WRITE);
 }
 
 static ssize_t zhpe_ep_rma_writev(struct fid_ep *ep, const struct iovec *iov,
-				void **desc, size_t count, fi_addr_t dest_addr,
-				uint64_t addr, uint64_t key, void *context)
+				  void **desc, size_t count,
+				  fi_addr_t dest_addr,
+				  uint64_t addr, uint64_t key, void *context)
 {
 	size_t i;
 	size_t len;
@@ -389,13 +385,13 @@ static ssize_t zhpe_ep_rma_writev(struct fid_ep *ep, const struct iovec *iov,
 	msg.context = context;
 	msg.addr = dest_addr;
 
-	return zhpe_ep_rma_writemsg(ep, &msg, ZHPE_USE_OP_FLAGS);
+	return do_rma_msg(ep, &msg, ZHPE_USE_OP_FLAGS | FI_WRITE);
 }
 
 static ssize_t zhpe_ep_rma_writedata(struct fid_ep *ep, const void *buf,
-				      size_t len, void *desc, uint64_t data,
-				      fi_addr_t dest_addr, uint64_t addr,
-				      uint64_t key, void *context)
+				     size_t len, void *desc, uint64_t data,
+				     fi_addr_t dest_addr, uint64_t addr,
+				     uint64_t key, void *context)
 {
 	struct fi_msg_rma msg;
 	struct iovec msg_iov;
@@ -418,13 +414,13 @@ static ssize_t zhpe_ep_rma_writedata(struct fid_ep *ep, const void *buf,
 	msg.context = context;
 	msg.data = data;
 
-	return zhpe_ep_rma_writemsg(ep, &msg, FI_REMOTE_CQ_DATA |
-					ZHPE_USE_OP_FLAGS);
+	return do_rma_msg(ep, &msg,
+			  FI_REMOTE_CQ_DATA | ZHPE_USE_OP_FLAGS | FI_WRITE);
 }
 
 static ssize_t zhpe_ep_rma_inject(struct fid_ep *ep, const void *buf,
-				size_t len, fi_addr_t dest_addr, uint64_t addr,
-				uint64_t key)
+				  size_t len, fi_addr_t dest_addr,
+				  uint64_t addr, uint64_t key)
 {
 	struct fi_msg_rma msg;
 	struct iovec msg_iov;
@@ -445,14 +441,15 @@ static ssize_t zhpe_ep_rma_inject(struct fid_ep *ep, const void *buf,
 	msg.msg_iov = &msg_iov;
 	msg.addr = dest_addr;
 
-	return zhpe_ep_rma_writemsg(ep, &msg, FI_INJECT |
-				    ZHPE_NO_COMPLETION | ZHPE_USE_OP_FLAGS);
+	return do_rma_msg(ep, &msg,
+			  (FI_INJECT | ZHPE_NO_COMPLETION |
+			   ZHPE_USE_OP_FLAGS | FI_WRITE));
 }
 
 static ssize_t zhpe_ep_rma_injectdata(struct fid_ep *ep, const void *buf,
-					size_t len, uint64_t data,
-					fi_addr_t dest_addr, uint64_t addr,
-					uint64_t key)
+				      size_t len, uint64_t data,
+				      fi_addr_t dest_addr, uint64_t addr,
+				      uint64_t key)
 {
 	struct fi_msg_rma msg;
 	struct iovec msg_iov;
@@ -473,8 +470,10 @@ static ssize_t zhpe_ep_rma_injectdata(struct fid_ep *ep, const void *buf,
 	msg.msg_iov = &msg_iov;
 	msg.addr = dest_addr;
 	msg.data = data;
-	return zhpe_ep_rma_writemsg(ep, &msg, FI_INJECT | FI_REMOTE_CQ_DATA |
-		ZHPE_NO_COMPLETION | ZHPE_USE_OP_FLAGS);
+
+	return do_rma_msg(ep, &msg,
+			  (FI_INJECT | FI_REMOTE_CQ_DATA |
+			   ZHPE_NO_COMPLETION | ZHPE_USE_OP_FLAGS | FI_WRITE));
 }
 
 

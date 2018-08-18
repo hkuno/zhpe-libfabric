@@ -105,7 +105,8 @@ static int do_tx_setup(struct zhpe_ep_attr *ep_attr, struct zhpe_tx **ztx_out)
 	}
 
 	/* Allocate queue from bridge. */
-	ret = zhpeq_alloc(ep_attr->domain->zdom, qlen * 2, &ztx->zq);
+	ret = zhpeq_alloc(ep_attr->domain->zdom, qlen, qlen,
+			  0, 0, 0, &ztx->zq);
 	if (ret < 0)  {
 		ZHPE_LOG_ERROR("zhpeq_alloc() error %d\n", ret);
 		goto done;
@@ -151,13 +152,13 @@ static int zhpe_tx_handle_conn_pull(struct zhpe_pe_root *pe_root,
 				    struct zhpeq_cq_entry *zq_cqe)
 {
 	struct zhpe_conn	*conn = pe_root->conn;
-	struct zhpe_rx_peer_visible *peer = (void *)&zq_cqe->result;
+	struct zhpe_rx_peer_visible *peer = (void *)&zq_cqe->z.result;
 
-	if (zq_cqe->status == ZHPEQ_CQ_STATUS_SUCCESS)
+	if (zq_cqe->z.status == ZHPEQ_CQ_STATUS_SUCCESS)
 		atomic_store_lazy_uint32(&conn->rx_remote.shadow,
 					 ntohl(peer->completed));
 	else
-		ZHPE_LOG_ERROR("status : %d\n",  zq_cqe->status);
+		ZHPE_LOG_ERROR("status : %d\n",  zq_cqe->z.status);
 	__sync_fetch_and_sub(&conn->rx_remote.pull_busy, 1);
 
 	return 0;
@@ -247,8 +248,8 @@ static int do_rx_setup(struct zhpe_conn *conn, int conn_fd, int action)
 	rx_ringl->cmn.zmr = fi_mr_desc(mr);
 
 	/* Exchange key information. */
-	ret = zhpeq_zmmu_export(conn->ztx->zq, rx_ringl->cmn.zmr->kdata,
-				&blob, &blob_len);
+	ret = zhpeq_zmmu_export(zhpeq_dom(conn->ztx->zq),
+				rx_ringl->cmn.zmr->kdata, &blob, &blob_len);
 	if (ret < 0) {
 		ZHPE_LOG_ERROR("zhpeq_zmmu_export() error %d\n", ret);
 		goto done;
@@ -315,19 +316,14 @@ int zhpe_conn_z_setup(struct zhpe_conn *conn, int conn_fd, int action)
 	int			ret = 0;
 	struct zhpe_ep_attr	*ep_attr = conn->ep_attr;
 
-	mutex_acquire(&ep_attr->conn_mutex);
-	conn->ztx = ep_attr->ztx;
-	if (!conn->ztx) {
-		ret = do_tx_setup(ep_attr, &conn->ztx);
-		if (ret >= 0) {
-			if (ep_attr->ep_type == FI_EP_RDM) {
-				__sync_fetch_and_add(&conn->ztx->use_count, 1);
-				ep_attr->ztx = conn->ztx;
-			}
-		}
-	} else
-		__sync_fetch_and_add(&conn->ztx->use_count, 1);
-	mutex_release(&ep_attr->conn_mutex);
+	mutex_acquire(&ep_attr->cmap.mutex);
+	if (!ep_attr->ztx)
+		ret = do_tx_setup(ep_attr, &ep_attr->ztx);
+	if (ret >= 0) {
+		conn->ztx = ep_attr->ztx;
+		(void)__sync_fetch_and_add(&ep_attr->ztx->use_count, 1);
+	}
+	mutex_release(&ep_attr->cmap.mutex);
 	if (ret < 0)
 		goto done;
 	/* Init remote mr tree. */
@@ -368,8 +364,6 @@ int zhpe_conn_z_setup(struct zhpe_conn *conn, int conn_fd, int action)
 	ret = 0;
 
  done:
-	if (ret < 0)
-		zhpe_conn_z_free(conn);
 
 	return ret;
 }
@@ -407,9 +401,9 @@ void zhpe_conn_z_free(struct zhpe_conn *conn)
 		rbtDelete(conn->rkey_tree);
 		conn->rkey_tree = NULL;
 	}
+	do_rx_free(conn);
 	if (conn->zq_index != FI_ADDR_NOTAVAIL)
 		zhpeq_backend_close(conn->ztx->zq, conn->zq_index);
-	do_rx_free(conn);
 	zhpe_tx_put(conn->ztx);
 }
 
@@ -687,14 +681,15 @@ int zhpe_slab_init(struct zhpe_slab *slab, size_t size,
 	}
 	slab->zmr = fi_mr_desc(mr);
  done:
-	return 0;
+	return ret;
 }
 
 void zhpe_slab_destroy(struct zhpe_slab *slab)
 {
 	if (slab->mem) {
 		slab_check(slab);
-		zhpe_mr_close(&slab->zmr->mr_fid.fid);
+		if (slab->zmr)
+			zhpe_mr_close(&slab->zmr->mr_fid.fid);
 		slab->zmr = NULL;
 		free(slab->mem);
 		slab->mem = NULL;
@@ -747,8 +742,8 @@ int zhpe_slab_alloc(struct zhpe_slab *slab, size_t size,
 	slab_check(slab);
 	fastlock_release(&slab->lock);
 	iov->iov_desc = slab->zmr;
-	iov->iov_zaddr = (slab->zmr->kdata->zaddr +
-			  ((char *)iov->iov_base - (char *)slab->mem));
+	(void)zhpeq_lcl_key_access(slab->zmr->kdata, iov->iov_base, size,
+				   0, &iov->iov_zaddr);
 	ret = 0;
  done:
 	return ret;
@@ -948,7 +943,7 @@ int zhpe_put_imm_to_iov(struct zhpe_pe_root *pe_root, void *lbuf,
 	struct zhpe_iov_state	lstate = { .viov = &liov, .cnt = 1 };
 
 	if (llen > ZHPEQ_IMM_MAX)
-		return -EINVAL;
+		return -FI_EINVAL;
 
 	return zhpe_iov_op(pe_root, &lstate, rstate, llen, 1,
 			   zhpe_iov_op_put, rem);
@@ -965,7 +960,7 @@ int zhpe_iov_to_get_imm(struct zhpe_pe_root *pe_root,
 	struct zhpe_iov_state	lstate = { .viov = &liov, .cnt = 1 };
 
 	if (llen > ZHPEQ_IMM_MAX)
-		return -EINVAL;
+		return -FI_EINVAL;
 
 	return zhpe_iov_op(pe_root, &lstate, rstate, llen, 1,
 			   zhpe_iov_op_get_imm, rem);
@@ -1026,7 +1021,7 @@ static inline struct zhpe_rkey_data *conn_rkey_get(struct zhpe_conn *conn,
 	rbtKeyValue(conn->rkey_tree, rbt, &keyp, (void **)&ret);
 	if (inc) {
 		/* Remove oneshot keys from the tree. */
-		if (ret->kdata->access & ZHPEQ_MR_KEY_ONESHOT)
+		if (ret->kdata->z.access & ZHPEQ_MR_KEY_ONESHOT)
 			rbtErase(conn->rkey_tree, rbt);
 		else
 			__sync_fetch_and_add(&ret->use_count, 1);
@@ -1069,7 +1064,7 @@ int zhpe_conn_key_export(struct zhpe_conn *conn, struct zhpe_mr *zmr,
 				fastlock_release(&conn->mr_lock);
 				fastlock_acquire(&domain->lock);
 				ret = 0;
-				if (zmr->flags & ZHPE_MR_KEY_FREEING)
+				if (zmr->flags & ZHPE_MR_FLAGS_FREEING)
 					ret = -FI_ENOKEY;
 				else
 					dlist_insert_tail(&kexp->lentry,
@@ -1121,7 +1116,8 @@ int zhpe_conn_key_export(struct zhpe_conn *conn, struct zhpe_mr *zmr,
 		goto done;
 	} else
 		ohdr.op_type = ZHPE_OP_KEY_EXPORT;
-	ret = zhpeq_zmmu_export(conn->ztx->zq, zmr->kdata, &blob, &blob_len);
+	ret = zhpeq_zmmu_export(zhpeq_dom(conn->ztx->zq),
+				zmr->kdata, &blob, &blob_len);
 	if (ret < 0)
 		goto done;
 	if (blob_len > sizeof(struct zhpe_msg_key_data)) {
@@ -1155,8 +1151,8 @@ int zhpe_conn_rkey_import(struct zhpe_conn *conn, const void *blob,
 
 	if (rkey_out)
 		*rkey_out = NULL;
-	ret = zhpeq_zmmu_import(conn->ztx->zq, conn->zq_index, blob, blob_len,
-				&kdata);
+	ret = zhpeq_zmmu_import(zhpeq_dom(conn->ztx->zq), conn->zq_index,
+				blob, blob_len, false, &kdata);
 	if (ret < 0)
 		goto done;
 	ret = -FI_ENOMEM;
@@ -1166,7 +1162,7 @@ int zhpe_conn_rkey_import(struct zhpe_conn *conn, const void *blob,
 	fastlock_acquire(&conn->mr_lock);
 	__sync_fetch_and_add(&conn->ztx->use_count, 1);
 	new->ztx = conn->ztx;
-	new->key = kdata->key;
+	new->key = kdata->z.key;
 	new->kdata = kdata;
 	new->use_count = 2;
 	rkey = conn_rkey_get(conn, new->key, false);
@@ -1251,7 +1247,7 @@ static int check_write(size_t req, ssize_t res)
 
 int zhpe_send_blob(int sock_fd, const void *blob, size_t blob_len)
 {
-	int			ret = -EINVAL;
+	int			ret = -FI_EINVAL;
 	uint32_t		wlen = blob_len;
 	size_t			req;
 	ssize_t			res;
@@ -1312,7 +1308,7 @@ static int zmr_print(void *keyp, void *datap)
 
 	printf("zmr  %p key 0x%Lx use_count %d oneshot %d\n",
 	       zmr, (ullong)zmr->mr_fid.key, zmr->use_count,
-	       !!(zmr->kdata->access & ZHPEQ_MR_KEY_ONESHOT));
+	       !!(zmr->kdata->z.access & ZHPEQ_MR_KEY_ONESHOT));
 
 	return 0;
 }
@@ -1323,7 +1319,7 @@ static int rkey_print(void *keyp, void *datap)
 
 	printf("rkey %p key 0x%Lx use_count %d oneshot %d\n",
 	       rkey, (ullong)rkey->key, rkey->use_count,
-	       !!(rkey->kdata->access & ZHPEQ_MR_KEY_ONESHOT));
+	       !!(rkey->kdata->z.access & ZHPEQ_MR_KEY_ONESHOT));
 
 	return 0;
 }

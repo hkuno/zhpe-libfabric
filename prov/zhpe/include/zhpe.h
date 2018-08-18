@@ -94,7 +94,6 @@
 #include <ofi_rbuf.h>
 #include <ofi_util.h>
 
-
 #define _ZHPE_LOG_DBG(subsys, ...) FI_DBG(&zhpe_prov, subsys, __VA_ARGS__)
 #define _ZHPE_LOG_ERROR(subsys, ...) FI_WARN(&zhpe_prov, subsys, __VA_ARGS__)
 
@@ -193,6 +192,17 @@ static inline int sockaddr_cmp_noport(const void *addr1, const void *addr2)
 	return ret;
 }
 
+static inline int sockaddr_portcmp(const void *addr1, const void *addr2)
+{
+	int			ret;
+	const union sockaddr_in46 *sa1 = addr1;
+	const union sockaddr_in46 *sa2 = addr2;
+
+	ret = memcmp(&sa1->sin_port, &sa2->sin_port, sizeof(sa1->sin_port));
+
+	return ret;
+}
+
 static inline int sockaddr_cmp(const void *addr1, const void *addr2)
 {
 	int			ret;
@@ -203,15 +213,16 @@ static inline int sockaddr_cmp(const void *addr1, const void *addr2)
 	if (ret)
 		goto done;
 
-	ret = memcmp(&sa1->sin_port, &sa2->sin_port, sizeof(sa1->sin_port));
+	ret = sockaddr_portcmp(sa1, sa2);
  done:
 	return ret;
 }
 
-static inline const char *sockaddr_ntop(const union sockaddr_in46 *sa,
+static inline const char *sockaddr_ntop(const void *addr,
 					char *buf, size_t len)
 {
 	const char		*ret = NULL;
+	const union sockaddr_in46 *sa = addr;
 
 	switch (sa->sa_family) {
 
@@ -233,9 +244,10 @@ static inline const char *sockaddr_ntop(const union sockaddr_in46 *sa,
 	return ret;
 }
 
-static inline bool sockaddr_wildcard(const union sockaddr_in46 *sa)
+static inline bool sockaddr_wildcard(const void *addr)
 {
 	bool			ret = false;
+	const union sockaddr_in46 *sa = addr;
 
 	switch (sa->sa_family) {
 
@@ -255,9 +267,58 @@ static inline bool sockaddr_wildcard(const union sockaddr_in46 *sa)
 	return ret;
 }
 
-static inline bool zhpe_sa_family(const struct fi_info *info)
+static inline bool sockaddr_loopback6(const struct sockaddr_in6 *sa)
 {
-	return (info->addr_format == FI_SOCKADDR_IN6 ? AF_INET6 : AF_INET);
+	return !memcmp(&sa->sin6_addr, &in6addr_loopback,
+		       sizeof(sa->sin6_addr));
+}
+
+static inline bool sockaddr_loopback(const void *addr, bool loopany)
+{
+	bool			ret = false;
+	const union sockaddr_in46 *sa = addr;
+	uint32_t		netmask;
+
+	switch (sa->sa_family) {
+
+	case AF_INET:
+		netmask = (loopany ? IN_CLASSA_NET : ~(uint32_t)0);
+		ret = ((ntohl(sa->addr4.sin_addr.s_addr) & netmask) ==
+		       (INADDR_LOOPBACK & netmask));
+		break;
+
+	case AF_INET6:
+		ret = sockaddr_loopback6(&sa->addr6);
+		break;
+
+	default:
+		break;
+	}
+
+	return ret;
+}
+
+static inline int zhpe_sa_family(const struct fi_info *info)
+{
+	if (info) {
+		switch (info->addr_format) {
+
+		case FI_SOCKADDR_IN:
+			return AF_INET;
+
+		case FI_SOCKADDR_IN6:
+			return AF_INET6;
+
+		case FI_SOCKADDR:
+		case FI_FORMAT_UNSPEC:
+			return AF_UNSPEC;
+
+		default:
+			assert(0);
+		}
+	}
+
+	return AF_UNSPEC;
 }
 
 /* FIXME. */
@@ -323,9 +384,7 @@ extern int zhpe_av_def_sz;
 extern int zhpe_cq_def_sz;
 extern int zhpe_eq_def_sz;
 extern char *zhpe_pe_affinity_str;
-extern char *zhpe_fab_backend_prov;
-extern char *zhpe_fab_backend_dom;
-extern int zhpe_ep_max_eager_sz;
+extern size_t zhpe_ep_max_eager_sz;
 
 static inline void *zhpe_mremap(void *old_address, size_t old_size,
 				size_t new_size)
@@ -417,7 +476,6 @@ enum {
 #define ZHPE_EP_MSG_ORDER	(FI_ORDER_SAS)
 
 #define ZHPE_EP_COMP_ORDER	(FI_ORDER_NONE)
-#define ZHPE_EP_DEFAULT_OP_FLAGS (FI_TRANSMIT_COMPLETE)
 
 #define ZHPE_EP_CQ_FLAGS (FI_SEND | FI_TRANSMIT | FI_RECV | \
 			FI_SELECTIVE_COMPLETION)
@@ -428,6 +486,8 @@ enum {
 #define ZHPE_NO_COMPLETION	(1ULL << 60)
 #define ZHPE_USE_OP_FLAGS	(1ULL << 61)
 #define ZHPE_TRIGGERED_OP	(1ULL << 62)
+
+#define ZHPE_BAD_FLAGS_MASK	(0xFULL << 60)
 
 /* it must be adjusted if error data size in CQ/EQ 
  * will be larger than ZHPE_EP_MAX_CM_DATA_SZ */
@@ -487,7 +547,6 @@ struct zhpe_slab {
 	uint32_t		size;
 	struct dlist_entry	free_list;
 	struct zhpe_mr		*zmr;
-	uint64_t		zaddr;
 	fastlock_t		lock;
 	int32_t			use_count;
 };
@@ -593,6 +652,7 @@ struct zhpe_conn {
 	pthread_cond_t		cond;
 	uint8_t			hdr_off;
 	uint8_t			state;
+	bool			local;
 };
 
 struct zhpe_conn_map {
@@ -941,7 +1001,6 @@ struct zhpe_ep_attr {
 	fastlock_t		pe_retry_lock;
 	struct dlist_entry	pe_retry_list;
 	/* Lower-level data */
-	pthread_mutex_t		conn_mutex;
 	struct zhpe_tx		*ztx;
 	/* We need to get back to the ep and it less pain to have a pointer.
 	 * I have no clue why the ep_attr is where everything hides.
@@ -1034,7 +1093,7 @@ struct zhpe_rx_entry {
 		};
 		char		inline_data[64];
 	};
-	ZHPEQ_TIMING_CODE(struct zhpeq_timing_stamp handler_timestamp);
+	ZHPEQ_TIMING_CODE(struct zhpe_timing_stamp handler_timestamp);
 	uint8_t			rx_state;
 	uint8_t			buffered;
 };
@@ -1428,9 +1487,11 @@ int zhpe_ep_get_conn(struct zhpe_ep_attr *ep_attr, fi_addr_t index,
 		     struct zhpe_conn **pconn);
 int zhpe_ep_connect(struct zhpe_ep_attr *attr, struct zhpe_conn *conn);
 struct zhpe_conn *zhpe_conn_map_lookup(struct zhpe_ep_attr *ep_attr,
-				       const union sockaddr_in46 *addr);
+				       const union sockaddr_in46 *addr,
+				       bool local);
 struct zhpe_conn *zhpe_conn_map_insert(struct zhpe_ep_attr *ep_attr,
-				       const union sockaddr_in46 *addr);
+				       const union sockaddr_in46 *addr,
+				       bool local);
 ssize_t zhpe_conn_send_src_addr(struct zhpe_ep_attr *ep_attr,
 				struct zhpe_tx_ctx *tx_ctx,
 				struct zhpe_conn *conn);
@@ -1547,9 +1608,8 @@ int zhpe_iov_to_get_imm(struct zhpe_pe_root *pe_root,
 			size_t llen, struct zhpe_iov_state *rstate,
 			size_t *rem);
 
-/* Cannot conflict with legal access flags. */
-#define ZHPE_MR_KEY_FREEING	(1ULL << 62)
-#define ZHPE_MR_KEY_ONESHOT	(1ULL << 63)
+#define ZHPE_MR_FLAGS_FREEING	(1ULL << 63)
+#define ZHPE_MR_ACCESS_ONESHOT	(1ULL << 63)
 
 int zhpe_mr_reg_int(struct zhpe_domain *domain, const void *buf, size_t len,
 		    uint64_t access, struct fid_mr **mr);
@@ -1793,21 +1853,36 @@ zhpe_rx_local_release(struct zhpe_conn *conn, uint32_t rindex)
 }
 
 static inline bool
-zhpe_rx_match_entry(struct zhpe_rx_entry *rx_entry, fi_addr_t addr,
-		    uint64_t tag,uint64_t ignore, uint64_t flags)
+zhpe_rx_match_entry(struct zhpe_rx_entry *rx_entry, bool entry_buffered,
+		    fi_addr_t addr, uint64_t tag, uint64_t ignore,
+		    uint64_t flags)
 {
-
-	struct zhpe_av		*av;
+	fi_addr_t		oaddr;
 
 	if ((rx_entry->flags & FI_TAGGED) != (flags & FI_TAGGED))
 		return false;
 	if ((rx_entry->tag & ~ignore) != (tag & ~ignore))
 		return false;
-	if (rx_entry->addr == FI_ADDR_UNSPEC || addr == FI_ADDR_UNSPEC ||
-	    rx_entry->addr == addr)
-		return true;
-	av = rx_entry->pe_root.conn->rx_ctx->av;
-	return (av && !zhpe_av_compare_addr(av, rx_entry->addr, addr));
+	if (entry_buffered) {
+		/* addr is from user and sanitized. */
+		if (addr == FI_ADDR_UNSPEC)
+			return true;
+		oaddr = rx_entry->pe_root.conn->fi_addr;
+		/* Racing, but do_recvmsg will fix it. */
+		if (oaddr == FI_ADDR_NOTAVAIL)
+			return false;
+	} else {
+		/* rx_entry->addr is from user and sanitized */
+		oaddr = rx_entry->addr;
+		if (oaddr == FI_ADDR_UNSPEC)
+			return true;
+		/* Racing, but do_recvmsg will fix it. */
+		if (addr == FI_ADDR_NOTAVAIL)
+			return false;
+	}
+
+	/* XXX: Allow different fi_addrs with the same address? */
+	return (addr == oaddr);
 }
 
 static inline void *zhpe_iov_entry(const void *viov,
@@ -2137,8 +2212,17 @@ void zhpe_pe_retry_tx_ring2(struct zhpe_pe_retry *pe_retry);
 #define ZHPE_MASK_COMPLETE \
 	(FI_INJECT_COMPLETE | FI_TRANSMIT_COMPLETE | FI_DELIVERY_COMPLETE)
 
-static inline uint64_t zhpe_tx_fixup_completion(uint64_t flags)
+static inline uint64_t
+zhpe_tx_fixup_completion(uint64_t flags, uint64_t op_flags,
+			 struct zhpe_tx_ctx *tx_ctx)
 {
+	/* Not sendmsg (no OP_FLAGS) or no selective completion, default to
+	 * FI_TRANSMIT_COMPLETE.
+	 */
+	if (flags & ZHPE_USE_OP_FLAGS)
+		flags |= op_flags | FI_TRANSMIT_COMPLETE;
+	else if (!tx_ctx->comp.send_cq_event)
+		flags |= FI_TRANSMIT_COMPLETE;
 	if (flags & FI_DELIVERY_COMPLETE)
 		flags &= ~(FI_INJECT_COMPLETE | FI_TRANSMIT_COMPLETE);
 	else if (flags & FI_TRANSMIT_COMPLETE)
@@ -2283,7 +2367,7 @@ static inline void zhpe_rkey_put(struct zhpe_rkey_data *rkey)
 	if (old > 1)
 		return;
 
-	zhpeq_zmmu_free(rkey->ztx->zq, rkey->kdata);
+	zhpeq_zmmu_free(zhpeq_dom(rkey->ztx->zq), rkey->kdata);
 	zhpe_tx_put(rkey->ztx);
 	free(rkey);
 }
@@ -2342,11 +2426,13 @@ int zhpe_send_blob(int sock_fd, const void *blob, size_t blob_len);
 int zhpe_recv_fixed_blob(int sock_fd, void *blob, size_t blob_len);
 
 const char *zhpe_ntop(const union sockaddr_in46 *sin46, char *buf, size_t len);
-void zhpe_getaddrinfo_hints_init(struct addrinfo *hints, uint32_t addr_format);
+void zhpe_getaddrinfo_hints_init(struct addrinfo *hints, int family);
 int zhpe_getaddrinfo(const char *node, const char *service,
 		     struct addrinfo *hints, struct addrinfo **res);
 struct addrinfo *zhpe_findaddrinfo(struct addrinfo *res, int family);
-int zhpe_gethostaddr(uint32_t fi_addr_format, union sockaddr_in46 *addr);
+int zhpe_gethostaddr(sa_family_t family, union sockaddr_in46 *addr);
+int zhpe_checklocaladdr(const struct ifaddrs *ifaddrs,
+			const union sockaddr_in46 *sa);
 
 static inline uint32_t zhpe_convert_access(uint64_t access) {
 	uint32_t		ret = ZHPEQ_MR_KEY_VALID;
@@ -2359,7 +2445,7 @@ static inline uint32_t zhpe_convert_access(uint64_t access) {
 		ret |= ZHPEQ_MR_GET_REMOTE;
 	if (access & FI_REMOTE_WRITE)
 		ret |= ZHPEQ_MR_PUT_REMOTE;
-	if (access & ZHPE_MR_KEY_ONESHOT)
+	if (access & ZHPE_MR_ACCESS_ONESHOT)
 		ret |= ZHPEQ_MR_KEY_ONESHOT;
 	return ret;
 }
@@ -2433,6 +2519,16 @@ static inline int abort_timedwait(int ret, const char *func, uint line)
 	_ZHPE_LOG_ERROR(FI_LOG_CORE, "Unexpected error %d\n", ret);
 	abort();
 }
+
+#define mutexattr_settype(...) \
+    abort_if_nonzero(pthread_mutexattr_settype(__VA_ARGS__), __func__, __LINE__)
+
+#define mutexattr_init(...) \
+    abort_if_nonzero(pthread_mutexattr_init(__VA_ARGS__), __func__, __LINE__)
+
+#define mutexattr_destroy(...) \
+    abort_if_nonzero(pthread_mutexattr_destroy(__VA_ARGS__), \
+		     __func__, __LINE__)
 
 #define mutex_init(...) \
     abort_if_nonzero(pthread_mutex_init(__VA_ARGS__), __func__, __LINE__)

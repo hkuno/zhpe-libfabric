@@ -47,9 +47,7 @@ int zhpe_av_def_sz = ZHPE_AV_DEF_SZ;
 int zhpe_cq_def_sz = ZHPE_CQ_DEF_SZ;
 int zhpe_eq_def_sz = ZHPE_EQ_DEF_SZ;
 char *zhpe_pe_affinity_str = NULL;
-char *zhpe_fab_backend_prov;
-char *zhpe_fab_backend_dom;
-int zhpe_ep_max_eager_sz = ZHPE_EP_MAX_EAGER_SZ;
+size_t zhpe_ep_max_eager_sz = ZHPE_EP_MAX_EAGER_SZ;
 
 const struct fi_fabric_attr zhpe_fabric_attr = {
 	.fabric = NULL,
@@ -252,7 +250,7 @@ int zhpe_verify_info(uint32_t api_version, const struct fi_info *hints,
 
 	case FI_SOCKADDR_IN6:
 		/* Are IPV6 addresses configured? */
-		zhpe_getaddrinfo_hints_init(&ai, FI_SOCKADDR_IN6);
+		zhpe_getaddrinfo_hints_init(&ai, AF_INET6);
 		ai.ai_flags |= AI_PASSIVE;
 		ret = zhpe_getaddrinfo(NULL, "0", &ai, &rai);
 		if (ret < 0)
@@ -343,12 +341,6 @@ static void zhpe_read_default_params()
 		if (fi_param_get_str(&zhpe_prov, "pe_affinity",
 				     &zhpe_pe_affinity_str) != FI_SUCCESS)
 			zhpe_pe_affinity_str = NULL;
-		if (fi_param_get_str(&zhpe_prov, "fab_backend_prov",
-				     &zhpe_fab_backend_prov) != FI_SUCCESS)
-			zhpe_fab_backend_prov = NULL;
-		if (fi_param_get_str(&zhpe_prov, "fab_backend_dom",
-				     &zhpe_fab_backend_dom) != FI_SUCCESS)
-			zhpe_fab_backend_dom = NULL;
 		fi_param_get_size_t(&zhpe_prov, "ep_max_eager_sz",
 				    &zhpe_ep_max_eager_sz);
 
@@ -383,11 +375,11 @@ static int zhpe_fabric(struct fi_fabric_attr *attr,
 static int zhpe_fi_checkinfo(struct fi_info *info, const struct fi_info *hints)
 {
 	if (hints && hints->domain_attr && hints->domain_attr->name &&
-             strcmp(info->domain_attr->name, hints->domain_attr->name))
+            strcmp(info->domain_attr->name, hints->domain_attr->name))
 		return -FI_ENODATA;
 
 	if (hints && hints->fabric_attr && hints->fabric_attr->name &&
-             strcmp(info->fabric_attr->name, hints->fabric_attr->name))
+            strcmp(info->fabric_attr->name, hints->fabric_attr->name))
 		return -FI_ENODATA;
 
 	return 0;
@@ -421,9 +413,7 @@ static int zhpe_ep_getinfo(uint32_t api_version, const char *node,
 	char			ntop[INET6_ADDRSTRLEN];
 #endif
 
-	zhpe_getaddrinfo_hints_init(&ai,
-				    (hints ? hints->addr_format :
-				     FI_FORMAT_UNSPEC));
+	zhpe_getaddrinfo_hints_init(&ai, zhpe_sa_family(hints));
 
 	if (flags & FI_NUMERICHOST)
 		ai.ai_flags |= AI_NUMERICHOST;

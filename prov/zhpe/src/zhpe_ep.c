@@ -1572,7 +1572,6 @@ int zhpe_alloc_endpoint(struct fid_domain *domain, struct fi_info *info,
 	zhpe_ep->attr->ep = zhpe_ep;
 	fastlock_init(&zhpe_ep->attr->pe_retry_lock);
 	dlist_init(&zhpe_ep->attr->pe_retry_list);
-	mutex_init(&zhpe_ep->attr->conn_mutex, NULL);
 	*ep = zhpe_ep;
 
 	if (info) {
@@ -1717,17 +1716,12 @@ static int zhpe_ep_lookup_conn(struct zhpe_ep_attr *attr, fi_addr_t fi_addr,
 			       struct zhpe_conn **pconn)
 {
 	int			ret = 0;
-	struct zhpe_conn	*conn;
-	union sockaddr_in46	hostaddr;
+	bool			first = true;
 	uint64_t		av_index = ((attr->ep_type == FI_EP_MSG) ? 0 :
 					    (fi_addr & attr->av->mask));
-	union sockaddr_in46	*addr;
-
-	if (attr->ep_type == FI_EP_MSG)
-		addr = &attr->dest_addr;
-	else
-		addr = (void *)&attr->av->table[av_index].addr;
-
+	struct zhpe_conn	*conn;
+	union sockaddr_in46	addr;
+	bool			rem_local;
 
 	/* attr->cmap.mutex must be held. */
 	for (;;) {
@@ -1735,35 +1729,41 @@ static int zhpe_ep_lookup_conn(struct zhpe_ep_attr *attr, fi_addr_t fi_addr,
 		if (conn)
 			/* Only in av_idm if conn fully ready. */
 			break;
-		/* Using loopback can cause identity problems, just don't.
-		 * FIXME: Deals with immediate problem, revisit.
-		 */
-		if (ofi_is_loopback_addr((void *)addr)) {
-			ret = zhpe_gethostaddr(attr->info.addr_format,
-					       &hostaddr);
+
+		if (first) {
+			if (attr->ep_type == FI_EP_MSG) {
+				sockaddr_cpy(&addr, &attr->dest_addr);
+				addr.sin_port = htons(attr->msg_dest_port);
+			} else
+				sockaddr_cpy(&addr,
+					     &attr->av->table[av_index].addr);
+
+			ret = zhpe_checklocaladdr(NULL, &addr);
 			if (ret < 0)
 				break;
-			hostaddr.sin_port = addr->sin_port;
-			addr = &hostaddr;
+			rem_local = !!ret;
+			first = false;
 		}
-		conn = zhpe_conn_map_lookup(attr, addr);
+
+		conn = zhpe_conn_map_lookup(attr, &addr, rem_local);
 		if (!conn) {
 			ret = 1;
-			conn = zhpe_conn_map_insert(attr, addr);
+			conn = zhpe_conn_map_insert(attr, &addr, rem_local);
 			if (!conn)
 				ret = -FI_ENOMEM;
+			conn->fi_addr = fi_addr;
+			conn->av_index = av_index;
 			break;
 		}
+		conn->fi_addr = fi_addr;
+		conn->av_index = av_index;
 		if (conn->state != ZHPE_CONN_STATE_READY) {
 			cond_wait(&attr->cmap.cond, &attr->cmap.mutex);
 			continue;
 		}
 		ret = 0;
 		/* An error here should be noted, but not be fatal. */
-		if (ofi_idm_set(&attr->av_idm, av_index, conn) >= 0) {
-			conn->fi_addr = fi_addr;
-			conn->av_index = av_index;
-		} else
+		if (ofi_idm_set(&attr->av_idm, av_index, conn) >= 0)
 			ZHPE_LOG_ERROR("ofi_idm_set() failed\n");
 		break;
 	}

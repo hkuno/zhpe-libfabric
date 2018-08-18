@@ -53,7 +53,6 @@ static const struct fi_ep_attr zhpe_msg_ep_attr = {
 static const struct fi_tx_attr zhpe_msg_tx_attr = {
 	.caps = ZHPE_EP_MSG_CAP,
 	.mode = ZHPE_MODE,
-	.op_flags = ZHPE_EP_DEFAULT_OP_FLAGS,
 	.msg_order = ZHPE_EP_MSG_ORDER,
 	.inject_size = ZHPE_EP_MAX_INJECT_SZ,
 	.size = ZHPE_EP_TX_SZ,
@@ -198,6 +197,8 @@ static int zhpe_ep_cm_getname(fid_t fid, void *addr, size_t *addrlen)
 	union sockaddr_in46	*src_addr;
 	struct zhpe_ep		*zhpe_ep;
 	struct zhpe_pep		*zhpe_pep;
+	int			rc;
+	union sockaddr_in46	addr_buf;
 
 	switch (fid->fclass) {
 
@@ -222,6 +223,14 @@ static int zhpe_ep_cm_getname(fid_t fid, void *addr, size_t *addrlen)
 	*addrlen = sockaddr_len(src_addr);
 	if (!*addrlen)
 		return -FI_EOPBADSTATE;
+
+	if (sockaddr_wildcard(src_addr)) {
+		rc = zhpe_gethostaddr(src_addr->sa_family, &addr_buf);
+		if (rc < 0)
+			return rc;
+		addr_buf.sin_port = src_addr->sin_port;
+		src_addr = &addr_buf;
+	}
 
 	memcpy(addr, src_addr, MIN(len, *addrlen));
 
@@ -1086,7 +1095,7 @@ int zhpe_msg_passive_ep(struct fid_fabric *fabric, struct fi_info *info,
 		if (info->src_addr)
 			sockaddr_cpy(&_pep->src_addr, info->src_addr);
 		else {
-			zhpe_getaddrinfo_hints_init(&ai, info->addr_format);
+			zhpe_getaddrinfo_hints_init(&ai, zhpe_sa_family(info));
 			ai.ai_flags |= AI_PASSIVE;
 			ret = zhpe_getaddrinfo(NULL, "0", &ai, &rai);
 			if (ret < 0)

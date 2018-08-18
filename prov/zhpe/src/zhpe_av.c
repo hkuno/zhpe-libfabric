@@ -305,7 +305,7 @@ static int _zhpe_av_insertsvc(struct fid_av *av, const char *node,
 
 	_av = container_of(av, struct zhpe_av, av_fid);
 
-	zhpe_getaddrinfo_hints_init(&hints, _av->domain->info.addr_format);
+	zhpe_getaddrinfo_hints_init(&hints, zhpe_sa_family(&_av->domain->info));
 	ret = zhpe_getaddrinfo(node, service, &hints, &result);
 	if (ret < 0) {
 		if (_av->eq) {
@@ -407,7 +407,7 @@ static int zhpe_av_remove(struct fid_av *av, fi_addr_t *fi_addr, size_t count,
 		zhpe_ep = container_of(fid_entry->fid, struct zhpe_ep, ep.fid);
 		mutex_acquire(&zhpe_ep->attr->cmap.mutex);
 		for (i = 0; i < count; i++) {
-        		idx = fi_addr[i] & zhpe_ep->attr->av->mask;
+			idx = fi_addr[i] & zhpe_ep->attr->av->mask;
 			conn = ofi_idm_lookup(&zhpe_ep->attr->av_idm, idx);
 			if (conn) {
 				ofi_idm_clear(&zhpe_ep->attr->av_idm, idx);

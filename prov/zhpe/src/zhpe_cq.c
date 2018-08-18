@@ -353,8 +353,8 @@ static ssize_t zhpe_cq_sreadfrom(struct fid_cq *cq, void *buf, size_t count,
 			if (timeout >= 0) {
 				timeout -= (int) (fi_gettime_ms() - start_ms);
 				if (timeout <= 0)
- 					return -FI_EAGAIN;
- 			}
+					return -FI_EAGAIN;
+			}
 
 			if (ofi_atomic_get32(&zhpe_cq->signaled)) {
 				ofi_atomic_set32(&zhpe_cq->signaled, 0);
@@ -688,9 +688,9 @@ int zhpe_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr,
 				    struct zhpe_wait, wait_fid);
 		list_entry = calloc(1, sizeof(*list_entry));
 		if (!list_entry) {
-                        ret = -FI_ENOMEM;
-                        goto err4;
-                }
+			ret = -FI_ENOMEM;
+			goto err4;
+		}
 		dlist_init(&list_entry->lentry);
 		list_entry->fid = &zhpe_cq->cq_fid.fid;
 		dlist_insert_after(&list_entry->lentry, &wait->fid_list);

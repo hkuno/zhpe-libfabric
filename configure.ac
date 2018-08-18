@@ -38,7 +38,7 @@ AM_CONDITIONAL([MACOS], [test "x$macos" = "x1"])
 AM_CONDITIONAL([LINUX], [test "x$linux" = "x1"])
 AM_CONDITIONAL([FREEBSD], [test "x$freebsd" = "x1"])
 
-base_c_warn_flags="-Wall -Wundef -Wpointer-arith"
+base_c_warn_flags="-Wall -Wundef -Wpointer-arith -Werror"
 debug_c_warn_flags="-Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers"
 debug_c_other_flags="-fstack-protector-strong"
 picky_c_warn_flags="-Wno-long-long -Wmissing-prototypes -Wstrict-prototypes -Wcomment -pedantic"
@@ -99,7 +99,7 @@ AS_IF([test x"$enable_debug" != x"no"],
        CFLAGS_save=
        # Remove -DNDEBUG flag if set
        for flag in $CFLAGS; do
-           if test "$flag" != "-DNDEBUG"; then
+           if test "$flag" != "-DNDEBUG" && test "$flag" != "-O2"; then
                CFLAGS_save="$CFLAGS_save $flag"
            fi
        done
@@ -264,6 +264,15 @@ AC_TRY_LINK([
 
 dnl Check for glibc malloc hooks
 AC_MSG_CHECKING(compiler support for glibc malloc hooks)
+CFLAGS_save="$CFLAGS"
+CFLAGS_test=
+# Remove -Wrrror flag if set
+for flag in $CFLAGS; do
+    if test "$flag" != "-Werror"; then
+        CFLAGS_test="$CFLAGS_test $flag"
+    fi
+done
+CFLAGS="$CFLAGS_test"
 AC_TRY_LINK([#include <malloc.h>],
     [
      __malloc_hook = NULL;
@@ -276,7 +285,7 @@ AC_TRY_LINK([#include <malloc.h>],
         AC_DEFINE(HAVE_GLIBC_MALLOC_HOOKS, 1, [Set to 1 to use glibc malloc hooks])
     ],
     [AC_MSG_RESULT(no)])
-
+CFLAGS="$CFLAGS_save"
 if test "$with_valgrind" != "" && test "$with_valgrind" != "no"; then
 AC_CHECK_HEADER(valgrind/memcheck.h, [],
     AC_MSG_ERROR([valgrind requested but <valgrind/memcheck.h> not found.]))

@@ -33,17 +33,28 @@
 
 #include <zhpe.h>
 
+#if HAVE_GETIFADDRS
+#include <net/if.h>
+#else
+#error getifaddrs() required
+#endif
+
 #define ZHPE_LOG_DBG(...) _ZHPE_LOG_DBG(FI_LOG_EP_CTRL, __VA_ARGS__)
 #define ZHPE_LOG_ERROR(...) _ZHPE_LOG_ERROR(FI_LOG_EP_CTRL, __VA_ARGS__)
 
 int zhpe_conn_map_init(struct zhpe_ep *ep, int init_size)
 {
 	struct zhpe_conn_map *map = &ep->attr->cmap;
+	pthread_mutexattr_t	mattr;
+
 	map->table = calloc(init_size, sizeof(*map->table));
 	if (!map->table)
 		return -FI_ENOMEM;
 
-	mutex_init(&map->mutex, NULL);
+	mutexattr_init(&mattr);
+	mutexattr_settype(&mattr, PTHREAD_MUTEX_RECURSIVE);
+	mutex_init(&map->mutex, &mattr);
+	mutexattr_destroy(&mattr);
 	cond_init(&map->cond, NULL);
 	map->used = 0;
 	map->size = init_size;
@@ -74,17 +85,16 @@ void zhpe_conn_map_destroy(struct zhpe_ep_attr *ep_attr)
 	int			i;
 	struct zhpe_conn_map	*cmap = &ep_attr->cmap;
 
-	mutex_acquire(&cmap->mutex);
 	for (i = 0; i < cmap->used; i++) {
 		if (cmap->table[i].state != ZHPE_CONN_STATE_FREE)
 			zhpe_conn_release_entry(ep_attr, &cmap->table[i]);
 	}
-	mutex_release(&cmap->mutex);
 
 	free(cmap->table);
 	cmap->table = NULL;
 	cmap->used = cmap->size = 0;
 	mutex_destroy(&cmap->mutex);
+	cond_destroy(&cmap->cond);
 }
 
 void zhpe_conn_release_entry(struct zhpe_ep_attr *ep_attr,
@@ -92,7 +102,7 @@ void zhpe_conn_release_entry(struct zhpe_ep_attr *ep_attr,
 {
 	/* ep_attr->cmap.mutex should be held, */
 	zhpe_conn_z_free(conn);
-        conn->state = ZHPE_CONN_STATE_FREE;
+	conn->state = ZHPE_CONN_STATE_FREE;
 	if (conn->fi_addr != FI_ADDR_NOTAVAIL) {
 		if (ofi_idm_lookup(&ep_attr->av_idm, conn->av_index) == conn)
 			ofi_idm_clear(&ep_attr->av_idm, conn->av_index);
@@ -111,7 +121,8 @@ static int zhpe_conn_get_next_index(struct zhpe_conn_map *map)
 }
 
 struct zhpe_conn *zhpe_conn_map_insert(struct zhpe_ep_attr *ep_attr,
-				       const union sockaddr_in46 *addr)
+				       const union sockaddr_in46 *addr,
+				       bool local)
 {
 	int index;
 	struct zhpe_conn_map *map = &ep_attr->cmap;
@@ -141,12 +152,14 @@ struct zhpe_conn *zhpe_conn_map_insert(struct zhpe_ep_attr *ep_attr,
 	sockaddr_cpy(&map->table[index].addr, addr);
 	map->table[index].ep_attr = ep_attr;
 	map->table[index].zq_index = FI_ADDR_NOTAVAIL;
+	map->table[index].local = local;
 
 	return &map->table[index];
 }
 
 struct zhpe_conn *zhpe_conn_map_lookup(struct zhpe_ep_attr *ep_attr,
-				       const union sockaddr_in46 *addr)
+				       const union sockaddr_in46 *addr,
+				       bool local)
 {
 	struct zhpe_conn	*ret;
 	int			i;
@@ -157,6 +170,9 @@ struct zhpe_conn *zhpe_conn_map_lookup(struct zhpe_ep_attr *ep_attr,
 		    ret->state == ZHPE_CONN_STATE_RACED)
 			continue;
 
+		if (local && ret->local &&
+		    ret->addr.sin_port == addr->sin_port)
+			return ret;
 		if (!sockaddr_cmp(&ret->addr, addr))
 			return ret;
 	}
@@ -283,6 +299,7 @@ static void *_zhpe_conn_listen(void *arg)
 	struct pollfd		poll_fds[2];
 	struct zhpe_conn	*conn;
 	uint8_t			action;
+	bool			rem_local;
 #if ENABLE_DEBUG
 	char			ntop[INET6_ADDRSTRLEN];
 #endif
@@ -320,26 +337,9 @@ static void *_zhpe_conn_listen(void *arg)
 				       strerror(errno));
 			continue;
 		}
-		addr_len = sizeof(local46);
-		rc = getsockname(conn_fd, (struct sockaddr *)&local46,
-				 &addr_len);
-		if (rc == -1) {
-			ZHPE_LOG_ERROR("getsockname() failed: %s\n",
-				       strerror(errno));
-			continue;
-		}
 		ZHPE_LOG_DBG("ACCEPT: %s, %d\n",
 			     sockaddr_ntop(&remote46, ntop, sizeof(ntop)),
 			     ntohs(remote46.sin_port));
-		/* Using loopback can cause identity problems, just don't. */
-		if (ofi_is_loopback_addr((void *)&local46)) {
-			rc = zhpe_gethostaddr(ep_attr->info.addr_format,
-					      &local46);
-			if (rc < 0)
-				continue;
-			sockaddr_cpy(&remote46, &local46);
-		}
-
 		rc = zhpe_set_sockopts_accept(conn_fd);
 		if (rc < 0)
 			continue;
@@ -352,16 +352,40 @@ static void *_zhpe_conn_listen(void *arg)
 		if (rc < 0)
 			continue;
 
+		addr_len = sizeof(local46);
+		rc = getsockname(conn_fd, (struct sockaddr *)&local46,
+				 &addr_len);
+		if (rc == -1) {
+			ZHPE_LOG_ERROR("getsockname() failed: %s\n",
+				       strerror(errno));
+			continue;
+		}
+
+		/* The conns containing outgoing EP addresses; the listener
+		 * thread makes a check to see if the incoming connection
+		 * already exists and we must handle the multiple interface
+		 * problem. So, we need to check if the address is local and,
+		 if it is, then we just need to compare the ports.
+		 * XXX: cache the ifaddr list? It can change.
+		 */
+		rc = zhpe_checklocaladdr(NULL, &remote46);
+		if (rc < 0)
+			continue;
+		rem_local = !!rc;
+
 		action = ZHPE_CONN_ACTION_NEW;
 		mutex_acquire(&map->mutex);
 		/* We can only go forward with a conn we create;
 		 * if we are racing, we need to break the tie and,
 		 * if we win, mark the current conn as RACED.
 		 */
-		conn = zhpe_conn_map_lookup(ep_attr, &remote46);
+		conn = zhpe_conn_map_lookup(ep_attr, &remote46, rem_local);
 		if (conn) {
 			assert(conn->state == ZHPE_CONN_STATE_INIT);
-			rc = sockaddr_cmp(&local46, &remote46);
+			if (rem_local)
+				rc = sockaddr_portcmp(&local46, &remote46);
+			else
+				rc = sockaddr_cmp(&local46, &remote46);
 			if (!rc)
 				action = ZHPE_CONN_ACTION_SELF;
 			else if (rc < 0)
@@ -372,7 +396,8 @@ static void *_zhpe_conn_listen(void *arg)
 			}
 		}
 		if (action == ZHPE_CONN_ACTION_NEW) {
-			conn = zhpe_conn_map_insert(ep_attr, &remote46);
+			conn = zhpe_conn_map_insert(ep_attr, &remote46,
+						    rem_local);
 			if (!conn)
 				action = ZHPE_CONN_ACTION_DROP;
 		}
@@ -411,7 +436,7 @@ int zhpe_listen(const struct fi_info *info,
 	if (info->src_addr)
 		sockaddr_cpy(ep_addr, info->src_addr);
 	else {
-		zhpe_getaddrinfo_hints_init(&ai, info->addr_format);
+		zhpe_getaddrinfo_hints_init(&ai, zhpe_sa_family(info));
 		ai.ai_flags |= AI_PASSIVE;
 		ret = zhpe_getaddrinfo(NULL, "0", &ai, &rai);
 		if (ret < 0)
@@ -447,16 +472,10 @@ int zhpe_listen(const struct fi_info *info,
 				       ret, strerror(-ret));
 			goto done;
 		}
-		ZHPE_LOG_DBG("Bound to:%s:%u\n",
-			     sockaddr_ntop(ep_addr, ntop, sizeof(ntop)),
-			     ntohs(ep_addr->sin_port));
-		/* If the address is a wildcard, get a real address. */
-		if (sockaddr_wildcard(ep_addr)) {
-			ret = zhpe_gethostaddr(info->addr_format, ep_addr);
-			if (ret < 0)
-				goto done;
-		}
 	}
+	ZHPE_LOG_DBG("Bound to:%s:%u\n",
+		     sockaddr_ntop(ep_addr, ntop, sizeof(ntop)),
+		     ntohs(ep_addr->sin_port));
 	ret = zhpe_set_sockopts_listen(listen_fd);
 	if (ret < 0)
 		goto done;
@@ -521,21 +540,12 @@ int zhpe_ep_connect(struct zhpe_ep_attr *ep_attr, struct zhpe_conn *conn)
 {
 	int			ret = 0;
 	int			conn_fd = -1;
-	union sockaddr_in46	addr;
 	uint8_t			action;
 #if ENABLE_DEBUG
 	char			ntop[INET6_ADDRSTRLEN];
 #endif
 
-	if (ep_attr->ep_type == FI_EP_MSG) {
-		/* Need to check that destination address has been
-		   passed to endpoint */
-		sockaddr_cpy(&addr, &ep_attr->dest_addr);
-		addr.sin_port = htons(ep_attr->msg_dest_port);
-	} else
-		addr = ep_attr->av->table[conn->av_index].addr;
-
-	conn_fd = ofi_socket(addr.sa_family, SOCK_STREAM, IPPROTO_TCP);
+	conn_fd = ofi_socket(conn->addr.sa_family, SOCK_STREAM, IPPROTO_TCP);
 	if (conn_fd == -1) {
 		ZHPE_LOG_ERROR("failed to create conn_fd, errno: %d\n", errno);
 		ret = -FI_EOTHER;
@@ -543,22 +553,17 @@ int zhpe_ep_connect(struct zhpe_ep_attr *ep_attr, struct zhpe_conn *conn)
 	}
 
 	ZHPE_LOG_DBG("Connecting to: %s:%d\n",
-		     sockaddr_ntop(&addr, ntop, sizeof(ntop)),
-		     ntohs(addr.sin_port));
+		     sockaddr_ntop(&conn->addr, ntop, sizeof(ntop)),
+		     ntohs(conn->addr.sin_port));
 	ZHPE_LOG_DBG("Connecting using address:%s\n",
 		     sockaddr_ntop(&ep_attr->src_addr, ntop, sizeof(ntop)));
 
-	ret = connect(conn_fd, (struct sockaddr *)&addr, sizeof(addr));
+	ret = connect(conn_fd, (struct sockaddr *)&conn->addr,
+		      sizeof(conn->addr));
 	if (ret == -1) {
 		ret = -errno;
-		ZHPE_LOG_DBG("connect() erro - %s: %d\n",
+		ZHPE_LOG_DBG("connect() error - %s: %d\n",
 			     strerror(-ret), conn_fd);
-		ZHPE_LOG_DBG("Connecting to: %s:%d\n",
-			     sockaddr_ntop(&addr, ntop, sizeof(ntop)),
-			     ntohs(addr.sin_port));
-		ZHPE_LOG_DBG("Connecting using address:%s\n",
-			     sockaddr_ntop(&ep_attr->src_addr, ntop,
-					   sizeof(ntop)));
 		goto done;
 	}
 
@@ -593,15 +598,12 @@ struct addrinfo *zhpe_findaddrinfo(struct addrinfo *res, int family)
 	return NULL;
 }
 
-void zhpe_getaddrinfo_hints_init(struct addrinfo *hints, uint32_t addr_format)
+void zhpe_getaddrinfo_hints_init(struct addrinfo *hints, int family)
 {
 	memset(hints, 0, sizeof(*hints));
 	hints->ai_socktype = SOCK_STREAM;
 	hints->ai_flags = AI_ADDRCONFIG;
-	if (addr_format == FI_SOCKADDR_IN6)
-		hints->ai_family = AF_INET6;
-	else
-		hints->ai_family = AF_INET;
+	hints->ai_family = family;
 }
 
 int zhpe_getaddrinfo(const char *node, const char *service,
@@ -659,31 +661,87 @@ int zhpe_getaddrinfo(const char *node, const char *service,
 	return ret;
 }
 
-int zhpe_gethostaddr(uint32_t fi_addr_format, union sockaddr_in46 *addr)
+int zhpe_gethostaddr(sa_family_t family, union sockaddr_in46 *addr)
 {
 	int			ret = 0;
 	struct addrinfo		ai;
 	struct addrinfo		*rai;
 	in_port_t		port;
 	char			hostname[HOST_NAME_MAX];
+	struct ifaddrs		*ifaddrs;
+	struct ifaddrs		*ifa;
 
 	/* FIXME: How to bulletproof this. */
 	if (gethostname(hostname, sizeof(hostname)) == -1) {
 		ret = -errno;
 		ZHPE_LOG_ERROR("gethostname failed:error %d:%s\n",
 			       ret, strerror(-ret));
-		goto done;
+		goto getifs;
 	}
-	zhpe_getaddrinfo_hints_init(&ai, fi_addr_format);
+	zhpe_getaddrinfo_hints_init(&ai, family);
 	ret = zhpe_getaddrinfo(hostname, NULL, &ai, &rai);
 	if (ret < 0)
-		goto done;
+		goto getifs;
 	/* Copy address, preserve port. */
+	if (sockaddr_loopback(rai->ai_addr, true))
+		goto getifs;
 	port = addr->sin_port;
 	sockaddr_cpy(addr, rai->ai_addr);
 	addr->sin_port = port;
 	freeaddrinfo(rai);
+	goto done;
+ getifs:
+	ret = ofi_getifaddrs(&ifaddrs);
+	if (ret < 0) {
+		ZHPE_LOG_ERROR("ofi_getifaddrs() failed: %s\n",
+			       strerror(errno));
+		goto done;
+	}
+	for (ifa = ifaddrs ; ifa ; ifa = ifa->ifa_next) {
+		if (!ifa->ifa_addr || !(ifa->ifa_flags & IFF_UP) ||
+		    !sockaddr_valid(ifa->ifa_addr, 0, false) ||
+		    sockaddr_loopback(ifa->ifa_addr, true))
+			continue;
+		port = addr->sin_port;
+		sockaddr_cpy(addr, ifa->ifa_addr);
+		addr->sin_port = port;
+		break;
+	}
+	freeifaddrs(ifaddrs);
+
  done:
 	return ret;
 }
 
+int zhpe_checklocaladdr(const struct ifaddrs *ifaddrs,
+			const union sockaddr_in46 *addr)
+{
+	int			ret = 1;
+	struct ifaddrs		*ifaddrs_local = NULL;
+	const struct ifaddrs	*ifa;
+
+	if (sockaddr_loopback(addr, true))
+		goto done;
+
+	if (!ifaddrs) {
+		ret = ofi_getifaddrs(&ifaddrs_local);
+		if (ret < 0) {
+			ZHPE_LOG_ERROR("ofi_getifaddrs() failed: %s\n",
+				       strerror(errno));
+			goto done;
+		}
+	}
+
+	ret = 0;
+	for (ifa = (ifaddrs ?: ifaddrs_local); ifa; ifa = ifa->ifa_next) {
+		if (!ifa->ifa_addr || !(ifa->ifa_flags & IFF_UP))
+			continue;
+		ret = !sockaddr_cmp_noport(addr, ifa->ifa_addr);
+		if (ret)
+			break;
+	}
+	if (ifaddrs_local)
+		freeifaddrs(ifaddrs_local);
+ done:
+	return ret;
+}

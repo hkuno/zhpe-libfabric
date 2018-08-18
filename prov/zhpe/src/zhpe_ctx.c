@@ -67,7 +67,7 @@ struct zhpe_rx_ctx *zhpe_rx_ctx_alloc(const struct fi_rx_attr *attr,
 				  sizeof(struct zhpe_rx_entry),
 				  alignof(struct zhpe_rx_entry), 0, 64);
 	if (rc < 0) {
-                rx_ctx->rx_entry_pool = NULL;
+		rx_ctx->rx_entry_pool = NULL;
 		ZHPE_LOG_ERROR("util_buf_pool_create() error %d\n", rc);
 		goto err;
 	}
