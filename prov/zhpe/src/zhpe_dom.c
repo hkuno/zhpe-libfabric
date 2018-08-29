@@ -42,7 +42,7 @@ const struct fi_domain_attr zhpe_domain_attr = {
 	.control_progress = FI_PROGRESS_AUTO,
 	.data_progress = FI_PROGRESS_AUTO,
 	.resource_mgmt = FI_RM_ENABLED,
-	.mr_mode = FI_MR_ALLOCATED | FI_MR_VIRT_ADDR,
+	.mr_mode = FI_MR_ALLOCATED,
 	.mr_key_size = ZHPE_KEY_SIZE,
 	.cq_data_size = ZHPE_CQ_DATA_SIZE,
 	.cq_cnt = ZHPE_EP_MAX_CQ_CNT,
@@ -276,7 +276,7 @@ struct zhpe_mr *zhpe_mr_get(struct zhpe_domain *domain, uint64_t key)
 
 static inline int zhpe_regattr_int(struct zhpe_domain *domain,
 				   const struct fi_mr_attr *attr,
-				   uint64_t flags, struct fid_mr **mr_out)
+				   uint32_t qaccess, struct fid_mr **mr_out)
 {
 	int			ret = -FI_ENOMEM;
 	struct zhpe_mr		*zmr = NULL;
@@ -295,7 +295,7 @@ static inline int zhpe_regattr_int(struct zhpe_domain *domain,
 	zmr->mr_fid.fid.ops = &zhpe_mr_fi_ops;
 	zmr->mr_fid.mem_desc = zmr;
 	zmr->domain = domain;
-	zmr->flags = flags;
+	zmr->flags = 0;
 	zmr->use_count = 1;
 
 	ret = ofi_mr_map_insert(&domain->mr_map, attr, &zmr->mr_fid.key, zmr);
@@ -307,14 +307,11 @@ static inline int zhpe_regattr_int(struct zhpe_domain *domain,
 
 	ofi_atomic_inc32(&domain->ref);
 
+	qaccess |= zhpe_convert_access(attr->access);
 	ret = zhpeq_mr_reg(domain->zdom, attr->mr_iov[0].iov_base,
-			   attr->mr_iov[0].iov_len,
-			   zhpe_convert_access(attr->access),
-			   attr->requested_key, &zmr->kdata);
+			   attr->mr_iov[0].iov_len, qaccess, &zmr->kdata);
 	if (ret < 0)
 		goto done;
-	/* FIXME: Hack. */
-	zmr->kdata->z.key = zmr->mr_fid.key;
 	*mr_out = &zmr->mr_fid;
  done:
 	if (ret < 0) {
@@ -329,7 +326,7 @@ static inline int zhpe_regattr_int(struct zhpe_domain *domain,
 }
 
 int zhpe_mr_reg_int(struct zhpe_domain *domain, const void *buf, size_t len,
-		    uint64_t access, struct fid_mr **mr)
+		    uint64_t access, uint32_t qaccess, struct fid_mr **mr)
 {
 	struct iovec		iov = {
 		.iov_base	= (void *)buf,
@@ -346,7 +343,7 @@ int zhpe_mr_reg_int(struct zhpe_domain *domain, const void *buf, size_t len,
 	if (!zhpe_mr_key_int(attr.requested_key))
 		return -FI_ENOKEY;
 
-	return zhpe_regattr_int(domain, &attr, 0, mr);
+	return zhpe_regattr_int(domain, &attr, qaccess, mr);
 }
 
 int zhpe_mr_reg_int_oneshot(struct zhpe_domain *domain, struct zhpe_iov *ziov,
@@ -355,11 +352,10 @@ int zhpe_mr_reg_int_oneshot(struct zhpe_domain *domain, struct zhpe_iov *ziov,
 	int			ret = 0;
 	size_t			i;
 	size_t			tlen;
-	size_t			rlen = 0;
+	size_t			rlen;
 	struct fid_mr		*mr;
 	struct zhpe_mr		*zmr;
 
-	access |= ZHPE_MR_ACCESS_ONESHOT;
 	for (tlen = len, i = 0; tlen > 0; tlen -= rlen, i++) {
 		rlen = tlen;
 		if (rlen > ziov[i].iov_len)
@@ -368,7 +364,7 @@ int zhpe_mr_reg_int_oneshot(struct zhpe_domain *domain, struct zhpe_iov *ziov,
 		if (zmr)
 			continue;
 		ret = zhpe_mr_reg_int(domain, ziov[i].iov_base, rlen,
-				      access, &mr);
+				      access, ZHPEQ_MR_KEY_ONESHOT, &mr);
 		if (ret < 0)
 			goto done;
 		zmr = ziov[i].iov_desc = fi_mr_desc(mr);
@@ -388,6 +384,7 @@ static int zhpe_regattr(struct fid *fid, const struct fi_mr_attr *attr,
 			uint64_t flags, struct fid_mr **mr_out)
 {
 	int			ret = -FI_EINVAL;
+	uint32_t		qaccess = 0;
 	struct fi_mr_attr	dup_attr;
 	struct zhpe_domain	*domain;
 	struct fi_eq_entry	eq_entry;
@@ -404,13 +401,14 @@ static int zhpe_regattr(struct fid *fid, const struct fi_mr_attr *attr,
 	if (domain->attr.mr_mode & FI_MR_PROV_KEY)
 		dup_attr.requested_key =
 			__sync_fetch_and_add(&domain->mr_user_key, 1);
-
 	if (zhpe_mr_key_int(dup_attr.requested_key)) {
 		ret = -FI_ENOKEY;
 		goto done;
 	}
+	if (!(domain->attr.mr_mode & FI_MR_VIRT_ADDR))
+		qaccess |= ZHPEQ_MR_KEY_ZERO_OFF;
 
-	ret = zhpe_regattr_int(domain, &dup_attr, flags, mr_out);
+	ret = zhpe_regattr_int(domain, &dup_attr, qaccess, mr_out);
 	if (ret >= 0 && domain->mr_eq) {
 		eq_entry.fid = &domain->dom_fid.fid;
 		eq_entry.context = attr->context;
@@ -426,14 +424,15 @@ static int zhpe_regv(struct fid *fid, const struct iovec *iov,
 		uint64_t offset, uint64_t requested_key,
 		uint64_t flags, struct fid_mr **mr, void *context)
 {
-	struct fi_mr_attr	attr;
+	struct fi_mr_attr	attr = {
+		attr.mr_iov	= iov,
+		attr.iov_count	= count,
+		attr.access	= access,
+		attr.offset	= offset,
+		attr.requested_key = requested_key,
+		attr.context	= context,
+	};
 
-	attr.mr_iov = iov;
-	attr.iov_count = count;
-	attr.access = access;
-	attr.offset = offset;
-	attr.requested_key = requested_key;
-	attr.context = context;
 	return zhpe_regattr(fid, &attr, flags, mr);
 }
 
@@ -441,10 +440,11 @@ static int zhpe_reg(struct fid *fid, const void *buf, size_t len,
 		    uint64_t access, uint64_t offset, uint64_t requested_key,
 		    uint64_t flags, struct fid_mr **mr, void *context)
 {
-	struct iovec		iov;
+	struct iovec		iov = {
+		iov.iov_base	= (void *)buf,
+		iov.iov_len	= len,
+	};
 
-	iov.iov_base = (void *)buf;
-	iov.iov_len = len;
 	return zhpe_regv(fid, &iov, 1, access,  offset, requested_key,
 			 flags, mr, context);
 }
@@ -502,9 +502,6 @@ static int zhpe_endpoint(struct fid_domain *domain, struct fi_info *info,
 static int zhpe_scalable_ep(struct fid_domain *domain, struct fi_info *info,
 		     struct fid_ep **sep, void *context)
 {
-	/* FIXME: Scalable EP */
-	return -FI_ENOSYS;
-#if 0
 	switch (info->ep_attr->type) {
 	case FI_EP_RDM:
 		return zhpe_rdm_sep(domain, info, sep, context);
@@ -513,7 +510,6 @@ static int zhpe_scalable_ep(struct fid_domain *domain, struct fi_info *info,
 	default:
 		return -FI_ENOPROTOOPT;
 	}
-#endif
 }
 
 static struct fi_ops zhpe_dom_fi_ops = {
