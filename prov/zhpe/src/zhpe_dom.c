@@ -502,6 +502,9 @@ static int zhpe_endpoint(struct fid_domain *domain, struct fi_info *info,
 static int zhpe_scalable_ep(struct fid_domain *domain, struct fi_info *info,
 		     struct fid_ep **sep, void *context)
 {
+	/* FIXME: Scalable EP */
+	return -FI_ENOSYS;
+#if 0
 	switch (info->ep_attr->type) {
 	case FI_EP_RDM:
 		return zhpe_rdm_sep(domain, info, sep, context);
@@ -510,6 +513,7 @@ static int zhpe_scalable_ep(struct fid_domain *domain, struct fi_info *info,
 	default:
 		return -FI_ENOPROTOOPT;
 	}
+#endif
 }
 
 static struct fi_ops zhpe_dom_fi_ops = {
