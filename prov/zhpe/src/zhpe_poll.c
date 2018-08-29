@@ -44,7 +44,7 @@ static int zhpe_poll_add(struct fid_poll *pollset, struct fid *event_fid,
 	struct zhpe_cq *cq;
 	struct zhpe_cntr *cntr;
 
-	poll = container_of(pollset, struct zhpe_poll, poll_fid.fid);
+	poll = container_of(pollset, struct zhpe_poll, poll_fid);
 	list_item = calloc(1, sizeof(*list_item));
 	if (!list_item)
 		return -FI_ENOMEM;
@@ -54,12 +54,12 @@ static int zhpe_poll_add(struct fid_poll *pollset, struct fid *event_fid,
 
 	switch (list_item->fid->fclass) {
 	case FI_CLASS_CQ:
-		cq = container_of(list_item->fid, struct zhpe_cq, cq_fid);
+		cq = container_of(list_item->fid, struct zhpe_cq, cq_fid.fid);
 		ofi_atomic_inc32(&cq->ref);
 		break;
 	case FI_CLASS_CNTR:
 		cntr = container_of(list_item->fid, struct zhpe_cntr,
-				    cntr_fid);
+				    cntr_fid.fid);
 		ofi_atomic_inc32(&cntr->ref);
 		break;
 	default:
@@ -77,20 +77,20 @@ static int zhpe_poll_del(struct fid_poll *pollset, struct fid *event_fid,
 	struct zhpe_cq *cq;
 	struct zhpe_cntr *cntr;
 
-	poll = container_of(pollset, struct zhpe_poll, poll_fid.fid);
+	poll = container_of(pollset, struct zhpe_poll, poll_fid);
 	dlist_foreach_container(&poll->fid_list, struct zhpe_fid_list,
 				list_item, lentry) {
 		if (list_item->fid == event_fid) {
 			switch (list_item->fid->fclass) {
 			case FI_CLASS_CQ:
 				cq = container_of(list_item->fid,
-						  struct zhpe_cq, cq_fid);
+						  struct zhpe_cq, cq_fid.fid);
 				ofi_atomic_dec32(&cq->ref);
 				break;
 			case FI_CLASS_CNTR:
 				cntr = container_of(list_item->fid,
 						    struct zhpe_cntr,
-						    cntr_fid);
+						    cntr_fid.fid);
 				ofi_atomic_dec32(&cntr->ref);
 				break;
 			default:
@@ -114,14 +114,14 @@ static int zhpe_poll_poll(struct fid_poll *pollset, void **context, int count)
 	struct zhpe_fid_list *list_item;
 	int ret_count = 0;
 
-	poll = container_of(pollset, struct zhpe_poll, poll_fid.fid);
+	poll = container_of(pollset, struct zhpe_poll, poll_fid);
 
 	dlist_foreach_container(&poll->fid_list, struct zhpe_fid_list,
 				list_item, lentry) {
 		switch (list_item->fid->fclass) {
 		case FI_CLASS_CQ:
 			cq = container_of(list_item->fid, struct zhpe_cq,
-						cq_fid);
+						cq_fid.fid);
 			zhpe_cq_progress(cq);
 			fastlock_acquire(&cq->lock);
 			if (ofi_rbfdused(&cq->cq_rbfd) ||
@@ -134,7 +134,7 @@ static int zhpe_poll_poll(struct fid_poll *pollset, void **context, int count)
 
 		case FI_CLASS_CNTR:
 			cntr = container_of(list_item->fid, struct zhpe_cntr,
-						cntr_fid);
+					    cntr_fid.fid);
 			zhpe_cntr_progress(cntr);
 			mutex_acquire(&cntr->mut);
 			if (ofi_atomic_get32(&cntr->value) !=
@@ -148,7 +148,8 @@ static int zhpe_poll_poll(struct fid_poll *pollset, void **context, int count)
 			break;
 
 		case FI_CLASS_EQ:
-			eq = container_of(list_item->fid, struct zhpe_eq, eq);
+			eq = container_of(list_item->fid, struct zhpe_eq,
+					  eq.fid);
 			fastlock_acquire(&eq->lock);
 			if (!dlistfd_empty(&eq->list) ||
 				!dlistfd_empty(&eq->err_list)) {

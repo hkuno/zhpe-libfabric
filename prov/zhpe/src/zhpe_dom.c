@@ -395,7 +395,7 @@ static int zhpe_regattr(struct fid *fid, const struct fi_mr_attr *attr,
 			      FI_REMOTE_READ | FI_REMOTE_WRITE)) || flags)
 		goto done;
 
-	domain = container_of(fid, struct zhpe_domain, dom_fid);
+	domain = container_of(fid, struct zhpe_domain, dom_fid.fid);
 
 	dup_attr = *attr;
 	if (domain->attr.mr_mode & FI_MR_PROV_KEY)

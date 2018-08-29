@@ -274,7 +274,7 @@ static int zhpe_eq_fi_close(struct fid *fid)
 {
 	struct zhpe_eq *zhpe_eq;
 
-	zhpe_eq = container_of(fid, struct zhpe_eq, eq);
+	zhpe_eq = container_of(fid, struct zhpe_eq, eq.fid);
 	zhpe_eq_clean_err_data_list(zhpe_eq, 1);
 
 	dlistfd_head_free(&zhpe_eq->list);

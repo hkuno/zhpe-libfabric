@@ -94,6 +94,16 @@
 #include <ofi_rbuf.h>
 #include <ofi_util.h>
 
+/* Type checking container_of */
+#ifdef container_of
+#undef container_of
+#endif
+#define container_of(ptr, type, member)				\
+({								\
+	const typeof( ((type *)0)->member ) *_ptr = (ptr);	\
+	(type *)((char *)_ptr - offsetof(type,member));		\
+})
+
 #define _ZHPE_LOG_DBG(subsys, ...) FI_DBG(&zhpe_prov, subsys, __VA_ARGS__)
 #define _ZHPE_LOG_ERROR(subsys, ...) FI_WARN(&zhpe_prov, subsys, __VA_ARGS__)
 

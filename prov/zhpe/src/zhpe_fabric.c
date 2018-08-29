@@ -309,7 +309,7 @@ static struct fi_ops_fabric zhpe_fab_ops = {
 static int zhpe_fabric_close(fid_t fid)
 {
 	struct zhpe_fabric *fab;
-	fab = container_of(fid, struct zhpe_fabric, fab_fid);
+	fab = container_of(fid, struct zhpe_fabric, fab_fid.fid);
 	if (ofi_atomic_get32(&fab->ref))
 		return -FI_EBUSY;
 
