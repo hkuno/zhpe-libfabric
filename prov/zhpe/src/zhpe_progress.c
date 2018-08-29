@@ -986,6 +986,7 @@ static void zhpe_pe_rx_get(struct zhpe_rx_entry *rx_entry)
 					 rx_entry->rem);
 		if (state == ZHPE_RX_STATE_EAGER_DONE)
 			break;
+		__attribute__ ((fallthrough));
 		/* FALLTHROUGH: CLAIMED */
 	case ZHPE_RX_STATE_RND_BUF:
 		rx_ctx = rx_entry->pe_root.conn->rx_ctx;
