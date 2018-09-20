@@ -94,6 +94,16 @@
 #include <ofi_rbuf.h>
 #include <ofi_util.h>
 
+/* Type checking container_of */
+#ifdef container_of
+#undef container_of
+#endif
+#define container_of(ptr, type, member)				\
+({								\
+	const typeof( ((type *)0)->member ) *_ptr = (ptr);	\
+	(type *)((char *)_ptr - offsetof(type,member));		\
+})
+
 #define _ZHPE_LOG_DBG(subsys, ...) FI_DBG(&zhpe_prov, subsys, __VA_ARGS__)
 #define _ZHPE_LOG_ERROR(subsys, ...) FI_WARN(&zhpe_prov, subsys, __VA_ARGS__)
 
@@ -1182,7 +1192,8 @@ struct zhpe_msg_key_request {
 };
 
 struct zhpe_msg_key_data {
-	char			data[40];
+	uint64_t		key;
+	char			blob[ZHPEQ_KEY_BLOB_MAX];
 };
 
 /* Must fit in 32 bytes for put-immediate-based implementation. */
@@ -1609,10 +1620,9 @@ int zhpe_iov_to_get_imm(struct zhpe_pe_root *pe_root,
 			size_t *rem);
 
 #define ZHPE_MR_FLAGS_FREEING	(1ULL << 63)
-#define ZHPE_MR_ACCESS_ONESHOT	(1ULL << 63)
 
 int zhpe_mr_reg_int(struct zhpe_domain *domain, const void *buf, size_t len,
-		    uint64_t access, struct fid_mr **mr);
+		    uint64_t access, uint32_t qaccess, struct fid_mr **mr);
 int zhpe_mr_reg_int_oneshot(struct zhpe_domain *domain, struct zhpe_iov *ziov,
 			    size_t len, uint64_t access);
 int zhpe_mr_close(struct fid *fid);
@@ -2419,8 +2429,9 @@ static inline bool zhpe_mr_key_int(uint64_t key)
 
 int zhpe_conn_key_export(struct zhpe_conn *conn, struct zhpe_mr *zmr,
 			 bool response, struct zhpe_msg_hdr ohdr);
-int zhpe_conn_rkey_import(struct zhpe_conn *conn, const void *blob,
-			  size_t blob_len, struct zhpe_rkey_data **rkey_out);
+int zhpe_conn_rkey_import(struct zhpe_conn *conn, uint64_t key,
+			  const void *blob, size_t blob_len,
+			  struct zhpe_rkey_data **rkey_out);
 
 int zhpe_send_blob(int sock_fd, const void *blob, size_t blob_len);
 int zhpe_recv_fixed_blob(int sock_fd, void *blob, size_t blob_len);
@@ -2435,7 +2446,7 @@ int zhpe_checklocaladdr(const struct ifaddrs *ifaddrs,
 			const union sockaddr_in46 *sa);
 
 static inline uint32_t zhpe_convert_access(uint64_t access) {
-	uint32_t		ret = ZHPEQ_MR_KEY_VALID;
+	uint32_t		ret = 0;
 
 	if (access & (FI_READ | FI_RECV))
 		ret |= ZHPEQ_MR_GET;
@@ -2445,8 +2456,7 @@ static inline uint32_t zhpe_convert_access(uint64_t access) {
 		ret |= ZHPEQ_MR_GET_REMOTE;
 	if (access & FI_REMOTE_WRITE)
 		ret |= ZHPEQ_MR_PUT_REMOTE;
-	if (access & ZHPE_MR_ACCESS_ONESHOT)
-		ret |= ZHPEQ_MR_KEY_ONESHOT;
+
 	return ret;
 }
 

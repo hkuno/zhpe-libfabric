@@ -118,11 +118,10 @@ int zhpe_cntr_progress(struct zhpe_cntr *cntr)
 
 void zhpe_cntr_check_trigger_list(struct zhpe_cntr *cntr)
 {
-	struct fi_deferred_work *work;
-	struct zhpe_trigger *trigger;
+	struct zhpe_trigger	*trigger;
 	struct dlist_entry	*dentry;
 	struct dlist_entry	*dnext;
-	int ret = 0;
+	int			ret;
 
 	fastlock_acquire(&cntr->trigger_lock);
 	dlist_foreach_safe(&cntr->trigger_list, dentry, dnext) {
@@ -175,30 +174,16 @@ void zhpe_cntr_check_trigger_list(struct zhpe_cntr *cntr)
 				trigger->flags);
 			break;
 
-		case FI_OP_CNTR_SET:
-			work = container_of(trigger->context,
-					    struct fi_deferred_work, context);
-			fi_cntr_set(work->op.cntr->cntr, work->op.cntr->value);
-			ret = 0;
-			break;
-		case FI_OP_CNTR_ADD:
-			work = container_of(trigger->context,
-					    struct fi_deferred_work, context);
-			fi_cntr_add(work->op.cntr->cntr, work->op.cntr->value);
-			ret = 0;
-			break;
 		default:
 			ZHPE_LOG_ERROR("unsupported op\n");
 			ret = 0;
 			break;
 		}
-
-		if (ret != -FI_EAGAIN) {
-			dlist_remove(&trigger->lentry);
-			free(trigger);
-		} else {
+		if (ret == -FI_EAGAIN)
 			break;
-		}
+
+		dlist_remove(&trigger->lentry);
+		free(trigger);
 	}
 	fastlock_release(&cntr->trigger_lock);
 }
@@ -365,7 +350,7 @@ static int zhpe_cntr_control(struct fid *fid, int command, void *arg)
 	int ret = 0;
 	struct zhpe_cntr *cntr;
 
-	cntr = container_of(fid, struct zhpe_cntr, cntr_fid);
+	cntr = container_of(fid, struct zhpe_cntr, cntr_fid.fid);
 
 	switch (command) {
 	case FI_GETWAIT:

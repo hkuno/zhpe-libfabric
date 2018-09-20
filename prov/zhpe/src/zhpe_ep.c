@@ -160,7 +160,7 @@ static int zhpe_ctx_bind_cq(struct fid *fid, struct fid *bfid, uint64_t flags)
 	zhpe_cq = container_of(bfid, struct zhpe_cq, cq_fid.fid);
 	switch (fid->fclass) {
 	case FI_CLASS_TX_CTX:
-		tx_ctx = container_of(fid, struct zhpe_tx_ctx, fid.ctx);
+		tx_ctx = container_of(fid, struct zhpe_tx_ctx, fid.ctx.fid);
 		if (flags & FI_SEND) {
 			tx_ctx->comp.send_cq = zhpe_cq;
 			if (flags & FI_SELECTIVE_COMPLETION)
@@ -271,7 +271,7 @@ static int zhpe_ctx_enable(struct fid_ep *ep)
 
 	switch (ep->fid.fclass) {
 	case FI_CLASS_RX_CTX:
-		rx_ctx = container_of(ep, struct zhpe_rx_ctx, ctx.fid);
+		rx_ctx = container_of(ep, struct zhpe_rx_ctx, ctx);
 		zhpe_pe_add_rx_ctx(rx_ctx->domain->pe, rx_ctx);
 
 		if (!rx_ctx->ep_attr->listener.listener_thread &&
@@ -282,7 +282,7 @@ static int zhpe_ctx_enable(struct fid_ep *ep)
 		return 0;
 
 	case FI_CLASS_TX_CTX:
-		tx_ctx = container_of(ep, struct zhpe_tx_ctx, fid.ctx.fid);
+		tx_ctx = container_of(ep, struct zhpe_tx_ctx, fid.ctx);
 		zhpe_pe_add_tx_ctx(tx_ctx->domain->pe, tx_ctx);
 
 		if (!tx_ctx->ep_attr->listener.listener_thread &&
@@ -872,7 +872,7 @@ static int zhpe_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags)
 		break;
 
 	case FI_CLASS_SRX_CTX:
-		rx_ctx = container_of(bfid, struct zhpe_rx_ctx, ctx);
+		rx_ctx = container_of(bfid, struct zhpe_rx_ctx, ctx.fid);
 		mutex_acquire(&rx_ctx->domain->pe->list_lock);
 		dlist_insert_tail(&ep->attr->rx_ctx_lentry,
 				  &rx_ctx->ep_list);

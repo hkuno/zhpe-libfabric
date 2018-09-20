@@ -589,7 +589,7 @@ static int zhpe_pe_rx_handle_writedata(struct zhpe_conn *conn,
 	zcqe.cqe.flags = (be64toh(zpay->writedata.flags) &
 			  (FI_REMOTE_READ | FI_REMOTE_WRITE |
 			   FI_REMOTE_CQ_DATA | FI_RMA | FI_ATOMIC));
-	if ((zcqe.cqe.flags & (FI_REMOTE_WRITE |FI_REMOTE_CQ_DATA)) ==
+	if ((zcqe.cqe.flags & (FI_REMOTE_WRITE | FI_REMOTE_CQ_DATA)) ==
 	     FI_REMOTE_CQ_DATA)
 	    zcqe.cqe.flags |= FI_REMOTE_WRITE;
 	zcqe.cqe.data = be64toh(zpay->writedata.cq_data);
@@ -700,9 +700,9 @@ static int zhpe_pe_rx_handle_key_export(struct zhpe_conn *conn,
 	size_t			blob_len;
 
 	zpay = zhpe_pay_ptr(conn, zhdr, 0, alignof(*zpay));
-	blob_len = zhdr->inline_len - ((char *)zpay - (char *)zhdr);
-	return zhpe_conn_rkey_import(conn, zpay->key_data.data,
-				     blob_len, NULL);
+	blob_len = zhdr->inline_len - (zpay->key_data.blob - (char *)zhdr);
+	return zhpe_conn_rkey_import(conn, be64toh(zpay->key_data.key),
+				     zpay->key_data.blob, blob_len, NULL);
 }
 
 static int zhpe_pe_rx_handle_key_response(struct zhpe_conn *conn,
@@ -714,9 +714,9 @@ static int zhpe_pe_rx_handle_key_response(struct zhpe_conn *conn,
 	struct zhpe_pe_entry	*pe_entry;
 
 	zpay = zhpe_pay_ptr(conn, zhdr, 0, alignof(*zpay));
-	blob_len = zhdr->inline_len - ((char *)zpay - (char *)zhdr);
-	rc = zhpe_conn_rkey_import(conn, zpay->key_data.data,
-				    blob_len, NULL);
+	blob_len = zhdr->inline_len - (zpay->key_data.blob - (char *)zhdr);
+	rc = zhpe_conn_rkey_import(conn, be64toh(zpay->key_data.key),
+				   zpay->key_data.blob, blob_len, NULL);
 	pe_entry = &conn->ztx->pentries[ntohs(zhdr->pe_entry_id)];
 	zhpe_pe_root_update_status(&pe_entry->pe_root, rc);
 
@@ -863,8 +863,7 @@ static inline int zhpe_pe_rem_setup(struct zhpe_conn *conn,
 			break;
 		}
 		ret = zhpeq_rem_key_access(
-			rkeys[i]->kdata, (uintptr_t)riov[i].iov_base,
-			riov[i].iov_len,
+			rkeys[i]->kdata, riov[i].iov_addr, riov[i].iov_len,
 			(get ? ZHPEQ_MR_GET_REMOTE : ZHPEQ_MR_PUT_REMOTE),
 			&riov[i].iov_zaddr);
 		if (ret < 0) {
@@ -986,6 +985,7 @@ static void zhpe_pe_rx_get(struct zhpe_rx_entry *rx_entry)
 					 rx_entry->rem);
 		if (state == ZHPE_RX_STATE_EAGER_DONE)
 			break;
+		__attribute__ ((fallthrough));
 		/* FALLTHROUGH: CLAIMED */
 	case ZHPE_RX_STATE_RND_BUF:
 		rx_ctx = rx_entry->pe_root.conn->rx_ctx;

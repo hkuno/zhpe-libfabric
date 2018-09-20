@@ -48,7 +48,7 @@ int zhpe_wait_get_obj(struct fid_wait *fid, void *arg)
 #endif /* _WIN32 */
 	struct zhpe_wait *wait;
 
-	wait = container_of(fid, struct zhpe_wait, wait_fid.fid);
+	wait = container_of(fid, struct zhpe_wait, wait_fid);
 	if (zhpe_dom_check_manual_progress(wait->fab))
 		return -FI_ENOSYS;
 
@@ -126,7 +126,7 @@ static int zhpe_wait_wait(struct fid_wait *wait_fid, int timeout)
 		switch (list_item->fid->fclass) {
 		case FI_CLASS_CQ:
 			cq = container_of(list_item->fid,
-					  struct zhpe_cq, cq_fid);
+					  struct zhpe_cq, cq_fid.fid);
 			zhpe_cq_progress(cq);
 			if (ofi_rbused(&cq->cqerr_rb))
 				return 1;
@@ -134,7 +134,7 @@ static int zhpe_wait_wait(struct fid_wait *wait_fid, int timeout)
 
 		case FI_CLASS_CNTR:
 			cntr = container_of(list_item->fid,
-					    struct zhpe_cntr, cntr_fid);
+					    struct zhpe_cntr, cntr_fid.fid);
 			zhpe_cntr_progress(cntr);
 			break;
 		}

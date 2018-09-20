@@ -513,7 +513,7 @@ static int zhpe_cq_control(struct fid *fid, int command, void *arg)
 	struct zhpe_cq *cq;
 	int ret = 0;
 
-	cq = container_of(fid, struct zhpe_cq, cq_fid);
+	cq = container_of(fid, struct zhpe_cq, cq_fid.fid);
 	switch (command) {
 	case FI_GETWAIT:
 		if (cq->domain->progress_mode == FI_PROGRESS_MANUAL)

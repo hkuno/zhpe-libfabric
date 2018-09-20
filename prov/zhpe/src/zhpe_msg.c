@@ -311,6 +311,7 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 	struct zhpe_ep_attr	*ep_attr;
 	struct zhpe_mr		*zmr;
 	void			*context;
+	uint64_t		base;
 
 	ZHPEQ_TIMING_UPDATE(&zhpeq_timing_tx_start,
 			    NULL, &zhpeq_timing_tx_start_stamp,
@@ -451,8 +452,11 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 		zpay = zhpe_pay_ptr(conn, zhdr, 0, alignof(*zpay));
 		zpay->indirect.tag = htobe64(tag);
 		zpay->indirect.cq_data = htobe64(cq_data);
-		zpay->indirect.vaddr =
-			htobe64((uintptr_t)pe_entry->ziov[0].iov_base);
+		base = (uintptr_t)pe_entry->ziov[0].iov_base;
+		if ((zmr = pe_entry->ziov[0].iov_desc) &&
+		    (zmr->kdata->z.access & ZHPEQ_MR_KEY_ZERO_OFF))
+			base -= zmr->kdata->z.vaddr;
+		zpay->indirect.vaddr = htobe64(base);
 		zpay->indirect.len =
 			htobe64((uintptr_t)pe_entry->ziov[0].iov_len);
 		zpay->indirect.key =

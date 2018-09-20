@@ -40,7 +40,7 @@ struct mem_wire_msg1 {
 };
 
 struct mem_wire_msg2 {
-	uint64_t		mem_addr;
+	uint64_t		key;
 };
 
 void zhpe_tx_free(struct zhpe_tx *ztx)
@@ -115,7 +115,7 @@ static int do_tx_setup(struct zhpe_ep_attr *ep_attr, struct zhpe_tx **ztx_out)
 
 	/* Register zentries memory. */
 	ret = zhpe_mr_reg_int(ep_attr->domain, ztx->zentries, req,
-			      FI_WRITE, &mr);
+			      FI_WRITE, 0, &mr);
 	if (ret < 0) {
 		ZHPE_LOG_ERROR("zhpe_mr_reg_int() error %d\n", ret);
 		goto done;
@@ -186,7 +186,7 @@ static int do_rx_setup(struct zhpe_conn *conn, int conn_fd, int action)
 	struct zhpe_ep		*ep = conn->ep_attr->ep;
 	struct zhpe_rx_local	*rx_ringl = &conn->rx_local;
 	struct zhpe_rx_remote	*rx_ringr = &conn->rx_remote;
-	void			*blob = NULL;
+	char			blob[ZHPEQ_KEY_BLOB_MAX];
 	struct mem_wire_msg1	mem_msg1;
 	struct mem_wire_msg2	mem_msg2;
 	size_t			blob_len;
@@ -240,7 +240,8 @@ static int do_rx_setup(struct zhpe_conn *conn, int conn_fd, int action)
 
 	/* Register zentries memory. */
 	ret = zhpe_mr_reg_int(ep_attr->domain, rx_ringl->zentries, req,
-			      FI_REMOTE_READ | FI_REMOTE_WRITE, &mr);
+			      FI_REMOTE_READ | FI_REMOTE_WRITE,
+			      ZHPEQ_MR_KEY_ZERO_OFF, &mr);
 	if (ret < 0) {
 		ZHPE_LOG_ERROR("zhpe_mr_reg_int() error %d\n", ret);
 		goto done;
@@ -248,14 +249,15 @@ static int do_rx_setup(struct zhpe_conn *conn, int conn_fd, int action)
 	rx_ringl->cmn.zmr = fi_mr_desc(mr);
 
 	/* Exchange key information. */
+	blob_len = sizeof(blob);
 	ret = zhpeq_zmmu_export(zhpeq_dom(conn->ztx->zq),
-				rx_ringl->cmn.zmr->kdata, &blob, &blob_len);
+				rx_ringl->cmn.zmr->kdata, blob, &blob_len);
 	if (ret < 0) {
 		ZHPE_LOG_ERROR("zhpeq_zmmu_export() error %d\n", ret);
 		goto done;
 	}
 
-	mem_msg2.mem_addr = htobe64((uintptr_t)rx_ringl->zentries);
+	mem_msg2.key = htobe64(fi_mr_key(mr));
 	if (likely(action != ZHPE_CONN_ACTION_SELF)) {
 		ret = zhpe_send_blob(conn_fd, &mem_msg2, sizeof(mem_msg2));
 		if (ret < 0)
@@ -271,15 +273,14 @@ static int do_rx_setup(struct zhpe_conn *conn, int conn_fd, int action)
 		if (ret < 0)
 			goto done;
 	}
-	mem_msg2.mem_addr = be64toh(mem_msg2.mem_addr);
 
-	ret = zhpe_conn_rkey_import(conn, blob, blob_len, &rx_ringr->cmn.rkey);
+	ret = zhpe_conn_rkey_import(conn, be64toh(mem_msg2.key), blob, blob_len,
+				    &rx_ringr->cmn.rkey);
 	if (ret < 0) {
 		ZHPE_LOG_ERROR("zhpeq_zmmu_alloc() error %d\n", ret);
 		goto done;
 	}
-	ret = zhpeq_rem_key_access(rx_ringr->cmn.rkey->kdata,
-				   mem_msg2.mem_addr, 0, 0,
+	ret = zhpeq_rem_key_access(rx_ringr->cmn.rkey->kdata, 0, 0, 0,
 				   &rx_ringr->rz_zentries);
 	if (ret < 0) {
 		ZHPE_LOG_ERROR("zhpeq_rem_key_access() error %d\n", ret);
@@ -293,7 +294,6 @@ static int do_rx_setup(struct zhpe_conn *conn, int conn_fd, int action)
  done:
 	if (ret < 0)
 		do_rx_free(conn);
-	free(blob);
 
 	return ret;
 }
@@ -674,7 +674,7 @@ int zhpe_slab_init(struct zhpe_slab *slab, size_t size,
 	chunk->size = 0;
 
 	ret = zhpe_mr_reg_int(domain, slab->mem, slab->size,
-			      FI_READ | FI_WRITE, &mr);
+			      FI_READ | FI_WRITE, 0, &mr);
 	if (ret < 0) {
 		ZHPE_LOG_ERROR("zhpe_mr_reg_int() error %d\n", ret);
 		goto done;
@@ -1045,13 +1045,13 @@ int zhpe_conn_key_export(struct zhpe_conn *conn, struct zhpe_mr *zmr,
 			 bool response, struct zhpe_msg_hdr ohdr)
 {
 	int			ret;
-	void			*blob = NULL;
 	size_t			blob_len;
 	struct zhpe_kexp_data	*new = NULL;
 	uint8_t			pe_flags = 0;
 	struct zhpe_domain	*domain = conn->ep_attr->domain;
 	struct zhpe_kexp_data	*kexp;
 	RbtIterator		*rbt;
+	struct zhpe_msg_key_data msg_data;
 
 	fastlock_acquire(&conn->mr_lock);
 	for (;;) {
@@ -1116,15 +1116,14 @@ int zhpe_conn_key_export(struct zhpe_conn *conn, struct zhpe_mr *zmr,
 		goto done;
 	} else
 		ohdr.op_type = ZHPE_OP_KEY_EXPORT;
+	msg_data.key = htobe64(zmr->mr_fid.key);
+	blob_len = sizeof(msg_data.blob);
 	ret = zhpeq_zmmu_export(zhpeq_dom(conn->ztx->zq),
-				zmr->kdata, &blob, &blob_len);
+				zmr->kdata, msg_data.blob, &blob_len);
 	if (ret < 0)
 		goto done;
-	if (blob_len > sizeof(struct zhpe_msg_key_data)) {
-		ret = -FI_EINVAL;
-		goto done;
-	}
-	ret = zhpe_prov_op(conn, ohdr, pe_flags, blob, blob_len);
+	ret = zhpe_prov_op(conn, ohdr, pe_flags, &msg_data,
+			   offsetof(struct zhpe_msg_key_data, blob) + blob_len);
  done:
 	if (kexp) {
 		/* FIXME: Is this racy in the retry case? */
@@ -1136,13 +1135,13 @@ int zhpe_conn_key_export(struct zhpe_conn *conn, struct zhpe_mr *zmr,
 		}
 		zhpe_kexp_put(kexp);
 	}
-	free(blob);
 
 	return ret;
 }
 
-int zhpe_conn_rkey_import(struct zhpe_conn *conn, const void *blob,
-			  size_t blob_len, struct zhpe_rkey_data **rkey_out)
+int zhpe_conn_rkey_import(struct zhpe_conn *conn, uint64_t key,
+			  const void *blob, size_t blob_len,
+			  struct zhpe_rkey_data **rkey_out)
 {
 	int			ret;
 	struct zhpe_rkey_data	*new = NULL;
@@ -1162,7 +1161,7 @@ int zhpe_conn_rkey_import(struct zhpe_conn *conn, const void *blob,
 	fastlock_acquire(&conn->mr_lock);
 	__sync_fetch_and_add(&conn->ztx->use_count, 1);
 	new->ztx = conn->ztx;
-	new->key = kdata->z.key;
+	new->key = key;
 	new->kdata = kdata;
 	new->use_count = 2;
 	rkey = conn_rkey_get(conn, new->key, false);
