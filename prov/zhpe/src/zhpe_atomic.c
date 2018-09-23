@@ -241,7 +241,8 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 	zpay->atomic_req.operand = htobe64(o64);
 	zpay->atomic_req.compare = htobe64(c64);
 	zpay->atomic_req.vaddr = htobe64(msg->rma_iov[0].addr);
-	zpay->atomic_req.key =  htobe64(msg->rma_iov[0].key);
+	zpay->atomic_req.zkey.key = htobe64(msg->rma_iov[0].key);
+	zpay->atomic_req.zkey.internal = false;
 	zpay->atomic_req.op = msg->op;
 	zpay->atomic_req.datatype = datatype;
 	zpay->atomic_req.datasize = datasize;

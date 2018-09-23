@@ -23,7 +23,8 @@ _zhpe_files = \
 	prov/zhpe/src/zhpe_msg.c \
 	prov/zhpe/src/zhpe_atomic.c \
 	prov/zhpe/src/zhpe_trigger.c \
-	prov/zhpe/src/zhpe_zq.c
+	prov/zhpe/src/zhpe_zq.c \
+	prov/zhpe/src/zhpe_mr_cache.c
 
 _zhpe_headers = \
 	prov/zhpe/include/zhpe.h

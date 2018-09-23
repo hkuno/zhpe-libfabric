@@ -48,6 +48,10 @@ int zhpe_cq_def_sz = ZHPE_CQ_DEF_SZ;
 int zhpe_eq_def_sz = ZHPE_EQ_DEF_SZ;
 char *zhpe_pe_affinity_str = NULL;
 size_t zhpe_ep_max_eager_sz = ZHPE_EP_MAX_EAGER_SZ;
+int zhpe_mr_cache_enable = ZHPE_MR_CACHE_ENABLE;
+int zhpe_mr_cache_merge_regions = ZHPE_MR_CACHE_MERGE_REGIONS;
+size_t zhpe_mr_cache_max_cnt = ZHPE_MR_CACHE_MAX_CNT;
+size_t zhpe_mr_cache_max_size = ZHPE_MR_CACHE_MAX_SIZE;
 
 const struct fi_fabric_attr zhpe_fabric_attr = {
 	.fabric = NULL,
@@ -343,6 +347,14 @@ static void zhpe_read_default_params()
 			zhpe_pe_affinity_str = NULL;
 		fi_param_get_size_t(&zhpe_prov, "ep_max_eager_sz",
 				    &zhpe_ep_max_eager_sz);
+		fi_param_get_bool(&zhpe_prov, "mr_cache_enable",
+				  &zhpe_mr_cache_enable);
+		fi_param_get_bool(&zhpe_prov, "mr_cache_merge_regions",
+				  &zhpe_mr_cache_merge_regions);
+		fi_param_get_size_t(&zhpe_prov, "mr_cache_max_cnt",
+				    &zhpe_mr_cache_max_cnt);
+		fi_param_get_size_t(&zhpe_prov, "mr_cache_max_size",
+				    &zhpe_mr_cache_max_size);
 
 		read_default_params = 1;
 	}
@@ -623,14 +635,20 @@ ZHPE_INI
 			"If specified, bind the progress thread to the indicated range(s) of Linux virtual processor ID(s). "
 			"This option is currently not supported on OS X. Usage: id_start[-id_end[:stride]][,]");
 
-	fi_param_define(&zhpe_prov, "fab_backend_prov", FI_PARAM_STRING,
-			"Libfabric backend provider for emulation mode");
-
-	fi_param_define(&zhpe_prov, "fab_backend_dom", FI_PARAM_STRING,
-			"Libfabric backend domain for emulation mode");
-
 	fi_param_define(&zhpe_prov, "ep_max_eager_sz", FI_PARAM_SIZE_T,
 			"Maximum size of eager message");
+
+	fi_param_define(&zhpe_prov, "mr_cache_enable", FI_PARAM_BOOL,
+			"Enable/disable registration cache");
+
+	fi_param_define(&zhpe_prov, "mr_cache_merge_regions", FI_PARAM_BOOL,
+			"Enable/disable merging cache regions");
+
+	fi_param_define(&zhpe_prov, "mr_cache_max_cnt", FI_PARAM_SIZE_T,
+			"Maximum number of registrations in cache");
+
+	fi_param_define(&zhpe_prov, "mr_cache_max_size", FI_PARAM_SIZE_T,
+			"Maximum total size of cached registrations");
 
 	fastlock_init(&zhpe_list_lock);
 	dlist_init(&zhpe_fab_list);

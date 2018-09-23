@@ -158,12 +158,10 @@ int zhpe_msg_verify_ep_attr(struct fi_ep_attr *ep_attr,
 		   zhpe_msg_ep_attr.max_order_waw_size)
 			return -FI_ENODATA;
 
-		if ((ep_attr->tx_ctx_cnt > ZHPE_EP_MAX_TX_CNT) &&
-		    ep_attr->tx_ctx_cnt != FI_SHARED_CONTEXT)
+		if (ep_attr->tx_ctx_cnt > ZHPE_EP_MAX_TX_CNT)
 			return -FI_ENODATA;
 
-		if ((ep_attr->rx_ctx_cnt > ZHPE_EP_MAX_RX_CNT) &&
-		    ep_attr->rx_ctx_cnt != FI_SHARED_CONTEXT)
+		if (ep_attr->rx_ctx_cnt > ZHPE_EP_MAX_RX_CNT)
 			return -FI_ENODATA;
 
 		if (ep_attr->auth_key_size &&

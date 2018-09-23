@@ -36,13 +36,50 @@
 #define ZHPE_LOG_DBG(...) _ZHPE_LOG_DBG(FI_LOG_EP_DATA, __VA_ARGS__)
 #define ZHPE_LOG_ERROR(...) _ZHPE_LOG_ERROR(FI_LOG_EP_DATA, __VA_ARGS__)
 
+int zhpe_check_user_iov(const struct iovec *uiov, void **udesc,
+			size_t uiov_cnt, uint32_t qaccess,
+			struct zhpe_iov_state *lstate, size_t liov_max,
+			size_t *total_len)
+{
+	int			ret = 0;
+	struct zhpe_iov		*liov = lstate->viov;
+	struct zhpe_mr		*zmr;
+	size_t			i;
+	size_t			j;
+
+	*total_len = 0;
+	for (i = 0, j = 0; i < uiov_cnt; i++) {
+		if (OFI_UNLIKELY(!uiov[i].iov_len))
+			continue;
+		if (uiov[i].iov_len > ZHPE_EP_MAX_IOV_LEN || j >= liov_max) {
+			ret = -FI_EMSGSIZE;
+			goto done;
+		}
+		liov[j].iov_base = uiov[i].iov_base;
+		liov[j].iov_len = uiov[i].iov_len;
+		*total_len += uiov[i].iov_len;
+		liov[j].iov_desc = zmr = udesc[i];
+		if (!zmr) {
+			lstate->missing |= (1U << j);
+			lstate->cnt = ++j;
+			continue;
+		}
+		ret = zhpeq_lcl_key_access(zmr->kdata,
+					   liov[j].iov_base, liov[j].iov_len,
+					   qaccess, &liov[j].iov_zaddr);
+		lstate->cnt = ++j;
+		if (ret < 0)
+			goto done;
+	}
+ done:
+	return ret;
+}
+
 static inline ssize_t do_recvmsg(struct fid_ep *ep, const void *vmsg,
 				 uint64_t flags, bool tagged)
 {
 	ssize_t			ret = -FI_EINVAL;
 	struct zhpe_rx_entry	*rx_entry = NULL;
-	size_t			i;
-	size_t			j;
 	struct zhpe_ep		*zhpe_ep;
 	struct zhpe_ep_attr	*ep_attr;
 	uint64_t		op_flags;
@@ -56,7 +93,6 @@ static inline ssize_t do_recvmsg(struct fid_ep *ep, const void *vmsg,
 	uint64_t		tag;
 	uint64_t		ignore;
 	struct zhpe_rx_ctx	*rx_ctx;
-	struct zhpe_mr		*zmr;
 	struct zhpe_rx_entry	*rx_claimed;
 	struct zhpe_conn	*conn;
 
@@ -170,45 +206,21 @@ static inline ssize_t do_recvmsg(struct fid_ep *ep, const void *vmsg,
 	rx_entry->tag = tag;
 	rx_entry->ignore = ignore;
 	rx_entry->context = context;
-	rx_entry->rstate.cnt = 0;
-	rx_entry->lstate.cnt = 0;
-	rx_entry->total_len = 0;
 
-	for (i = 0, j = 0; i < iov_count; i++) {
-		if (!iov[i].iov_len)
-			continue;
-		rx_entry->liov[j].iov_base = iov[i].iov_base;
-		rx_entry->liov[j].iov_len = iov[i].iov_len;
-		rx_entry->total_len += iov[i].iov_len;
-		zmr = desc[i];
-		rx_entry->liov[j].iov_desc = zmr;
-		if (!zmr)
-			rx_entry->flags |= FI_INJECT;
-		else {
-			ret = zhpeq_lcl_key_access(
-				zmr->kdata,
-				rx_entry->liov[j].iov_base,
-				rx_entry->liov[j].iov_len,
-				ZHPEQ_MR_RECV, &rx_entry->liov[j].iov_zaddr);
-			if (ret < 0)
-				goto done;
-		}
-		j++;
-		rx_entry->lstate.cnt = j;
-	}
+	ret = zhpe_check_user_iov(iov, desc, iov_count, ZHPEQ_MR_RECV,
+				  &rx_entry->lstate, ZHPE_EP_MAX_IOV_LIMIT,
+				  &rx_entry->total_len);
+	if (ret < 0)
+		goto done;
 
-#if 0
-	/* FIXME: Let's think about this some more. */
-	if ((rx_entry->flags & FI_INJECT) &&
-	    rx_entry->total_len > zhpe_ep_max_eager_sz) {
-		ret = zhpe_mr_reg_int_oneshot(rx_ctx->domain, rx_entry->liov,
-					      rx_entry->total_len, FI_RECV);
+	if (rx_entry->lstate.missing &&
+	    ((flags & FI_MULTI_RECV) ||
+	     rx_entry->total_len > zhpe_ep_max_eager_sz)) {
+		ret = zhpe_mr_reg_int_iov(rx_ctx->domain, &rx_entry->lstate,
+					  rx_entry->total_len);
 		if (ret < 0)
 			goto done;
 	}
-#endif
-
-	ret = 0;
 
 	if (flags & FI_CLAIM) {
 		rx_claimed = ((struct fi_context *)context)->internal[0];
@@ -220,8 +232,6 @@ static inline ssize_t do_recvmsg(struct fid_ep *ep, const void *vmsg,
 	ZHPE_LOG_DBG("New rx_entry: %p (ctx: %p)\n", rx_entry, rx_ctx);
  done:
 	if (ret < 0 && rx_entry) {
-		zhpe_mr_close_oneshot(rx_entry->liov, rx_entry->lstate.cnt,
-				      true);
 		fastlock_acquire(&rx_ctx->lock);
 		zhpe_rx_release_entry(rx_ctx, rx_entry);
 		fastlock_release(&rx_ctx->lock);
@@ -290,8 +300,7 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 	struct zhpe_pe_entry	*pe_entry;
 	size_t			inline_size;
 	size_t			cmd_len;
-	size_t			i;
-	size_t			j;
+	uint			i;
 	struct zhpe_msg_hdr	*zhdr;
 	union zhpe_msg_payload	*zpay;
 	uint64_t		lzaddr;
@@ -312,6 +321,7 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 	struct zhpe_mr		*zmr;
 	void			*context;
 	uint64_t		base;
+	void			*nulldesc;
 
 	ZHPEQ_TIMING_UPDATE(&zhpeq_timing_tx_start,
 			    NULL, &zhpeq_timing_tx_start_stamp,
@@ -376,6 +386,10 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 		iov_count = tmsg->iov_count;
 		iov = tmsg->msg_iov;
 		desc = tmsg->desc;
+		if (!desc) {
+			desc = &nulldesc;
+			nulldesc = NULL;
+		}
 		fiaddr = tmsg->addr;
 		cq_data = tmsg->data;
 		tag = tmsg->tag;
@@ -385,6 +399,10 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 		iov_count = msg->iov_count;
 		iov = msg->msg_iov;
 		desc = msg->desc;
+		if (!desc) {
+			desc = &nulldesc;
+			nulldesc = NULL;
+		}
 		fiaddr = msg->addr;
 		cq_data = msg->data;
 		tag = 0;
@@ -410,57 +428,39 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 	/* FIXME: zhpe_ep_max_eager_sz  */
 	inline_size -= conn->hdr_off + sizeof(*zhdr);
 
-	pe_entry->rem = 0;
-	for (i = 0, j = 0; i < iov_count; i++) {
-		if (!iov[i].iov_len)
-			continue;
-		if (j >= ZHPE_EP_MAX_IOV_LIMIT) {
-			ret = -FI_EINVAL;
-			goto done;
-		}
-		pe_entry->ziov[j].iov_base = iov[i].iov_base;
-		pe_entry->ziov[j].iov_len = iov[i].iov_len;
-		pe_entry->rem += iov[i].iov_len;
-		if (desc && (zmr = desc[i])) {
-			pe_entry->ziov[j].iov_desc = zmr;
-			ret = zhpeq_lcl_key_access(
-				zmr->kdata, pe_entry->ziov[j].iov_base,
-				pe_entry->ziov[j].iov_len,  ZHPEQ_MR_SEND,
-				&pe_entry->ziov[j].iov_zaddr);
-			if (ret < 0)
-				goto done;
-		} else
-			pe_entry->ziov[j].iov_desc = NULL;
-		j++;
-		pe_entry->zstate.cnt = j;
-	}
+	ret = zhpe_check_user_iov(iov, desc, iov_count, ZHPEQ_MR_SEND,
+				  &pe_entry->lstate, ZHPE_EP_MAX_IOV_LIMIT,
+				  &pe_entry->rem);
+	if (ret < 0)
+		goto done;
 
 	/* Build TX command. */
 	if (pe_entry->rem > inline_size) {
-		ret = zhpe_mr_reg_int_oneshot(ep_attr->domain, pe_entry->ziov,
-					      pe_entry->rem, FI_SEND);
-		if (ret < 0)
-			goto done;
-		for (i = 0; i < pe_entry->zstate.cnt; i++) {
-			ret = zhpe_conn_key_export(conn,
-						   pe_entry->ziov[i].iov_desc,
-						   false, hdr);
+		if (pe_entry->lstate.missing) {
+			ret = zhpe_mr_reg_int_iov(
+				ep_attr->domain, &pe_entry->lstate,
+				pe_entry->rem);
 			if (ret < 0)
 				goto done;
+		}
+		for (i = 0; i < pe_entry->lstate.cnt; i++) {
+			ret = zhpe_conn_key_export(conn, hdr,
+						   pe_entry->liov[i].iov_desc);
+			if (ret < 0)
+				break;
 		}
 		/* Align payload to uint64_t boundary. */
 		zpay = zhpe_pay_ptr(conn, zhdr, 0, alignof(*zpay));
 		zpay->indirect.tag = htobe64(tag);
 		zpay->indirect.cq_data = htobe64(cq_data);
-		base = (uintptr_t)pe_entry->ziov[0].iov_base;
-		if ((zmr = pe_entry->ziov[0].iov_desc) &&
+		base = (uintptr_t)pe_entry->liov[0].iov_base;
+		if ((zmr = pe_entry->liov[0].iov_desc) &&
 		    (zmr->kdata->z.access & ZHPEQ_MR_KEY_ZERO_OFF))
 			base -= zmr->kdata->z.vaddr;
 		zpay->indirect.vaddr = htobe64(base);
 		zpay->indirect.len =
-			htobe64((uintptr_t)pe_entry->ziov[0].iov_len);
-		zpay->indirect.key =
-			htobe64(pe_entry->ziov[0].iov_desc->mr_fid.key);
+			htobe64((uintptr_t)pe_entry->liov[0].iov_len);
+		zpay->indirect.key = htobe64(zmr->zkey.key);
 		cmd_len = zpay->indirect.end - (char *)zhdr;
 		pe_entry->pe_root.completions++;
 		if (flags & FI_DELIVERY_COMPLETE)
@@ -489,16 +489,13 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 			pe_entry->pe_root.completions++;
 		}
 	}
-
+	hdr.op_type = ZHPE_OP_SEND;
 	*zhdr = hdr;
 	pe_entry->flags = flags;
 	ret = zhpe_pe_tx_ring(pe_entry, zhdr, lzaddr, cmd_len);
  done:
-	if (ret < 0 && tindex != -1) {
-		zhpe_mr_close_oneshot(pe_entry->ziov, pe_entry->zstate.cnt,
-				      true);
+	if (ret < 0 && tindex != -1)
 		zhpe_tx_release(conn->ztx, tindex, false);
-	}
 
 	return ret;
 }

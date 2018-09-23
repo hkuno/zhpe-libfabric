@@ -235,7 +235,6 @@ void zhpe_pe_rx_complete(struct zhpe_rx_ctx *rx_ctx,
 	struct dlist_entry	*dnext;
 	struct dlist_entry	dcomplete;
 	struct dlist_entry	ddrop;
-	size_t			i;
 	ZHPEQ_TIMING_CODE(struct zhpe_timing_stamp sent_stamp);
 
 	/* Assumed:rx_entry on work list and we are only user. */
@@ -288,14 +287,6 @@ void zhpe_pe_rx_complete(struct zhpe_rx_ctx *rx_ctx,
 					 rx_cur->zhdr,status, rx_cur->rem);
 	}
 	/* Free resources after completion to reduce latency (I hope). */
-	dlist_foreach_safe(&dcomplete, dentry, dnext) {
-		rx_cur = container_of(dentry, struct zhpe_rx_entry, lentry);
-		if (rx_cur->flags & FI_INJECT)
-			zhpe_mr_close_oneshot(rx_cur->lstate.viov,
-					      rx_cur->lstate.cnt, false);
-		for (i = 0; i < rx_cur->rstate.cnt; i++)
-			zhpe_rkey_put(rx_cur->rkeys[i]);
-	}
 	fastlock_acquire(&rx_ctx->lock);
 	dlist_foreach_safe(&dcomplete, dentry, dnext) {
 		rx_cur = container_of(dentry, struct zhpe_rx_entry, lentry);
@@ -406,6 +397,7 @@ static inline void rx_user_claim(struct zhpe_rx_entry *rx_buffered,
 	if (msg_len > avail)
 		msg_len = avail;
 	if (rx_user->flags & FI_MULTI_RECV) {
+		rx_buffered->ustate.missing = 0;
 		zhpe_ziov_state_adv(&rx_user->lstate, msg_len);
 		if (avail - msg_len < rx_ctx->min_multi_recv) {
 			rx_buffered->flags |= FI_MULTI_RECV;
@@ -418,6 +410,7 @@ static inline void rx_user_claim(struct zhpe_rx_entry *rx_buffered,
 			dlist_insert_tail(&rx_user->lentry,
 					  &rx_ctx->rx_posted_list);
 	} else {
+		rx_user->lstate.missing = 0;
 		if (user_linked)
 			dlist_remove(&rx_user->lentry);
 		dlist_insert_tail(&rx_user->lentry, &rx_ctx->rx_work_list);
@@ -428,11 +421,12 @@ static inline void rx_user_claim(struct zhpe_rx_entry *rx_buffered,
 	switch (state) {
 
 	case ZHPE_RX_STATE_RND:
-		rx_buffered->riov[0].iov_len = msg_len;
+		rx_buffered->riov[0].iov_len =
+			(rx_buffered->riov[0].iov_len & ZHPE_ZIOV_LEN_KEY_INT) |
+			msg_len;
 #if 1
 		set_rx_state(rx_buffered, ZHPE_RX_STATE_RND_DIRECT);
 		rx_buffered->lstate = rx_buffered->ustate;
-		rx_buffered->flags |= (rx_user->flags & FI_INJECT);
 #else
 		if (!(rx_user->flags & FI_INJECT)) {
 			set_rx_state(rx_buffered, ZHPE_RX_STATE_RND_DIRECT);
@@ -543,10 +537,6 @@ int zhpe_pe_tx_handle_entry(struct zhpe_pe_root *pe_root,
 			zhpe_pe_tx_report_complete(pe_entry,
 						   FI_TRANSMIT_COMPLETE |
 						   FI_DELIVERY_COMPLETE);
-			if (!(pe_root->flags & FI_INJECT))
-				zhpe_mr_close_oneshot(pe_entry->ziov,
-						      pe_entry->zstate.cnt,
-						      false);
 		} else if ((pe_entry = pe_root->context)) {
 			zhpe_pe_tx_report_complete(pe_entry,
 						   FI_TRANSMIT_COMPLETE |
@@ -648,6 +638,7 @@ static int zhpe_pe_rx_handle_atomic(struct zhpe_conn *conn,
 	void			*dst;
 	struct zhpe_mr		*zmr;
 	uint64_t		dontcare;
+	struct zhpe_key		zkey;
 
 	zpay = zhpe_pay_ptr(conn, zhdr, 0, alignof(*zpay));
 
@@ -655,12 +646,14 @@ static int zhpe_pe_rx_handle_atomic(struct zhpe_conn *conn,
 	c64 = be64toh(zpay->atomic_req.compare);
 	dst = (void *)(uintptr_t)be64toh(zpay->atomic_req.vaddr);
 
-	zmr = zhpe_mr_get(conn->ep_attr->domain,
-			  be64toh(zpay->atomic_req.key));
+	zkey.key = be64toh(zpay->atomic_req.zkey.key);
+	zkey.internal = !!zpay->atomic_req.zkey.internal;
+	zmr = zhpe_mr_find(conn->ep_attr->domain, &zkey);
 	if (zmr) {
 		status = zhpeq_lcl_key_access(
 			zmr->kdata, dst, zpay->atomic_req.datasize,
 			ZHPEQ_MR_GET | ZHPEQ_MR_PUT, &dontcare);
+		zhpe_mr_put(zmr);
 		if (status < 0)
 			goto done;
 	}
@@ -692,8 +685,18 @@ static int zhpe_pe_rx_handle_atomic(struct zhpe_conn *conn,
 	return 0;
 }
 
+void zhpe_pe_complete_key_response(struct zhpe_conn *conn,
+				   struct zhpe_msg_hdr ohdr, int rc)
+{
+	struct zhpe_pe_entry	*pe_entry;
 
-static int zhpe_pe_rx_handle_key_export(struct zhpe_conn *conn,
+	pe_entry = &conn->ztx->pentries[ntohs(ohdr.pe_entry_id)];
+	zhpe_pe_root_update_status(&pe_entry->pe_root, rc);
+
+	pe_entry->pe_root.handler(&pe_entry->pe_root, NULL);
+}
+
+static int zhpe_pe_rx_handle_key_import(struct zhpe_conn *conn,
 					struct zhpe_msg_hdr *zhdr)
 {
 	union zhpe_msg_payload	*zpay;
@@ -701,26 +704,8 @@ static int zhpe_pe_rx_handle_key_export(struct zhpe_conn *conn,
 
 	zpay = zhpe_pay_ptr(conn, zhdr, 0, alignof(*zpay));
 	blob_len = zhdr->inline_len - (zpay->key_data.blob - (char *)zhdr);
-	return zhpe_conn_rkey_import(conn, be64toh(zpay->key_data.key),
+	return zhpe_conn_rkey_import(conn, *zhdr, be64toh(zpay->key_data.key),
 				     zpay->key_data.blob, blob_len, NULL);
-}
-
-static int zhpe_pe_rx_handle_key_response(struct zhpe_conn *conn,
-					  struct zhpe_msg_hdr *zhdr)
-{
-	int			rc;
-	union zhpe_msg_payload	*zpay;
-	size_t			blob_len;
-	struct zhpe_pe_entry	*pe_entry;
-
-	zpay = zhpe_pay_ptr(conn, zhdr, 0, alignof(*zpay));
-	blob_len = zhdr->inline_len - (zpay->key_data.blob - (char *)zhdr);
-	rc = zhpe_conn_rkey_import(conn, be64toh(zpay->key_data.key),
-				   zpay->key_data.blob, blob_len, NULL);
-	pe_entry = &conn->ztx->pentries[ntohs(zhdr->pe_entry_id)];
-	zhpe_pe_root_update_status(&pe_entry->pe_root, rc);
-
-	return pe_entry->pe_root.handler(&pe_entry->pe_root, NULL);
 }
 
 static int zhpe_pe_rx_handle_key_request(struct zhpe_conn *conn,
@@ -732,20 +717,23 @@ static int zhpe_pe_rx_handle_key_request(struct zhpe_conn *conn,
 	size_t			i;
 	size_t			keys;
 	struct zhpe_mr		*zmr;
+	struct zhpe_key		zkey;
 
 	zpay = zhpe_pay_ptr(conn, zhdr, 0, alignof(*zpay));
 	keys = ((zhdr->inline_len - ((char *)zpay - (char *)zhdr)) /
-		sizeof(zpay->key_req.keys[0]));
+		sizeof(zpay->key_req.zkeys[0]));
 	domain = conn->ep_attr->domain;
 	for (i = 0; i < keys; i++) {
 		if (ret >= 0) {
-			ret = -FI_ENOKEY;
-			zmr = zhpe_mr_get(domain,
-					  be64toh(zpay->key_req.keys[i]));
-			if (!zmr)
-				break;
-			ret = zhpe_conn_key_export(conn, zmr, true, *zhdr);
-			zhpe_mr_put(zmr);
+			memcpy(&zkey, &zpay->key_req.zkeys[i], sizeof(zkey));
+			zkey.key = be64toh(zkey.key);
+			zkey.internal = !!zkey.internal;
+			zmr = zhpe_mr_find(domain, &zkey);
+			if (zmr) {
+				ret = zhpe_conn_key_export(conn, *zhdr, zmr);
+				zhpe_mr_put(zmr);
+			} else
+				ret = -FI_ENOKEY;
 		}
 		if (ret < 0)
 			zhpe_send_status(conn, *zhdr, ret, 0);
@@ -760,12 +748,17 @@ static int zhpe_pe_rx_handle_key_revoke(struct zhpe_conn *conn,
 	union zhpe_msg_payload	*zpay;
 	size_t			i;
 	size_t			keys;
+	struct zhpe_key		zkey;
 
 	zpay = zhpe_pay_ptr(conn, zhdr, 0, alignof(*zpay));
 	keys = ((zhdr->inline_len - ((char *)zpay - (char *)zhdr)) /
-		sizeof(zpay->key_req.keys[0]));
-	for (i = 0; i < keys; i++)
-		zhpe_conn_rkey_revoke(conn, be64toh(zpay->key_req.keys[i]));
+		sizeof(zpay->key_req.zkeys[0]));
+	for (i = 0; i < keys; i++) {
+		memcpy(&zkey, &zpay->key_req.zkeys[i], sizeof(zkey));
+		zkey.key = be64toh(zkey.key);
+		zkey.internal = !!zkey.internal;
+		zhpe_conn_rkey_revoke(conn, *zhdr, &zkey);
+	}
 
 	return 0;
 }
@@ -844,35 +837,38 @@ static void zhpe_pe_retry_rx_get(struct zhpe_pe_retry *pe_retry)
 
 static inline int zhpe_pe_rem_setup(struct zhpe_conn *conn,
 				    struct zhpe_iov_state *rstate,
-				    struct zhpe_rkey_data *rkeys[],
 				    bool get)
 {
 	int			ret = 0;
-	uint32_t		i;
-	uint64_t		key;
-	struct zhpe_iov		*riov;
+	struct zhpe_iov		*riov = rstate->viov;
+	int			i;
+	struct zhpe_key		zkey;
+	struct zhpe_rkey_data	*rkey;
 
-	riov = rstate->viov;
-	for (i = 0; i < rstate->cnt; i++) {
-		key = riov[i].iov_key;
-		rkeys[i] = zhpe_conn_rkey_get(conn, key);
-		if (unlikely(!rkeys[i])) {
-			ZHPE_LOG_ERROR("No rkey data for 0x%Lx\n",
-				       (ullong)key);
+	for (i = ffs(rstate->missing) - 1; i >= 0;
+	     i = ffs(rstate->missing) - 1) {
+		zhpe_ziov_to_zkey(&riov[i], &zkey);
+		rkey = zhpe_conn_rkey_get(conn, &zkey);
+		if (OFI_UNLIKELY(!rkey)) {
+			ZHPE_LOG_ERROR("No rkey data for 0x%Lx/%d\n",
+				       (ullong)zkey.key, zkey.internal);
 			ret = -FI_ENOKEY;
 			break;
 		}
-		ret = zhpeq_rem_key_access(
-			rkeys[i]->kdata, riov[i].iov_addr, riov[i].iov_len,
-			(get ? ZHPEQ_MR_GET_REMOTE : ZHPEQ_MR_PUT_REMOTE),
-			&riov[i].iov_zaddr);
+		/* rkey no longer missing. */
+		riov[i].iov_rkey = rkey;
+		rstate->missing &= ~(1U << i);
+		ret = zhpeq_rem_key_access(rkey->kdata, riov[i].iov_addr,
+					   zhpe_ziov_len(&riov[i]),
+					   (get ? ZHPEQ_MR_GET_REMOTE :
+					    ZHPEQ_MR_PUT_REMOTE),
+					   &riov[i].iov_zaddr);
 		if (ret < 0) {
 			ZHPE_LOG_ERROR("zhpeq_rem_key_access() returned %d\n",
 				       ret);
 			break;
 		}
 	}
-	rstate->cnt = i;
 
 	return ret;
 }
@@ -899,16 +895,15 @@ static void zhpe_pe_rx_get(struct zhpe_rx_entry *rx_entry)
 		if (rx_entry->total_len != rx_entry->rem)
 			break;
 		rc = 0;
-		if (rx_entry->flags & FI_INJECT) {
+		if (rx_entry->lstate.missing) {
 			rx_ctx = rx_entry->pe_root.conn->rx_ctx;
-			rc = zhpe_mr_reg_int_oneshot(
-				rx_ctx->domain, rx_entry->lstate.viov,
-				rx_entry->total_len, FI_RECV);
+			rc = zhpe_mr_reg_int_iov(
+				rx_ctx->domain, &rx_entry->lstate,
+				rx_entry->total_len);
 		}
 		if (rc >= 0)
 			rc = zhpe_pe_rem_setup(rx_entry->pe_root.conn,
-					       &rx_entry->rstate,
-					       rx_entry->rkeys, true);
+					       &rx_entry->rstate, true);
 		if (rc < 0) {
 			zhpe_pe_root_update_status(&rx_entry->pe_root, rc);
 			goto complete;
@@ -1009,7 +1004,7 @@ static void zhpe_pe_rx_get(struct zhpe_rx_entry *rx_entry)
 static inline void rx_riov_init(struct zhpe_rx_entry *rx_entry,
 				union zhpe_msg_payload *zpay)
 {
-	rx_entry->riov[0].iov_len = rx_entry->total_len;
+	rx_entry->riov[0].iov_len = be64toh(zpay->indirect.len);
 	rx_entry->riov[0].iov_base =
 		(void *)(uintptr_t)be64toh(zpay->indirect.vaddr);
 	rx_entry->riov[0].iov_key = be64toh(zpay->indirect.key);
@@ -1018,6 +1013,7 @@ static inline void rx_riov_init(struct zhpe_rx_entry *rx_entry,
 	rx_entry->rstate.off = 0;
 	rx_entry->rstate.idx = 0;
 	rx_entry->rstate.cnt = 1;
+	rx_entry->rstate.missing = 1;
 }
 
 static inline void rx_basic_init(struct zhpe_rx_entry *rx_entry,
@@ -1096,7 +1092,7 @@ static int zhpe_pe_rx_handle_send(struct zhpe_conn *conn,
 		}
 	}  else {
 		zpay = zhpe_pay_ptr(conn, zhdr, 0, alignof(*zpay));
-		msg_len = be64toh(zpay->indirect.len);
+		msg_len = be64toh(zpay->indirect.len) & ~ZHPE_ZIOV_LEN_KEY_INT;
 		if (zhdr->flags & ZHPE_MSG_TAGGED) {
 			flags |= FI_TAGGED;
 			tag = be64toh(zpay->indirect.tag);
@@ -1197,9 +1193,8 @@ int zhpe_pe_tx_handle_rma(struct zhpe_pe_root *pe_root,
 		if (!pe_root->completions &&
 		    ((pe_entry->flags & (FI_INJECT | FI_READ)) ==
 		     (FI_INJECT | FI_READ)))
-			memcpy(pe_entry->rma.liov[0].iov_base,
-			       zq_cqe->z.result.data,
-			       pe_entry->rma.liov[0].iov_len);
+			copy_mem_to_iov(&pe_entry->lstate, ZHPE_IOV_ZIOV,
+					zq_cqe->z.result.data, ZHPEQ_IMM_MAX);
 	}
 	zhpe_pe_tx_rma(pe_entry);
 
@@ -1231,7 +1226,6 @@ void zhpe_pe_tx_rma(struct zhpe_pe_entry *pe_entry)
 	int			rc;
 	size_t			max_ops;
 	size_t			max_bytes;
-	size_t			i;
 
 	if (unlikely(pe_entry->pe_root.status < 0))
 		goto complete;
@@ -1241,7 +1235,7 @@ void zhpe_pe_tx_rma(struct zhpe_pe_entry *pe_entry)
 			goto done;
 		pe_entry->pe_root.flags &= ~ZHPE_PE_KEY_WAIT;
 		rc = zhpe_pe_rem_setup(pe_entry->pe_root.conn,
-				       &pe_entry->zstate, pe_entry->rkeys,
+				       &pe_entry->rstate,
 				       !(pe_entry->flags & FI_WRITE));
 		zhpe_pe_root_update_status(&pe_entry->pe_root, rc);
 		if (rc < 0)
@@ -1254,11 +1248,11 @@ void zhpe_pe_tx_rma(struct zhpe_pe_entry *pe_entry)
 		if (pe_entry->flags & FI_READ)
 			rc = zhpe_iov_to_get_imm(
 				&pe_entry->pe_root, pe_entry->rem,
-				&pe_entry->zstate, &pe_entry->rem);
+				&pe_entry->rstate, &pe_entry->rem);
 		else
 			rc = zhpe_put_imm_to_iov(
-				&pe_entry->pe_root, pe_entry->rma.inline_data,
-				pe_entry->rem, &pe_entry->zstate,
+				&pe_entry->pe_root, pe_entry->inline_data,
+				pe_entry->rem, &pe_entry->rstate,
 				&pe_entry->rem);
 	} else {
 		max_ops = ZHPE_EP_MAX_IO_OPS - pe_entry->pe_root.completions;
@@ -1268,7 +1262,7 @@ void zhpe_pe_tx_rma(struct zhpe_pe_entry *pe_entry)
 		if (!max_bytes || !max_ops)
 			goto complete;
 		rc = zhpe_iov_op(&pe_entry->pe_root,
-				 &pe_entry->rma.lstate, &pe_entry->zstate,
+				 &pe_entry->lstate, &pe_entry->rstate,
 				 max_bytes, max_ops,
 				 ((pe_entry->flags & FI_READ) ?
 				  zhpe_iov_op_get : zhpe_iov_op_put),
@@ -1290,12 +1284,6 @@ void zhpe_pe_tx_rma(struct zhpe_pe_entry *pe_entry)
 	if (pe_entry->pe_root.completions)
 		goto done;
 
-	if (!(pe_entry->flags & FI_INJECT))
-		zhpe_mr_close_oneshot(pe_entry->rma.liov,
-				      pe_entry->rma.lstate.cnt, false);
-	for (i = 0; i < pe_entry->zstate.cnt; i++)
-		zhpe_rkey_put(pe_entry->rkeys[i]);
-
 	if (pe_entry->flags &
 	    (FI_REMOTE_READ | FI_REMOTE_WRITE | FI_REMOTE_CQ_DATA)) {
 		rc = zhpe_pe_writedata(pe_entry);
@@ -1310,23 +1298,25 @@ void zhpe_pe_tx_rma(struct zhpe_pe_entry *pe_entry)
 	return;
 }
 
-void zhpe_pe_rkey_request(struct zhpe_conn *conn,
-			  struct zhpe_msg_hdr ohdr,
-			  struct zhpe_iov_state *rstate)
+void zhpe_pe_rkey_request(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
+			  struct zhpe_iov_state *rstate, uint8_t *completions)
 {
 	struct zhpe_iov		*ziov = rstate->viov;
-	size_t			i;
-	size_t			j;
+	uint			missing = rstate->missing;
+	int			i;
+	uint			j;
 	struct zhpe_msg_key_request key_req;
+	struct zhpe_key		zkey;
 
-	for (i = 0, j = 0; i < rstate->cnt; i++) {
-		if (ziov[i].iov_zaddr)
-			continue;
-		key_req.keys[j++] = htobe64(ziov[i].iov_key);
+	for (i = ffs(missing) - 1, j = 0; i >= 0;
+	     (missing &= ~(1U << i), i = ffs(missing) - 1)) {
+		zhpe_ziov_to_zkey(&ziov[i], &zkey);
+		memcpy(&key_req.zkeys[j++], &zkey, sizeof(key_req.zkeys[0]));
+		(*completions)++;
 	}
 	ohdr.op_type = ZHPE_OP_KEY_REQUEST;
 	zhpe_prov_op(conn, ohdr, ZHPE_PE_RETRY,
-		     &key_req, sizeof(key_req.keys[0]) * j);
+		     &key_req, sizeof(key_req.zkeys[0]) * j);
 }
 
 int zhpe_pe_tx_handle_atomic(struct zhpe_pe_root *pe_root,
@@ -1493,16 +1483,12 @@ static int zhpe_pe_progress_rx_ep(struct zhpe_pe *pe,
 				break;
 
 			case ZHPE_OP_KEY_EXPORT:
-				ret = zhpe_pe_rx_handle_key_export(conn, zhdr);
+			case ZHPE_OP_KEY_RESPONSE:
+				ret = zhpe_pe_rx_handle_key_import(conn, zhdr);
 				break;
 
 			case ZHPE_OP_KEY_REQUEST:
 				ret = zhpe_pe_rx_handle_key_request(
-					conn, zhdr);
-				break;
-
-			case ZHPE_OP_KEY_RESPONSE:
-				ret = zhpe_pe_rx_handle_key_response(
 					conn, zhdr);
 				break;
 
