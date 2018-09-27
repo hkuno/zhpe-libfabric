@@ -398,6 +398,8 @@ int psmx2_cq_poll_mq(struct psmx2_fid_cq *cq,
 	int err;
 	int context_type;
 
+	PSMX2_STATUS_INIT(status);
+
 	while (read_more) {
 
 		PSMX2_POLL_COMPLETION(trx_ctxt, status, err);
@@ -430,7 +432,12 @@ int psmx2_cq_poll_mq(struct psmx2_fid_cq *cq,
 					}
 				}
 				if (ep->send_cntr)
-					psmx2_cntr_inc(ep->send_cntr);
+					psmx2_cntr_inc(ep->send_cntr, PSMX2_STATUS_ERROR(status));
+
+				/* Bi-directional send/recv performance tweak for KNL */
+				if (PSMX2_STATUS_SNDLEN(status) > 16384)
+					read_more = 0;
+
 				PSMX2_FREE_COMPLETION(trx_ctxt, status);
 				break;
 
@@ -451,7 +458,7 @@ int psmx2_cq_poll_mq(struct psmx2_fid_cq *cq,
 					}
 				}
 				if (ep->send_cntr)
-					psmx2_cntr_inc(ep->send_cntr);
+					psmx2_cntr_inc(ep->send_cntr, PSMX2_STATUS_ERROR(status));
 				PSMX2_FREE_COMPLETION(trx_ctxt, status);
 				break;
 
@@ -482,7 +489,7 @@ int psmx2_cq_poll_mq(struct psmx2_fid_cq *cq,
 					}
 				}
 				if (ep->recv_cntr)
-					psmx2_cntr_inc(ep->recv_cntr);
+					psmx2_cntr_inc(ep->recv_cntr, PSMX2_STATUS_ERROR(status));
 				PSMX2_FREE_COMPLETION(trx_ctxt, status);
 				break;
 
@@ -513,7 +520,7 @@ int psmx2_cq_poll_mq(struct psmx2_fid_cq *cq,
 					}
 				}
 				if (ep->recv_cntr)
-					psmx2_cntr_inc(ep->recv_cntr);
+					psmx2_cntr_inc(ep->recv_cntr, PSMX2_STATUS_ERROR(status));
 				PSMX2_FREE_COMPLETION(trx_ctxt, status);
 				break;
 
@@ -546,7 +553,7 @@ int psmx2_cq_poll_mq(struct psmx2_fid_cq *cq,
 					}
 				}
 				if (ep->recv_cntr)
-					psmx2_cntr_inc(ep->recv_cntr);
+					psmx2_cntr_inc(ep->recv_cntr, PSMX2_STATUS_ERROR(status));
 				PSMX2_FREE_COMPLETION(trx_ctxt, status);
 				break;
 
@@ -573,7 +580,7 @@ int psmx2_cq_poll_mq(struct psmx2_fid_cq *cq,
 					}
 				}
 				if (ep->recv_cntr)
-					psmx2_cntr_inc(ep->recv_cntr);
+					psmx2_cntr_inc(ep->recv_cntr, PSMX2_STATUS_ERROR(status));
 				PSMX2_FREE_COMPLETION(trx_ctxt, status);
 				break;
 
@@ -597,7 +604,7 @@ int psmx2_cq_poll_mq(struct psmx2_fid_cq *cq,
 					}
 				}
 				if (ep->write_cntr)
-					psmx2_cntr_inc(ep->write_cntr);
+					psmx2_cntr_inc(ep->write_cntr, PSMX2_STATUS_ERROR(status));
 				PSMX2_FREE_COMPLETION(trx_ctxt, status);
 				break;
 
@@ -621,7 +628,7 @@ int psmx2_cq_poll_mq(struct psmx2_fid_cq *cq,
 					}
 				}
 				if (ep->write_cntr)
-					psmx2_cntr_inc(ep->write_cntr);
+					psmx2_cntr_inc(ep->write_cntr, PSMX2_STATUS_ERROR(status));
 				PSMX2_FREE_COMPLETION(trx_ctxt, status);
 				break;
 
@@ -657,7 +664,7 @@ int psmx2_cq_poll_mq(struct psmx2_fid_cq *cq,
 					}
 				}
 				if (ep->read_cntr)
-					psmx2_cntr_inc(ep->read_cntr);
+					psmx2_cntr_inc(ep->read_cntr, PSMX2_STATUS_ERROR(status));
 				PSMX2_FREE_COMPLETION(trx_ctxt, status);
 				break;
 
@@ -693,7 +700,7 @@ int psmx2_cq_poll_mq(struct psmx2_fid_cq *cq,
 					}
 				}
 				if (ep->read_cntr)
-					psmx2_cntr_inc(ep->read_cntr);
+					psmx2_cntr_inc(ep->read_cntr, PSMX2_STATUS_ERROR(status));
 				PSMX2_FREE_COMPLETION(trx_ctxt, status);
 				break;
 
@@ -728,7 +735,7 @@ int psmx2_cq_poll_mq(struct psmx2_fid_cq *cq,
 					}
 				}
 				if (ep->recv_cntr)
-					psmx2_cntr_inc(ep->recv_cntr);
+					psmx2_cntr_inc(ep->recv_cntr, PSMX2_STATUS_ERROR(status));
 
 				/* repost multi-recv buffer */
 				multi_recv_req->offset += PSMX2_STATUS_RCVLEN(status);
@@ -776,12 +783,14 @@ int psmx2_cq_poll_mq(struct psmx2_fid_cq *cq,
 					}
 				}
 
-				if (am_req->ep->remote_write_cntr)
-					psmx2_cntr_inc(am_req->ep->remote_write_cntr);
+				if (am_req->ep->caps & FI_RMA_EVENT) {
+					if (am_req->ep->remote_write_cntr)
+						psmx2_cntr_inc(am_req->ep->remote_write_cntr, 0);
 
-				mr = PSMX2_CTXT_USER(fi_context);
-				if (mr->cntr && mr->cntr != am_req->ep->remote_write_cntr)
-					psmx2_cntr_inc(mr->cntr);
+					mr = PSMX2_CTXT_USER(fi_context);
+					if (mr->cntr && mr->cntr != am_req->ep->remote_write_cntr)
+						psmx2_cntr_inc(mr->cntr, 0);
+				}
 
 				/* NOTE: am_req->tmpbuf is unused here */
 				psmx2_am_request_free(trx_ctxt, am_req);
@@ -790,8 +799,10 @@ int psmx2_cq_poll_mq(struct psmx2_fid_cq *cq,
 
 			case PSMX2_REMOTE_READ_CONTEXT:
 				am_req = container_of(fi_context, struct psmx2_am_request, fi_context);
-				if (am_req->ep->remote_read_cntr)
-					psmx2_cntr_inc(am_req->ep->remote_read_cntr);
+				if (am_req->ep->caps & FI_RMA_EVENT) {
+					if (am_req->ep->remote_read_cntr)
+						psmx2_cntr_inc(am_req->ep->remote_read_cntr, 0);
+				}
 
 				/* NOTE: am_req->tmpbuf is unused here */
 				psmx2_am_request_free(trx_ctxt, am_req);
@@ -803,7 +814,7 @@ int psmx2_cq_poll_mq(struct psmx2_fid_cq *cq,
 				sendv_req->iov_done++;
 				if (sendv_req->iov_protocol == PSMX2_IOV_PROTO_MULTI &&
 				    sendv_req->iov_done < sendv_req->iov_info.count + 1) {
-					sendv_req->status = status;
+					PSMX2_STATUS_SAVE(status, sendv_req->status);
 					continue;
 				}
 				if (ep->send_cq && !sendv_req->no_completion) {
@@ -823,7 +834,7 @@ int psmx2_cq_poll_mq(struct psmx2_fid_cq *cq,
 					}
 				}
 				if (ep->send_cntr)
-					psmx2_cntr_inc(ep->send_cntr);
+					psmx2_cntr_inc(ep->send_cntr, PSMX2_STATUS_ERROR(status));
 				free(sendv_req);
 				PSMX2_FREE_COMPLETION(trx_ctxt, status);
 				break;
@@ -852,9 +863,10 @@ int psmx2_cq_poll_mq(struct psmx2_fid_cq *cq,
 					}
 				}
 				if (ep->send_cntr)
-					psmx2_cntr_inc(ep->send_cntr);
+					psmx2_cntr_inc(ep->send_cntr, PSMX2_STATUS_ERROR(status));
 				free(sendv_req);
 				PSMX2_FREE_COMPLETION(trx_ctxt, status);
+				PSMX2_STATUS_INIT(status);
 				break;
 
 			case PSMX2_IOV_RECV_CONTEXT:
@@ -891,7 +903,7 @@ int psmx2_cq_poll_mq(struct psmx2_fid_cq *cq,
 					}
 				}
 				if (ep->recv_cntr)
-					psmx2_cntr_inc(ep->recv_cntr);
+					psmx2_cntr_inc(ep->recv_cntr, PSMX2_STATUS_ERROR(status));
 
 				if (sendv_rep->multi_recv) {
 					/* repost the multi-recv buffer */
@@ -1042,6 +1054,7 @@ static ssize_t psmx2_cq_readerr(struct fid_cq *cq, struct fi_cq_err_entry *buf,
 
 	cq_priv = container_of(cq, struct psmx2_fid_cq, cq);
 
+	psmx2_lock(&cq_priv->lock, 2);
 	if (cq_priv->pending_error) {
 		api_version = cq_priv->domain->fabric->util_fabric.
 			      fabric_fid.api_version;
@@ -1051,8 +1064,10 @@ static ssize_t psmx2_cq_readerr(struct fid_cq *cq, struct fi_cq_err_entry *buf,
 		memcpy(buf, &cq_priv->pending_error->cqe, size);
 		free(cq_priv->pending_error);
 		cq_priv->pending_error = NULL;
+		psmx2_unlock(&cq_priv->lock, 2);
 		return 1;
 	}
+	psmx2_unlock(&cq_priv->lock, 2);
 
 	return -FI_EAGAIN;
 }

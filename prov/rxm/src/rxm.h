@@ -103,6 +103,11 @@ do {									\
 extern struct fi_provider rxm_prov;
 extern struct util_prov rxm_util_prov;
 extern struct fi_ops_rma rxm_ops_rma;
+extern int rxm_defer_requests;
+
+extern size_t rxm_msg_tx_size;
+extern size_t rxm_msg_rx_size;
+extern size_t rxm_def_univ_size;
 
 struct rxm_fabric {
 	struct util_fabric util_fabric;
@@ -239,6 +244,7 @@ struct rxm_rx_buf {
 	struct rxm_recv_entry *recv_entry;
 	struct rxm_unexp_msg unexp_msg;
 	uint64_t comp_flags;
+	uint8_t repost;
 
 	/* Used for large messages */
 	struct rxm_iov match_iov[RXM_IOV_LIMIT];
@@ -322,6 +328,7 @@ enum rxm_recv_queue_type {
 };
 
 struct rxm_recv_queue {
+	struct rxm_ep *rxm_ep;
 	enum rxm_recv_queue_type type;
 	struct rxm_recv_fs *fs;
 	struct dlist_entry recv_list;
@@ -376,10 +383,9 @@ extern struct fi_tx_attr rxm_tx_attr;
 extern struct fi_rx_attr rxm_rx_attr;
 
 // TODO move to common code?
-static inline int rxm_match_addr(fi_addr_t addr, fi_addr_t match_addr)
+static inline int rxm_match_addr(fi_addr_t recv_addr, fi_addr_t rx_addr)
 {
-	return (addr == FI_ADDR_UNSPEC) || (match_addr == FI_ADDR_UNSPEC) ||
-		(addr == match_addr);
+	return (recv_addr == FI_ADDR_UNSPEC) || (recv_addr == rx_addr);
 }
 
 static inline int rxm_match_tag(uint64_t tag, uint64_t ignore, uint64_t match_tag)

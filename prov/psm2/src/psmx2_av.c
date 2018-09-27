@@ -32,40 +32,6 @@
 
 #include "psmx2.h"
 
-static void psmx2_set_epaddr_context(struct psmx2_trx_ctxt *trx_ctxt,
-				     psm2_epid_t epid, psm2_epaddr_t epaddr)
-{
-	struct psmx2_epaddr_context *context;
-
-	context = (void *)psm2_epaddr_getctxt(epaddr);
-	if (context) {
-		if (context->trx_ctxt != trx_ctxt || context->epid != epid) {
-			FI_WARN(&psmx2_prov, FI_LOG_AV,
-				"trx_ctxt or epid doesn't match\n");
-			context = NULL;
-		}
-	}
-
-	if (context)
-		return;
-
-	context = malloc(sizeof *context);
-	if (!context) {
-		FI_WARN(&psmx2_prov, FI_LOG_AV,
-			"cannot allocate context\n");
-		return;
-	}
-
-	context->trx_ctxt = trx_ctxt;
-	context->epid = epid;
-	context->epaddr = epaddr;
-	psm2_epaddr_setctxt(epaddr, context);
-
-	psmx2_lock(&trx_ctxt->peer_lock, 2);
-	dlist_insert_before(&context->entry, &trx_ctxt->peer_list);
-	psmx2_unlock(&trx_ctxt->peer_lock, 2);
-}
-
 /*
  * SEP address query protocol:
  *
@@ -118,8 +84,6 @@ int psmx2_am_sep_handler(psm2_am_token_t token, psm2_amarg_t *args,
 	struct psmx2_fid_sep *sep;
 	struct psmx2_sep_query *req;
 	struct psmx2_fid_av *av;
-	psm2_epaddr_t src_epaddr;
-	psm2_epid_t src_epid;
 	psm2_epid_t *epids;
 	psm2_epid_t *buf = NULL;
 	int buflen;
@@ -128,15 +92,6 @@ int psmx2_am_sep_handler(psm2_am_token_t token, psm2_amarg_t *args,
 
 	cmd = PSMX2_AM_GET_OP(args[0].u32w0);
 	domain = trx_ctxt->domain;
-
-	/*
-	 * the implicit connection to the AM source needs also to be disconnected
-	 * to avoid long delay inside psm2_ep_close. make sure the source is added
-	 * to the peer list.
-	 */
-	psm2_am_get_source(token, &src_epaddr);
-	psm2_epaddr_to_epid(src_epaddr, &src_epid);
-	psmx2_set_epaddr_context(trx_ctxt, src_epid, src_epaddr);
 
 	switch (cmd) {
 	case PSMX2_AM_REQ_SEP_QUERY:
@@ -224,6 +179,40 @@ static inline double psmx2_conn_timeout(int sec)
 		return PSMX2_MAX_CONN_TIMEOUT * 1e9;
 
 	return sec * 1e9;
+}
+
+static void psmx2_set_epaddr_context(struct psmx2_trx_ctxt *trx_ctxt,
+				     psm2_epid_t epid, psm2_epaddr_t epaddr)
+{
+	struct psmx2_epaddr_context *context;
+
+	context = (void *)psm2_epaddr_getctxt(epaddr);
+	if (context) {
+		if (context->trx_ctxt != trx_ctxt || context->epid != epid) {
+			FI_WARN(&psmx2_prov, FI_LOG_AV,
+				"trx_ctxt or epid doesn't match\n");
+			context = NULL;
+		}
+	}
+
+	if (context)
+		return;
+
+	context = malloc(sizeof *context);
+	if (!context) {
+		FI_WARN(&psmx2_prov, FI_LOG_AV,
+			"cannot allocate context\n");
+		return;
+	}
+
+	context->trx_ctxt = trx_ctxt;
+	context->epid = epid;
+	context->epaddr = epaddr;
+	psm2_epaddr_setctxt(epaddr, context);
+
+	psmx2_lock(&trx_ctxt->peer_lock, 2);
+	dlist_insert_before(&context->entry, &trx_ctxt->peer_list);
+	psmx2_unlock(&trx_ctxt->peer_lock, 2);
 }
 
 int psmx2_epid_to_epaddr(struct psmx2_trx_ctxt *trx_ctxt,
@@ -830,6 +819,35 @@ fi_addr_t psmx2_av_translate_source(struct psmx2_fid_av *av, fi_addr_t source)
 
 	psmx2_unlock(&av->lock, 1);
 	return ret;
+}
+
+void psmx2_av_remove_conn(struct psmx2_fid_av *av,
+			  struct psmx2_trx_ctxt *trx_ctxt,
+			  psm2_epaddr_t epaddr)
+{
+	psm2_epid_t epid;
+	int i, j;
+
+	psm2_epaddr_to_epid(epaddr, &epid);
+
+	psmx2_lock(&av->lock, 1);
+
+	for (i = 0; i < av->last; i++) {
+		if (av->peers[i].type == PSMX2_EP_REGULAR) {
+			if (av->epids[i] == epid &&
+			    av->tables[trx_ctxt->id].epaddrs[i] == epaddr)
+				av->tables[trx_ctxt->id].epaddrs[i] = NULL;
+		} else {
+			for (j=0; j<av->peers[i].sep_ctxt_cnt; j++) {
+				if (av->peers[i].sep_ctxt_epids[j] == epid &&
+				    av->tables[trx_ctxt->id].sepaddrs[i] &&
+				    av->tables[trx_ctxt->id].sepaddrs[i][j] == epaddr)
+					    av->tables[trx_ctxt->id].sepaddrs[i][j] = NULL;
+			}
+		}
+	}
+
+	psmx2_unlock(&av->lock, 1);
 }
 
 static const char *psmx2_av_straddr(struct fid_av *av, const void *addr,
