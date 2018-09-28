@@ -100,7 +100,7 @@
 #endif
 #define container_of(ptr, type, member)				\
 ({								\
-	const typeof( ((type *)0)->member ) *_ptr = (ptr);	\
+	typeof( ((type *)0)->member ) *_ptr = (ptr);		\
 	(type *)((char *)_ptr - offsetof(type,member));		\
 })
 
@@ -602,7 +602,6 @@ struct zhpe_kexp_data {
 	struct zhpe_conn	*conn;
 	struct dlist_entry	lentry;
 	struct zhpe_key		zkey;
-	int32_t			use_count;
 };
 
 struct zhpe_tx {
@@ -829,6 +828,7 @@ struct zhpe_cntr {
 
 struct zhpe_mr {
 	struct fid_mr		mr_fid;
+	int			(*put)(struct zhpe_mr *zmr);
 	struct zhpe_domain	*domain;
 	uint64_t		flags;
 	struct zhpeq_key_data	*kdata;
@@ -1667,8 +1667,12 @@ int zhpe_iov_to_get_imm(struct zhpe_pe_root *pe_root,
 			size_t llen, struct zhpe_iov_state *rstate,
 			size_t *rem);
 
-#define ZHPE_MR_FLAGS_FREEING	(1ULL << 63)
 #define ZHPE_MR_KEY_INT		(ZHPEQ_MR_FLAG1)
+
+int zhpe_zmr_reg(struct zhpe_domain *domain, const void *buf,
+		 size_t len, uint32_t qaccess, uint64_t key,
+		 struct zhpe_mr *zmr);
+int zhpe_zmr_put_and_free(struct zhpe_mr *zmr, bool free_zmr);
 
 int zhpe_mr_reg_int_uncached(struct zhpe_domain *domain, const void *buf,
 			     size_t len, uint64_t access, uint32_t qaccess,
@@ -1749,17 +1753,10 @@ static inline int64_t zhpe_tx_reserve(struct zhpe_tx *ztx, uint8_t pe_flags)
 
 static inline int zhpe_mr_put(struct zhpe_mr *zmr)
 {
-	int32_t			old;
-	extern int zhpe_mr_close(struct zhpe_mr *zmr);
-
 	if (!zmr)
 		return 0;
-	old = __sync_fetch_and_sub(&zmr->use_count, 1);
-	assert(old > 0);
-	if (old > 1)
-		return 0;
 
-	return zhpe_mr_close(zmr);
+	return zmr->put(zmr);
 }
 
 static inline void zhpe_tx_put(struct zhpe_tx *ztx)
@@ -2478,27 +2475,6 @@ struct zhpe_rkey_data *zhpe_conn_rkey_get(struct zhpe_conn *conn,
 
 int zhpe_conn_rkey_revoke(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
 			  const struct zhpe_key *zkey);
-
-static inline void zhpe_kexp_put(struct zhpe_kexp_data *kexp)
-{
-	int32_t			old;
-	struct zhpe_domain	*domain;
-
-	if (!kexp)
-		return;
-	old = __sync_fetch_and_sub(&kexp->use_count, 1);
-	assert(old > 0);
-	if (old > 1)
-		return;
-
-	if (!dlist_empty(&kexp->lentry)) {
-		domain = kexp->conn->ep_attr->domain;
-		fastlock_acquire(&domain->lock);
-		dlist_remove(&kexp->lentry);
-		fastlock_release(&domain->lock);
-	}
-	free(kexp);
-}
 
 struct zhpe_mr *zhpe_mr_find(struct zhpe_domain *domain,
 			     const struct zhpe_key *zkey);

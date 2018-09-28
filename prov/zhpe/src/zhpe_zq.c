@@ -377,7 +377,17 @@ void zhpe_conn_z_free(struct zhpe_conn *conn)
 	if (conn->rkey_tree) {
 		/* Is lock initialized? */
 		if (conn->kexp_tree) {
+			fastlock_acquire(&conn->ep_attr->domain->lock);
 			fastlock_acquire(&conn->mr_lock);
+			while ((rbt = rbtBegin(conn->kexp_tree)))  {
+				rbtKeyValue(conn->kexp_tree, rbt, &keyp,
+					    (void **)&kexp);
+				rbtErase(conn->kexp_tree, rbt);
+				/* FIXME: Think about driver disconnect. */
+				dlist_remove(&kexp->lentry);
+				free(kexp);
+			}
+			fastlock_release(&conn->ep_attr->domain->lock);
 			while (!dlist_empty(&conn->rkey_deferred_list)) {
 				dlist_pop_front(&conn->rkey_deferred_list,
 						struct zhpe_rkey_data, rkey,
@@ -390,14 +400,7 @@ void zhpe_conn_z_free(struct zhpe_conn *conn)
 				rbtErase(conn->rkey_tree, rbt);
 				fastlock_release(&conn->mr_lock);
 				zhpe_rkey_put(rkey);
-			}
-			while ((rbt = rbtBegin(conn->kexp_tree)))  {
-				rbtKeyValue(conn->kexp_tree, rbt, &keyp,
-					    (void **)&kexp);
-				rbtErase(conn->kexp_tree, rbt);
-				fastlock_release(&conn->mr_lock);
-				/* FIXME: Think about driver disconnect. */
-				zhpe_kexp_put(kexp);
+				fastlock_acquire(&conn->mr_lock);
 			}
 			fastlock_release(&conn->mr_lock);
 			fastlock_destroy(&conn->mr_lock);
@@ -999,22 +1002,6 @@ void zhpe_send_key_revoke(struct zhpe_conn *conn,
 		     &key_req, sizeof(key_req.zkeys[0]));
 }
 
-static inline struct zhpe_kexp_data *conn_kexp_get(struct zhpe_conn *conn,
-						   const struct zhpe_key *zkey)
-{
-	struct zhpe_kexp_data	*ret;
-	RbtIterator		*rbt;
-	void			*keyp;
-
-	rbt = rbtFind(conn->kexp_tree, (void *)zkey);
-	if (!rbt)
-		return NULL;
-	rbtKeyValue(conn->kexp_tree, rbt, &keyp, (void **)&ret);
-	__sync_fetch_and_add(&ret->use_count, 1);
-
-	return ret;
-}
-
 static inline struct zhpe_rkey_data *conn_rkey_get(struct zhpe_conn *conn,
 						   const struct zhpe_key *zkey)
 {
@@ -1046,18 +1033,22 @@ struct zhpe_rkey_data *zhpe_conn_rkey_get(struct zhpe_conn *conn,
 int zhpe_conn_key_export(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
 			 struct zhpe_mr *zmr)
 {
-	int			ret;
-	size_t			blob_len;
-	struct zhpe_kexp_data	*new = NULL;
-	uint8_t			pe_flags = 0;
+	int			ret = 0;
 	struct zhpe_domain	*domain = conn->ep_attr->domain;
+	struct zhpe_kexp_data	*new = NULL;
+	struct zhpe_msg_key_data msg_data = { .key = htobe64(zmr->mr_fid.key) };
+	uint8_t			pe_flags = 0;
+	size_t			blob_len;
+	RbtIterator		*rbt;
+	void			*keyp;
 	struct zhpe_kexp_data	*kexp;
-	struct zhpe_msg_key_data msg_data;
 
 	fastlock_acquire(&conn->mr_lock);
 	for (;;) {
-		kexp = conn_kexp_get(conn, &zmr->zkey);
-		if (kexp) {
+		rbt = rbtFind(conn->kexp_tree, &zmr->zkey);
+		if (rbt) {
+			rbtKeyValue(conn->kexp_tree, rbt, &keyp,
+				    (void **)&kexp);
 			if (new) {
 				fastlock_release(&domain->lock);
 				free(new);
@@ -1074,14 +1065,7 @@ int zhpe_conn_key_export(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
 			dlist_init(&new->lentry);
 			new->conn = conn;
 			new->zkey = zmr->zkey;
-			new->use_count = 3;
 			fastlock_acquire(&domain->lock);
-			if (zmr->flags & ZHPE_MR_FLAGS_FREEING) {
-				fastlock_release(&domain->lock);
-				free(new);
-				ret = -FI_ENOKEY;
-				goto done;
-			}
 			fastlock_acquire(&conn->mr_lock);
 			continue;
 		}
@@ -1093,24 +1077,26 @@ int zhpe_conn_key_export(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
 	}
 	fastlock_release(&conn->mr_lock);
 
-	msg_data.key = htobe64(zmr->mr_fid.key);
+	if (ohdr.op_type == ZHPE_OP_KEY_REQUEST) {
+		/* A response is always expected. */
+		ohdr.op_type = ZHPE_OP_KEY_RESPONSE;
+		pe_flags |= ZHPE_PE_RETRY;
+	} else if (kexp == new)
+		/* If the kexp is new, we do the export. */
+		ohdr.op_type = ZHPE_OP_KEY_EXPORT;
+	else
+		goto done;
+
 	blob_len = sizeof(msg_data.blob);
 	ret = zhpeq_zmmu_export(zhpeq_dom(conn->ztx->zq),
 				zmr->kdata, msg_data.blob, &blob_len);
 	if (ret < 0)
 		goto done;
 
-	if (ohdr.op_type == ZHPE_OP_KEY_REQUEST) {
-		ohdr.op_type = ZHPE_OP_KEY_RESPONSE;
-		pe_flags |= ZHPE_PE_RETRY;
-	} else
-		ohdr.op_type = ZHPE_OP_KEY_EXPORT;
 	ohdr.seq = htons(__sync_fetch_and_add(&conn->kexp_seq, 1));
 	ret = zhpe_prov_op(conn, ohdr, pe_flags, &msg_data,
 			   offsetof(struct zhpe_msg_key_data, blob) + blob_len);
  done:
-	zhpe_kexp_put(kexp);
-
 	return ret;
 }
 
@@ -1435,9 +1421,8 @@ static int kexp_print(void *keyp, void *datap)
 {
 	struct zhpe_kexp_data	*kexp = datap;
 
-	printf("kexp %p key 0x%Lx/%d use_count %d\n",
-	       kexp, (ullong)kexp->zkey.key, kexp->zkey.internal,
-	       kexp->use_count);
+	printf("kexp %p key 0x%Lx/%d conn %p\n",
+	       kexp, (ullong)kexp->zkey.key, kexp->zkey.internal, kexp->conn);
 
 	return 0;
 }

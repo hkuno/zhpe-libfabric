@@ -44,6 +44,25 @@
 #define ZHPE_LOG_DBG(...) _ZHPE_LOG_DBG(FI_LOG_DOMAIN, __VA_ARGS__)
 #define ZHPE_LOG_ERROR(...) _ZHPE_LOG_ERROR(FI_LOG_DOMAIN, __VA_ARGS__)
 
+static int zhpe_zmr_put_cached(struct zhpe_mr *zmr)
+{
+	struct zhpe_domain	*domain = zmr->domain;
+	typeof(((struct ofi_mr_entry *)0)->data) *data = (void *)zmr;
+	int32_t			old;
+
+	old = __sync_fetch_and_sub(&zmr->use_count, 1);
+	assert(old > 1);
+	if (old > 2)
+		return 0;
+
+	fastlock_acquire(&domain->cache_lock);
+	ofi_mr_cache_delete(&zmr->domain->cache,
+			    container_of(data, struct ofi_mr_entry, data));
+	fastlock_release(&domain->cache_lock);
+
+	return 0;
+}
+
 static int zhpe_mr_reg_int_cached(struct zhpe_domain *domain, const void *buf,
 				  size_t len, uint64_t access, uint32_t qaccess,
 				  struct fid_mr **mr)
@@ -64,13 +83,15 @@ static int zhpe_mr_reg_int_cached(struct zhpe_domain *domain, const void *buf,
 	assert(!qaccess);
 	fastlock_acquire(&domain->cache_lock);
 	ret = ofi_mr_cache_search(&domain->cache, &attr, &entry);
-	fastlock_release(&domain->cache_lock);
 	if (OFI_LIKELY(ret >= 0)) {
-		*mr = *(struct fid_mr **)entry->data;
-		zmr = container_of(*mr, struct zhpe_mr, mr_fid);
-		zhpe_mr_get(zmr);
+		zmr = (void *)entry->data;
+		/* We'll do use counting in the zmr. */
+		entry->use_cnt = 1;
+		(void)__sync_fetch_and_add(&zmr->use_count, 1);
+		*mr = &zmr->mr_fid;
 	} else
 		*mr = NULL;
+	fastlock_release(&domain->cache_lock);
 
 	return ret;
 }
@@ -87,20 +108,22 @@ static int zhpe_mr_cache_add_region(struct ofi_mr_cache *cache,
 	int			ret;
 	struct zhpe_domain	*domain =
 		container_of(cache->domain, struct zhpe_domain, util_domain);
-	uint64_t		access =
-		(FI_READ | FI_WRITE | FI_REMOTE_READ | FI_REMOTE_WRITE |
-		 FI_SEND | FI_RECV);
-	struct fid_mr		**mr = (void *)entry->data;
+	struct zhpe_mr		*zmr = (void *)entry->data;
+	void			*buf = entry->iov.iov_base;
+	size_t			len = entry->iov.iov_len;
+	uint32_t		qaccess =
+		(ZHPEQ_MR_GET | ZHPEQ_MR_PUT | ZHPEQ_MR_GET_REMOTE |
+		 ZHPEQ_MR_PUT_REMOTE | ZHPEQ_MR_SEND | ZHPEQ_MR_RECV |
+		 ZHPEQ_MR_KEY_ZERO_OFF | ZHPE_MR_KEY_INT);
 
-	ret = zhpe_mr_reg_int_uncached(domain, entry->iov.iov_base,
-				      entry->iov.iov_len, access,
-				      ZHPEQ_MR_KEY_ZERO_OFF, mr);
-	if (ret < 0)
+	ret = zhpe_zmr_reg(domain, buf, len, qaccess,
+			   __sync_fetch_and_add(&domain->mr_zhpe_key, 1), zmr);
+	if (OFI_LIKELY(ret >= 0))
+		zmr->put = zhpe_zmr_put_cached;
+	else
 		ZHPE_LOG_ERROR("Failed to register memory 0x%lx-0x%lx,"
 			       " error %d:%s\n",
-			       (uintptr_t)entry->iov.iov_base,
-			       ((uintptr_t)entry->iov.iov_base +
-				entry->iov.iov_len - 1),
+			       (uintptr_t)buf, (uintptr_t)buf + len - 1,
 			       ret, fi_strerror(-ret));
 
 	return ret;
@@ -109,16 +132,16 @@ static int zhpe_mr_cache_add_region(struct ofi_mr_cache *cache,
 static void zhpe_mr_cache_delete_region(struct ofi_mr_cache *cache,
 					struct ofi_mr_entry *entry)
 {
-	struct fid_mr		*mr = *(struct fid_mr **)entry->data;
+	struct zhpe_mr		*zmr = (void *)entry->data;
+	void			*buf = entry->iov.iov_base;
+	size_t			len = entry->iov.iov_len;
 	int			rc;
 
-	rc = zhpe_mr_put(container_of(mr, struct zhpe_mr, mr_fid));
+	rc = zhpe_zmr_put_and_free(zmr, false);
 	if (rc < 0)
 		ZHPE_LOG_ERROR("Failed to unregister memory 0x%lx-0x%lx,"
 			       " error %d:%s\n",
-			       (uintptr_t)entry->iov.iov_base,
-			       ((uintptr_t)entry->iov.iov_base +
-				entry->iov.iov_len - 1),
+			       (uintptr_t)buf, (uintptr_t)buf + len - 1,
 			       rc, fi_strerror(-rc));
 }
 
@@ -156,7 +179,7 @@ static void zhpe_monitor_unsubscribe(struct ofi_mem_monitor *monitor,
 	uint64_t		unreg = (uintptr_t)subscription;
 	int			rc;
 
-	rc = ioctl(domain->monitor_fd, UMMUNOTIFY_UNREGISTER_REGION, unreg);
+	rc = ioctl(domain->monitor_fd, UMMUNOTIFY_UNREGISTER_REGION, &unreg);
 	if (rc == -1) {
 		rc = -errno;
 		ZHPE_LOG_ERROR("Failed to unregister region 0x%lx-0x%lx,"
@@ -251,7 +274,7 @@ int zhpe_mr_cache_init(struct zhpe_domain *domain)
 	domain->cache.max_cached_cnt = zhpe_mr_cache_max_cnt;
 	domain->cache.max_cached_size = zhpe_mr_cache_max_size;
 	domain->cache.merge_regions = zhpe_mr_cache_merge_regions;
-	domain->cache.entry_data_size = sizeof(struct fid_mr *);
+	domain->cache.entry_data_size = sizeof(struct zhpe_mr);
 	domain->cache.add_region = zhpe_mr_cache_add_region;
 	domain->cache.delete_region = zhpe_mr_cache_delete_region;
 	ret = ofi_mr_cache_init(&domain->util_domain, &domain->monitor,
