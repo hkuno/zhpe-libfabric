@@ -155,8 +155,44 @@ static int psmx2_mr_bind(struct fid *fid, struct fid *bfid, uint64_t flags)
 			return -FI_EBUSY;
 		if (mr->domain != cntr->domain)
 			return -FI_EINVAL;
-		mr->cntr = cntr;
-		cntr->poll_all = 1;
+		if (flags) {
+			if (flags != FI_REMOTE_WRITE)
+				return -FI_EINVAL;
+			mr->cntr = cntr;
+			cntr->poll_all = 1;
+		}
+		break;
+
+	default:
+		return -FI_ENOSYS;
+	}
+
+	return 0;
+}
+
+static int psmx2_mr_control(fid_t fid, int command, void *arg)
+{
+	struct psmx2_fid_mr *mr;
+	struct fi_mr_raw_attr *attr;
+
+	mr = container_of(fid, struct psmx2_fid_mr, mr.fid);
+
+	switch (command) {
+	case FI_GET_RAW_MR:
+		attr = arg;
+		if (!attr)
+			return -FI_EINVAL;
+		if (attr->base_addr)
+			*attr->base_addr = (uint64_t)(uintptr_t)mr->iov[0].iov_base;
+		if (attr->raw_key)
+			*(uint64_t *)attr->raw_key = mr->mr.key;
+		if (attr->key_size)
+			*attr->key_size = sizeof(uint64_t);
+		break;
+
+	case FI_REFRESH:
+	case FI_ENABLE:
+		/* Nothing to do here */
 		break;
 
 	default:
@@ -170,7 +206,7 @@ static struct fi_ops psmx2_fi_ops = {
 	.size = sizeof(struct fi_ops),
 	.close = psmx2_mr_close,
 	.bind = psmx2_mr_bind,
-	.control = fi_no_control,
+	.control = psmx2_mr_control,
 	.ops_open = fi_no_ops_open,
 };
 

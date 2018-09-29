@@ -154,11 +154,13 @@ int psmx2_am_rma_handler(psm2_am_token_t token, psm2_amarg_t *args,
 						err = -FI_ENOMEM;
 				}
 
-				if (rx->ep->remote_write_cntr)
-					psmx2_cntr_inc(rx->ep->remote_write_cntr);
+				if (rx->ep->caps & FI_RMA_EVENT) {
+					if (rx->ep->remote_write_cntr)
+						psmx2_cntr_inc(rx->ep->remote_write_cntr, 0);
 
-				if (mr->cntr && mr->cntr != rx->ep->remote_write_cntr)
-					psmx2_cntr_inc(mr->cntr);
+					if (mr->cntr && mr->cntr != rx->ep->remote_write_cntr)
+						psmx2_cntr_inc(mr->cntr, 0);
+				}
 			}
 		}
 		if (eom || op_error) {
@@ -238,8 +240,10 @@ int psmx2_am_rma_handler(psm2_am_token_t token, psm2_amarg_t *args,
 				NULL, NULL );
 
 		if (eom && !op_error) {
-			if (rx->ep->remote_read_cntr)
-				psmx2_cntr_inc(rx->ep->remote_read_cntr);
+			if (rx->ep->caps & FI_RMA_EVENT) {
+				if (rx->ep->remote_read_cntr)
+					psmx2_cntr_inc(rx->ep->remote_read_cntr, 0);
+			}
 		}
 		break;
 
@@ -307,7 +311,7 @@ int psmx2_am_rma_handler(psm2_am_token_t token, psm2_amarg_t *args,
 			}
 
 			if (req->ep->write_cntr)
-				psmx2_cntr_inc(req->ep->write_cntr);
+				psmx2_cntr_inc(req->ep->write_cntr, req->error);
 
 			free(req->tmpbuf);
 			psmx2_am_request_free(req->ep->tx, req);
@@ -351,7 +355,7 @@ int psmx2_am_rma_handler(psm2_am_token_t token, psm2_amarg_t *args,
 			}
 
 			if (req->ep->read_cntr)
-				psmx2_cntr_inc(req->ep->read_cntr);
+				psmx2_cntr_inc(req->ep->read_cntr, req->error);
  
 			free(req->tmpbuf);
 			psmx2_am_request_free(req->ep->tx, req);
@@ -475,11 +479,13 @@ static ssize_t psmx2_rma_self(int am_cmd,
 				err = -FI_ENOMEM;
 		}
 
-		if (cntr)
-			psmx2_cntr_inc(cntr);
+		if (ep->caps & FI_RMA_EVENT) {
+			if (cntr)
+				psmx2_cntr_inc(cntr, 0);
 
-		if (mr_cntr)
-			psmx2_cntr_inc(mr_cntr);
+			if (mr_cntr)
+				psmx2_cntr_inc(mr_cntr, 0);
+		}
 	}
 
 	no_event = (flags & PSMX2_NO_COMPLETION) ||
@@ -506,13 +512,13 @@ static ssize_t psmx2_rma_self(int am_cmd,
 	case PSMX2_AM_REQ_WRITE:
 	case PSMX2_AM_REQ_WRITEV:
 		if (ep->write_cntr)
-			psmx2_cntr_inc(ep->write_cntr);
+			psmx2_cntr_inc(ep->write_cntr, op_error);
 		break;
 
 	case PSMX2_AM_REQ_READ:
 	case PSMX2_AM_REQ_READV:
 		if (ep->read_cntr)
-			psmx2_cntr_inc(ep->read_cntr);
+			psmx2_cntr_inc(ep->read_cntr, op_error);
 		break;
 	}
 
@@ -649,7 +655,7 @@ ssize_t psmx2_read_generic(struct fid_ep *ep, void *buf, size_t len,
 		args[3].u64 = key;
 		psm2_am_request_short(psm2_epaddr, PSMX2_AM_RMA_HANDLER,
 				      args, 4, NULL, 0, 0, NULL, NULL);
-
+		psmx2_am_poll(ep_priv->tx);
 		return 0;
 	}
 
@@ -662,6 +668,7 @@ ssize_t psmx2_read_generic(struct fid_ep *ep, void *buf, size_t len,
 		args[4].u64 = offset;
 		psm2_am_request_short(psm2_epaddr, PSMX2_AM_RMA_HANDLER,
 				      args, 5, NULL, 0, 0, NULL, NULL);
+		psmx2_am_poll(ep_priv->tx);
 		addr += chunk_size;
 		len -= chunk_size;
 		offset += chunk_size;
@@ -673,7 +680,7 @@ ssize_t psmx2_read_generic(struct fid_ep *ep, void *buf, size_t len,
 	args[4].u64 = offset;
 	psm2_am_request_short(psm2_epaddr, PSMX2_AM_RMA_HANDLER,
 			      args, 5, NULL, 0, 0, NULL, NULL);
-
+	psmx2_am_poll(ep_priv->tx);
 	return 0;
 }
 
@@ -785,6 +792,7 @@ ssize_t psmx2_readv_generic(struct fid_ep *ep, const struct iovec *iov,
 		args[4].u64 = offset;
 		psm2_am_request_short(psm2_epaddr, PSMX2_AM_RMA_HANDLER,
 				      args, 5, NULL, 0, 0, NULL, NULL);
+		psmx2_am_poll(ep_priv->tx);
 		addr += chunk_size;
 		short_len -= chunk_size;
 		offset += chunk_size;
@@ -797,6 +805,7 @@ ssize_t psmx2_readv_generic(struct fid_ep *ep, const struct iovec *iov,
 	args[4].u64 = offset;
 	psm2_am_request_short(psm2_epaddr, PSMX2_AM_RMA_HANDLER,
 			      args, 5, NULL, 0, 0, NULL, NULL);
+	psmx2_am_poll(ep_priv->tx);
 
 	/* Use the long protocol for the last segment */
 	if (long_len) {
@@ -814,6 +823,7 @@ ssize_t psmx2_readv_generic(struct fid_ep *ep, const struct iovec *iov,
 		args[3].u64 = key;
 		psm2_am_request_short(psm2_epaddr, PSMX2_AM_RMA_HANDLER,
 				      args, 4, NULL, 0, 0, NULL, NULL);
+		psmx2_am_poll(ep_priv->tx);
 	}
 
 	return 0;
@@ -993,6 +1003,7 @@ ssize_t psmx2_write_generic(struct fid_ep *ep, const void *buf, size_t len,
 
 		psm2_am_request_short(psm2_epaddr, PSMX2_AM_RMA_HANDLER, args,
 				      nargs, NULL, 0, am_flags, NULL, NULL);
+		psmx2_am_poll(ep_priv->tx);
 
 		psm2_mq_isend2(ep_priv->tx->psm2_mq, psm2_epaddr, 0,
 			       &psm2_tag, buf, len, psm2_context, &psm2_req);
@@ -1010,6 +1021,7 @@ ssize_t psmx2_write_generic(struct fid_ep *ep, const void *buf, size_t len,
 		psm2_am_request_short(psm2_epaddr, PSMX2_AM_RMA_HANDLER, args,
 				      nargs, (void *)buf, chunk_size, am_flags,
 				      NULL, NULL);
+		psmx2_am_poll(ep_priv->tx);
 		buf = (const uint8_t *)buf + chunk_size;
 		addr += chunk_size;
 		len -= chunk_size;
@@ -1028,7 +1040,7 @@ ssize_t psmx2_write_generic(struct fid_ep *ep, const void *buf, size_t len,
 	}
 	psm2_am_request_short(psm2_epaddr, PSMX2_AM_RMA_HANDLER, args, nargs,
 			      (void *)buf, len, am_flags, NULL, NULL);
-
+	psmx2_am_poll(ep_priv->tx);
 	return 0;
 }
 
@@ -1142,7 +1154,7 @@ ssize_t psmx2_writev_generic(struct fid_ep *ep, const struct iovec *iov,
 		}
 		psm2_am_request_short(psm2_epaddr, PSMX2_AM_RMA_HANDLER, args, nargs,
 				      (void *)buf, len, am_flags, NULL, NULL);
-
+		psmx2_am_poll(ep_priv->tx);
 		return 0;
 	}
 
@@ -1200,6 +1212,7 @@ ssize_t psmx2_writev_generic(struct fid_ep *ep, const struct iovec *iov,
 
 			psm2_am_request_short(psm2_epaddr, PSMX2_AM_RMA_HANDLER, args,
 					      nargs, NULL, 0, am_flags, NULL, NULL);
+			psmx2_am_poll(ep_priv->tx);
 
 			psm2_mq_isend2(ep_priv->tx->psm2_mq, psm2_epaddr, 0,
 				       &psm2_tag, iov[i].iov_base, iov[i].iov_len,
@@ -1221,6 +1234,7 @@ ssize_t psmx2_writev_generic(struct fid_ep *ep, const struct iovec *iov,
 			psm2_am_request_short(psm2_epaddr, PSMX2_AM_RMA_HANDLER, args,
 					      nargs, (void *)buf, chunk_size, am_flags,
 					      NULL, NULL);
+			psmx2_am_poll(ep_priv->tx);
 			buf += chunk_size;
 			addr += chunk_size;
 			len -= chunk_size;
@@ -1242,6 +1256,7 @@ ssize_t psmx2_writev_generic(struct fid_ep *ep, const struct iovec *iov,
 		}
 		psm2_am_request_short(psm2_epaddr, PSMX2_AM_RMA_HANDLER, args, nargs,
 				      (void *)buf, len, am_flags, NULL, NULL);
+		psmx2_am_poll(ep_priv->tx);
 
 		addr += len;
 		len_sent += len;

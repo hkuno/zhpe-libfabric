@@ -38,6 +38,11 @@
 #include <ofi_prov.h>
 #include "rxm.h"
 
+int rxm_defer_requests = 0;
+size_t rxm_msg_tx_size		= 128;
+size_t rxm_msg_rx_size		= 128;
+size_t rxm_def_univ_size	= 256;
+
 char *rxm_proto_state_str[] = {
 	RXM_PROTO_STATES(OFI_STR)
 };
@@ -95,12 +100,15 @@ int rxm_info_to_core(uint32_t version, const struct fi_info *hints,
 			core_info->tx_attr->msg_order = hints->tx_attr->msg_order;
 			core_info->tx_attr->comp_order = hints->tx_attr->comp_order;
 		}
+		if (hints->rx_attr) {
+			core_info->rx_attr->msg_order = hints->rx_attr->msg_order;
+			core_info->rx_attr->comp_order = hints->rx_attr->comp_order;
+		}
 	}
-
-	/* Remove caps that RxM can handle */
-	core_info->rx_attr->msg_order &= ~FI_ORDER_SAS;
-
 	core_info->ep_attr->type = FI_EP_MSG;
+
+	core_info->tx_attr->size = rxm_msg_tx_size;
+	core_info->rx_attr->size = rxm_msg_rx_size;
 
 	return 0;
 }
@@ -111,25 +119,24 @@ int rxm_info_to_rxm(uint32_t version, const struct fi_info *core_info,
 	info->caps = rxm_info.caps;
 	info->mode = core_info->mode | rxm_info.mode;
 
-	*info->tx_attr = *rxm_info.tx_attr;
+	info->tx_attr->caps		= rxm_info.tx_attr->caps;
+	info->tx_attr->mode		= info->mode;
+	info->tx_attr->msg_order 	= core_info->tx_attr->msg_order;
+	info->tx_attr->comp_order 	= rxm_info.tx_attr->comp_order;
+	info->tx_attr->inject_size	= rxm_info.tx_attr->inject_size;
+	info->tx_attr->size 		= rxm_info.tx_attr->size;
+	info->tx_attr->iov_limit 	= MIN(rxm_info.tx_attr->iov_limit,
+					      core_info->tx_attr->iov_limit);
+	info->tx_attr->rma_iov_limit	= MIN(rxm_info.tx_attr->rma_iov_limit,
+					      core_info->tx_attr->rma_iov_limit);
 
-	info->tx_attr->msg_order = core_info->tx_attr->msg_order;
-	info->tx_attr->comp_order = core_info->tx_attr->comp_order;
-
-	/* Export TX queue size same as that of MSG provider as we post TX
-	 * operations directly */
-	info->tx_attr->size = core_info->tx_attr->size;
-
-	info->tx_attr->iov_limit = MIN(MIN(info->tx_attr->iov_limit,
-			core_info->tx_attr->iov_limit),
-			core_info->tx_attr->rma_iov_limit);
-
-	*info->rx_attr = *rxm_info.rx_attr;
-	info->rx_attr->iov_limit = MIN(info->rx_attr->iov_limit,
-			core_info->rx_attr->iov_limit);
-	/* Only SAS recv ordering can be guaranteed as RMA ops are not handled
-	 * by RxM protocol */
-	info->rx_attr->msg_order |= FI_ORDER_SAS;
+	info->rx_attr->caps		= rxm_info.rx_attr->caps;
+	info->rx_attr->mode		= info->mode;
+	info->rx_attr->msg_order 	= core_info->rx_attr->msg_order;
+	info->rx_attr->comp_order 	= rxm_info.rx_attr->comp_order;
+	info->rx_attr->size 		= rxm_info.rx_attr->size;
+	info->rx_attr->iov_limit 	= MIN(rxm_info.rx_attr->iov_limit,
+					      core_info->rx_attr->iov_limit);
 
 	*info->ep_attr = *rxm_info.ep_attr;
 	info->ep_attr->max_msg_size = core_info->ep_attr->max_msg_size;
@@ -204,7 +211,7 @@ static int rxm_getinfo(uint32_t version, const char *node, const char *service,
 	int ret;
 
 	/* Avoid getting wild card address from MSG provider */
-	if (ofi_is_only_src_port_set(node, service, flags, hints)) {
+	if (ofi_is_wildcard_listen_addr(node, service, flags, hints)) {
 		if (service) {
 			ret = getaddrinfo(NULL, service, NULL, &ai);
 			if (ret) {
@@ -227,8 +234,10 @@ static int rxm_getinfo(uint32_t version, const char *node, const char *service,
 		return ret;
 
 	if (port_save) {
-		for (cur = *info; cur; cur = cur->next)
+		for (cur = *info; cur; cur = cur->next) {
+			assert(cur->src_addr);
 			ofi_addr_set_port(cur->src_addr, port_save);
+		}
 	}
 
 	rxm_alter_info(hints, *info);
@@ -290,6 +299,34 @@ RXM_INI
 			"Defines the maximum number of MSG provider CQ entries "
 			"(default: 1) that would be read per progress "
 			"(RxM CQ read).");
+
+	fi_param_define(&rxm_prov, "defer_requests", FI_PARAM_BOOL,
+			"Defer requests when connection is not established "
+			"(default: false)\n");
+
+	fi_param_get_bool(&rxm_prov, "defer_requests", &rxm_defer_requests);
+
+	fi_param_define(&rxm_prov, "tx_size", FI_PARAM_SIZE_T,
+			"Defines default tx context size (default: 1024).");
+
+	fi_param_define(&rxm_prov, "rx_size", FI_PARAM_SIZE_T,
+			"Defines default rx context size (default: 1024).");
+
+	fi_param_define(&rxm_prov, "msg_tx_size", FI_PARAM_SIZE_T,
+			"Defines FI_EP_MSG tx size that would be requested "
+			"(default: 128). Setting this to 0 would get default "
+			"value defined by the MSG provider.");
+
+	fi_param_define(&rxm_prov, "msg_rx_size", FI_PARAM_SIZE_T,
+			"Defines FI_EP_MSG rx size that would be requested "
+			"(default: 128). Setting this to 0 would get default "
+			"value defined by the MSG provider.");
+
+	fi_param_get_size_t(&rxm_prov, "tx_size", &rxm_info.tx_attr->size);
+	fi_param_get_size_t(&rxm_prov, "rx_size", &rxm_info.rx_attr->size);
+	fi_param_get_size_t(&rxm_prov, "msg_tx_size", &rxm_msg_tx_size);
+	fi_param_get_size_t(&rxm_prov, "msg_rx_size", &rxm_msg_rx_size);
+	fi_param_get_size_t(NULL, "universe_size", &rxm_def_univ_size);
 
 	if (rxm_init_info()) {
 		FI_WARN(&rxm_prov, FI_LOG_CORE, "Unable to initialize rxm_info\n");

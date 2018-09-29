@@ -126,6 +126,7 @@ const struct fi_tx_attr verbs_tx_attr = {
 	.msg_order		= VERBS_MSG_ORDER,
 	.comp_order		= FI_ORDER_STRICT,
 	.inject_size		= 0,
+	.rma_iov_limit		= 1,
 };
 
 const struct fi_tx_attr verbs_rdm_tx_attr = {
@@ -463,7 +464,7 @@ err1:
 	return ret;
 }
 
-static size_t fi_ibv_mtu_type_to_len(enum ibv_mtu mtu_type)
+static int fi_ibv_mtu_type_to_len(enum ibv_mtu mtu_type)
 {
 	switch (mtu_type) {
 	case IBV_MTU_256:
@@ -477,8 +478,7 @@ static size_t fi_ibv_mtu_type_to_len(enum ibv_mtu mtu_type)
 	case IBV_MTU_4096:
 		return 4096;
 	default:
-		assert(0);
-		return 0;
+		return -FI_EINVAL;
 	}
 }
 
@@ -515,7 +515,6 @@ static int fi_ibv_get_device_attrs(struct ibv_context *ctx,
 
 	info->tx_attr->size 			= device_attr.max_qp_wr;
 	info->tx_attr->iov_limit 		= device_attr.max_sge;
-	info->tx_attr->rma_iov_limit		= device_attr.max_sge;
 
 	info->rx_attr->size 			= device_attr.max_srq_wr ?
 						  MIN(device_attr.max_qp_wr,
@@ -550,10 +549,19 @@ static int fi_ibv_get_device_attrs(struct ibv_context *ctx,
 			   port_num);
 	}
 
-	max_sup_size = (info->ep_attr->type == FI_EP_DGRAM) ?
-			MIN(fi_ibv_mtu_type_to_len(port_attr.active_mtu),
-			    port_attr.max_msg_sz) :
-			port_attr.max_msg_sz;
+	if (info->ep_attr->type == FI_EP_DGRAM) {
+		ret = fi_ibv_mtu_type_to_len(port_attr.active_mtu);
+		if (ret < 0) {
+			VERBS_WARN(FI_LOG_FABRIC, "Device %s (port: %d) reports"
+				   " an unrecognized MTU (%d) \n",
+				   ibv_get_device_name(ctx->device), port_num,
+				   port_attr.active_mtu);
+			return ret;
+		}
+		max_sup_size = MIN(ret, port_attr.max_msg_sz);
+	} else {
+		max_sup_size = port_attr.max_msg_sz;
+	}
 
 	info->ep_attr->max_msg_size 		= max_sup_size;
 	info->ep_attr->max_order_raw_size 	= max_sup_size;
@@ -1207,7 +1215,7 @@ static int fi_ibv_get_matching_info(uint32_t version,
 				    const struct fi_info *hints,
 				    struct fi_info **info,
 				    const struct fi_info *verbs_info,
-				    uint8_t only_srcport_set)
+				    uint8_t passive)
 {
 	const struct fi_info *check_info = verbs_info;
 	struct fi_info *fi, *tail;
@@ -1226,7 +1234,7 @@ static int fi_ibv_get_matching_info(uint32_t version,
 				continue;
 		}
 
-		if ((check_info->ep_attr->type == FI_EP_MSG) && only_srcport_set) {
+		if ((check_info->ep_attr->type == FI_EP_MSG) && passive) {
 			if (got_passive_info)
 				continue;
 
@@ -1389,6 +1397,25 @@ fn2:
 	return ret;
 }
 
+static void fi_ibv_remove_nosrc_info(struct fi_info **info)
+{
+	struct fi_info **fi = info, *next;
+	while (*fi && ((*fi)->ep_attr->type == FI_EP_MSG)) {
+		if (!(*fi)->src_addr) {
+			VERBS_INFO(FI_LOG_FABRIC, "Not reporting fi_info "
+				   "corresponding to domain: %s as it has no IP"
+				   "address configured\n",
+				   (*fi)->domain_attr->name);
+			next = (*fi)->next;
+			(*fi)->next = NULL;
+			fi_freeinfo(*fi);
+			*fi = next;
+		} else {
+			fi = &(*fi)->next;
+		}
+	}
+}
+
 static int fi_ibv_handle_sock_addr(const char *node, const char *service,
 				   uint64_t flags, const struct fi_info *hints,
 				   struct fi_info **info)
@@ -1409,6 +1436,7 @@ static int fi_ibv_handle_sock_addr(const char *node, const char *service,
 	}
 
 	ret = fi_ibv_fill_addr(rai, info, id);
+	fi_ibv_remove_nosrc_info(info);
 fn:
 	fi_ibv_destroy_ep(rai, &id);
 	return ret;
@@ -1425,8 +1453,8 @@ static int fi_ibv_get_match_infos(uint32_t version, const char *node,
 
 	// TODO check for AF_IB addr
 	ret = fi_ibv_get_matching_info(version, hints, info, *raw_info,
-				       ofi_is_only_src_port_set(node, service,
-								flags, hints));
+				       ofi_is_wildcard_listen_addr(node, service,
+								   flags, hints));
 	if (ret)
 		return ret;
 
@@ -1442,6 +1470,10 @@ static int fi_ibv_get_match_infos(uint32_t version, const char *node,
 	if (ret_sock_addr)
 		VERBS_INFO(FI_LOG_CORE, "Handling of the socket address fails - %d\n",
 			   ret_sock_addr);
+
+	if (!*info)
+		return -FI_ENODATA;
+
 	ret_ib_ud_addr = fi_ibv_handle_ib_ud_addr(node, service, flags, info);
 	if (ret_ib_ud_addr)
 		VERBS_INFO(FI_LOG_CORE, "Handling of the IB ID address fails - %d\n",

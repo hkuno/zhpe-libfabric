@@ -434,7 +434,7 @@ struct psmx2_iov_info {
 struct psmx2_sendv_request {
 	struct fi_context fi_context;
 	struct fi_context fi_context_iov;
-	PSMX2_STATUS_TYPE *status;
+	PSMX2_STATUS_DECL(status);
 	void *user_context;
 	int iov_protocol;
 	int no_completion;
@@ -498,6 +498,7 @@ struct psmx2_trx_ctxt {
 	psm2_mq_t		psm2_mq;
 	int			am_initialized;
 	int			am_progress;
+	int			am_poll_count;
 	int			id;
 	int			usage_flags;
 	struct psm2_am_parameters psm2_am_param;
@@ -632,8 +633,9 @@ struct psmx2_fid_cntr {
 	uint64_t		flags;
 	ofi_atomic64_t		counter;
 	ofi_atomic64_t		error_counter;
-	struct util_wait	*wait;
+	int			error_avail;
 	int			wait_is_local;
+	struct util_wait	*wait;
 	struct psmx2_trigger	*trigger;
 	fastlock_t		trigger_lock;
 };
@@ -928,6 +930,9 @@ int	psmx2_av_add_trx_ctxt(struct psmx2_fid_av *av, struct psmx2_trx_ctxt *trx_ct
 psm2_epaddr_t psmx2_av_translate_sep(struct psmx2_fid_av *av,
 				     struct psmx2_trx_ctxt *trx_ctxt, fi_addr_t addr);
 
+void	psmx2_av_remove_conn(struct psmx2_fid_av *av, struct psmx2_trx_ctxt *trx_ctxt,
+			     psm2_epaddr_t epaddr);
+
 static inline int psmx2_av_check_table_idx(struct psmx2_fid_av *av,
 					   struct psmx2_trx_ctxt *trx_ctxt,
 					   size_t idx)
@@ -1013,9 +1018,14 @@ void	psmx2_cntr_add_trigger(struct psmx2_fid_cntr *cntr, struct psmx2_trigger *t
 int	psmx2_handle_sendv_req(struct psmx2_fid_ep *ep, PSMX2_STATUS_TYPE *status,
 			       int multi_recv);
 
-static inline void psmx2_cntr_inc(struct psmx2_fid_cntr *cntr)
+static inline void psmx2_cntr_inc(struct psmx2_fid_cntr *cntr, int error)
 {
-	ofi_atomic_inc64(&cntr->counter);
+	if (OFI_UNLIKELY(error)) {
+		ofi_atomic_inc64(&cntr->error_counter);
+		cntr->error_avail = 1;
+	} else {
+		ofi_atomic_inc64(&cntr->counter);
+	}
 	psmx2_cntr_check_trigger(cntr);
 	if (cntr->wait)
 		cntr->wait->signal(cntr->wait);
@@ -1064,6 +1074,21 @@ static inline void psmx2_progress_all(struct psmx2_fid_domain *domain)
 		psmx2_progress(trx_ctxt);
 	}
 	psmx2_unlock(&domain->trx_ctxt_lock, 1);
+}
+
+/*
+ * There is a limitation in PSM2 AM implementation that can cause significant
+ * delay if too many AM requests are enqueued in a row without progress calls
+ * being made in between. As a workaround, call this function after each AM
+ * request is enqueued whenever possible.
+ */
+#define PSMX2_AM_POLL_INTERVAL	64
+static inline void psmx2_am_poll(struct psmx2_trx_ctxt *trx_ctxt)
+{
+	if (OFI_UNLIKELY(++trx_ctxt->am_poll_count > PSMX2_AM_POLL_INTERVAL)) {
+		trx_ctxt->am_poll_count = 0;
+		psm2_poll(trx_ctxt->psm2_ep);
+	}
 }
 
 #ifdef __cplusplus

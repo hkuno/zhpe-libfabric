@@ -245,7 +245,7 @@ ssize_t psmx2_send_generic(struct fid_ep *ep, const void *buf, size_t len,
 			return psmx2_errno(err);
 
 		if (ep_priv->send_cntr)
-			psmx2_cntr_inc(ep_priv->send_cntr);
+			psmx2_cntr_inc(ep_priv->send_cntr, 0);
 
 		if (ep_priv->send_cq && !no_completion) {
 			event = psmx2_cq_create_event(
@@ -337,6 +337,8 @@ ssize_t psmx2_sendv_generic(struct fid_ep *ep, const struct iovec *iov,
 	if (!req)
 		return -FI_ENOMEM;
 
+	PSMX2_STATUS_INIT(req->status);
+
 	if (total_len <= PSMX2_IOV_BUF_SIZE) {
 		req->iov_protocol = PSMX2_IOV_PROTO_PACK;
 		p = req->buf;
@@ -406,7 +408,7 @@ ssize_t psmx2_sendv_generic(struct fid_ep *ep, const struct iovec *iov,
 			return psmx2_errno(err);
 
 		if (ep_priv->send_cntr)
-			psmx2_cntr_inc(ep_priv->send_cntr);
+			psmx2_cntr_inc(ep_priv->send_cntr, 0);
 
 		if (ep_priv->send_cq && !no_completion) {
 			event = psmx2_cq_create_event(

@@ -170,6 +170,19 @@ static int rxm_match_rma_iov(struct rxm_recv_entry *recv_entry,
 	return FI_SUCCESS;
 }
 
+static inline void rxm_enqueue_repost_ready_list(struct rxm_rx_buf *rx_buf)
+{
+	if (!rx_buf->repost) {
+		dlist_remove(&rx_buf->entry);
+		rxm_rx_buf_release(rx_buf->ep, rx_buf);
+	} else {
+		fastlock_acquire(&rx_buf->ep->util_ep.lock);
+		dlist_insert_tail(&rx_buf->repost_entry,
+				  &rx_buf->ep->repost_ready_list);
+		fastlock_release(&rx_buf->ep->util_ep.lock);
+	}
+}
+
 static int rxm_finish_recv(struct rxm_rx_buf *rx_buf, size_t done_len)
 {
 	int ret;
@@ -213,7 +226,8 @@ static int rxm_finish_recv(struct rxm_rx_buf *rx_buf, size_t done_len)
 			rxm_cntr_inc(rx_buf->ep->util_ep.rx_cntr);
 	}
 
-	dlist_insert_tail(&rx_buf->repost_entry, &rx_buf->ep->repost_ready_list);
+	rxm_enqueue_repost_ready_list(rx_buf);
+
 	if (rx_buf->recv_entry->flags & FI_MULTI_RECV) {
 		struct rxm_iov rxm_iov;
 
@@ -241,7 +255,7 @@ static int rxm_finish_recv(struct rxm_rx_buf *rx_buf, size_t done_len)
 
 		FI_DBG(&rxm_prov, FI_LOG_CQ,
 		       "Repost Multi-Recv entry: "
-		       "consumed len = %zu, remain len = %zu\n",
+		       "consumed len = %"PRIu64", remain len = %zu\n",
 		       rx_buf->pkt.hdr.size,
 		       rx_buf->recv_entry->total_len);
 
@@ -330,8 +344,8 @@ static int rxm_lmt_tx_finish(struct rxm_tx_entry *tx_entry)
 	ret = rxm_finish_send(tx_entry);
 	if (ret)
 		return ret;
-	dlist_insert_tail(&tx_entry->rx_buf->repost_entry,
-			  &tx_entry->ep->repost_ready_list);
+
+	rxm_enqueue_repost_ready_list(tx_entry->rx_buf);
 	return ret;
 }
 
@@ -413,6 +427,8 @@ static ssize_t rxm_handle_recv_comp(struct rxm_rx_buf *rx_buf)
 	struct rxm_recv_match_attr match_attr;
 	struct dlist_entry *entry;
 	struct util_cq *util_cq;
+	struct fid_ep *msg_ep;
+	struct rxm_ep *rxm_ep;
 
 	util_cq = rx_buf->ep->util_ep.rx_cq;
 
@@ -456,9 +472,32 @@ static ssize_t rxm_handle_recv_comp(struct rxm_rx_buf *rx_buf)
 		       "queue\n");
 		rx_buf->unexp_msg.addr = match_attr.addr;
 		rx_buf->unexp_msg.tag = match_attr.tag;
+		rx_buf->repost = 0;
+
+		msg_ep = rx_buf->hdr.msg_ep;
+		rxm_ep = rx_buf->ep;
+
 		dlist_insert_tail(&rx_buf->unexp_msg.entry,
 				  &rx_buf->recv_queue->unexp_msg_list);
 		fastlock_release(&rx_buf->recv_queue->lock);
+
+		rx_buf = rxm_rx_buf_get(rxm_ep);
+		if (!rx_buf)
+			return -FI_ENOMEM;
+
+		rx_buf->hdr.state = RXM_RX;
+		rx_buf->hdr.msg_ep = msg_ep;
+		rx_buf->repost = 1;
+		if (!rxm_ep->srx_ctx)
+			rx_buf->conn = container_of(msg_ep->fid.context,
+						    struct rxm_conn,
+						    handle);
+
+		fastlock_acquire(&rx_buf->ep->util_ep.lock);
+		dlist_insert_tail(&rx_buf->entry, &rxm_ep->post_rx_list);
+		dlist_insert_tail(&rx_buf->repost_entry,
+				  &rx_buf->ep->repost_ready_list);
+		fastlock_release(&rx_buf->ep->util_ep.lock);
 		return 0;
 	}
 	fastlock_release(&rx_buf->recv_queue->lock);
@@ -552,10 +591,13 @@ static int rxm_handle_remote_write(struct rxm_ep *rxm_ep,
 		return ret;
 	}
 	rxm_cntr_inc(rxm_ep->util_ep.rem_wr_cntr);
-	if (comp->op_context)
+	if (comp->op_context) {
+		fastlock_acquire(&rxm_ep->util_ep.lock);
 		dlist_insert_tail(&((struct rxm_rx_buf *)
 					comp->op_context)->repost_entry,
 				  &rxm_ep->repost_ready_list);
+		fastlock_release(&rxm_ep->util_ep.lock);
+	}
 	return 0;
 }
 
@@ -717,6 +759,8 @@ int rxm_ep_prepost_buf(struct rxm_ep *rxm_ep, struct fid_ep *msg_ep)
 
 		rx_buf->hdr.state = RXM_RX;
 		rx_buf->hdr.msg_ep = msg_ep;
+		rx_buf->repost = 1;
+
 		ret = rxm_ep_repost_buf(rx_buf);
 		if (ret) {
 			rxm_rx_buf_release(rxm_ep, rx_buf);
@@ -730,11 +774,100 @@ int rxm_ep_prepost_buf(struct rxm_ep *rxm_ep, struct fid_ep *msg_ep)
 static inline void rxm_cq_repost_rx_buffers(struct rxm_ep *rxm_ep)
 {
 	struct rxm_rx_buf *buf;
+	fastlock_acquire(&rxm_ep->util_ep.lock);
 	while (!dlist_empty(&rxm_ep->repost_ready_list)) {
 		dlist_pop_front(&rxm_ep->repost_ready_list, struct rxm_rx_buf,
 				buf, repost_entry);
 		(void) rxm_ep_repost_buf(buf);
 	}
+	fastlock_release(&rxm_ep->util_ep.lock);
+}
+
+static int rxm_cq_reprocess_directed_recvs(struct rxm_recv_queue *recv_queue)
+{
+	struct rxm_rx_buf *rx_buf;
+	struct dlist_entry *entry, *tmp_entry;
+	struct rxm_recv_match_attr match_attr;
+	struct dlist_entry rx_buf_list;
+	struct fi_cq_err_entry err_entry = {0};
+	int ret, count = 0;
+
+	dlist_init(&rx_buf_list);
+
+	fastlock_acquire(&recv_queue->rxm_ep->util_ep.cmap->lock);
+	fastlock_acquire(&recv_queue->lock);
+
+	dlist_foreach_container_safe(&recv_queue->unexp_msg_list,
+				     struct rxm_rx_buf, rx_buf,
+				     unexp_msg.entry, tmp_entry) {
+		if (rx_buf->unexp_msg.addr == rx_buf->conn->handle.fi_addr)
+			continue;
+
+		assert(rx_buf->unexp_msg.addr == FI_ADDR_NOTAVAIL);
+
+		match_attr.addr = rx_buf->unexp_msg.addr =
+			rx_buf->conn->handle.fi_addr;
+		match_attr.tag = rx_buf->unexp_msg.tag;
+
+		entry = dlist_remove_first_match(&recv_queue->recv_list,
+						 recv_queue->match_recv,
+						 &match_attr);
+		if (!entry)
+			continue;
+
+		dlist_remove(&rx_buf->unexp_msg.entry);
+		rx_buf->recv_entry = container_of(entry, struct rxm_recv_entry,
+						  entry);
+		dlist_insert_tail(&rx_buf->unexp_msg.entry, &rx_buf_list);
+	}
+	fastlock_release(&recv_queue->lock);
+	fastlock_release(&recv_queue->rxm_ep->util_ep.cmap->lock);
+
+	while (!dlist_empty(&rx_buf_list)) {
+		dlist_pop_front(&rx_buf_list, struct rxm_rx_buf,
+				rx_buf, unexp_msg.entry);
+		ret = rxm_cq_handle_data(rx_buf);
+		if (ret) {
+			err_entry.op_context = rx_buf;
+			err_entry.flags = rx_buf->recv_entry->comp_flags;
+			err_entry.len = rx_buf->pkt.hdr.size;
+			err_entry.data = rx_buf->pkt.hdr.data;
+			err_entry.tag = rx_buf->pkt.hdr.tag;
+			err_entry.err = ret;
+			err_entry.prov_errno = ret;
+			ofi_cq_write_error(recv_queue->rxm_ep->util_ep.rx_cq,
+					   &err_entry);
+			if (rx_buf->ep->util_ep.flags & OFI_CNTR_ENABLED)
+				rxm_cntr_incerr(rx_buf->ep->util_ep.rx_cntr);
+
+			rxm_enqueue_repost_ready_list(rx_buf);
+
+			if (!(rx_buf->recv_entry->flags & FI_MULTI_RECV))
+				rxm_recv_entry_release(recv_queue,
+						       rx_buf->recv_entry);
+		}
+		count++;
+	}
+	return count;
+}
+
+static int rxm_cq_reprocess_recv_queues(struct rxm_ep *rxm_ep)
+{
+	int count = 0;
+
+	fastlock_acquire(&rxm_ep->util_ep.cmap->lock);
+
+	if (!rxm_ep->util_ep.cmap->av_updated) {
+		fastlock_release(&rxm_ep->util_ep.cmap->lock);
+		return 0;
+	}
+
+	rxm_ep->util_ep.cmap->av_updated = 0;
+	fastlock_release(&rxm_ep->util_ep.cmap->lock);
+
+	count += rxm_cq_reprocess_directed_recvs(&rxm_ep->recv_queue);
+	count += rxm_cq_reprocess_directed_recvs(&rxm_ep->trecv_queue);
+	return count;
 }
 
 void rxm_ep_progress_one(struct util_ep *util_ep)
@@ -745,6 +878,12 @@ void rxm_ep_progress_one(struct util_ep *util_ep)
 	ssize_t ret;
 
 	rxm_cq_repost_rx_buffers(rxm_ep);
+
+	if (OFI_UNLIKELY(rxm_ep->util_ep.cmap->av_updated)) {
+		ret = rxm_cq_reprocess_recv_queues(rxm_ep);
+		if (ret > 0)
+			return;
+	}
 
 	ret = fi_cq_read(rxm_ep->msg_cq, &comp, 1);
 	if (ret == -FI_EAGAIN || !ret)
@@ -771,6 +910,12 @@ void rxm_ep_progress_multi(struct util_ep *util_ep)
 	size_t comp_read = 0;
 
 	rxm_cq_repost_rx_buffers(rxm_ep);
+
+	if (OFI_UNLIKELY(rxm_ep->util_ep.cmap->av_updated)) {
+		ret = rxm_cq_reprocess_recv_queues(rxm_ep);
+		if (ret > 0)
+			return;
+	}
 
 	do {
 		ret = fi_cq_read(rxm_ep->msg_cq, &comp, 1);

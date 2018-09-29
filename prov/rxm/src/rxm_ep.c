@@ -76,7 +76,7 @@ static int rxm_match_unexp_msg(struct dlist_entry *item, const void *arg)
 	struct rxm_unexp_msg *unexp_msg;
 
 	unexp_msg = container_of(item, struct rxm_unexp_msg, entry);
-	return rxm_match_addr(unexp_msg->addr, attr->addr);
+	return rxm_match_addr(attr->addr, unexp_msg->addr);
 }
 
 static int rxm_match_unexp_msg_tagged(struct dlist_entry *item, const void *arg)
@@ -232,11 +232,12 @@ static int rxm_send_queue_init(struct rxm_ep *rxm_ep, struct rxm_send_queue *sen
 	return 0;
 }
 
-static int rxm_recv_queue_init(struct rxm_recv_queue *recv_queue, size_t size,
-			       enum rxm_recv_queue_type type)
+static int rxm_recv_queue_init(struct rxm_ep *rxm_ep,  struct rxm_recv_queue *recv_queue,
+			       size_t size, enum rxm_recv_queue_type type)
 {
 	ssize_t i;
 
+	recv_queue->rxm_ep = rxm_ep;
 	recv_queue->type = type;
 	recv_queue->fs = rxm_recv_fs_create(size);
 	if (!recv_queue->fs)
@@ -346,13 +347,13 @@ static int rxm_ep_txrx_queue_init(struct rxm_ep *rxm_ep)
 	if (ret)
 		return ret;
 
-	ret = rxm_recv_queue_init(&rxm_ep->recv_queue,
+	ret = rxm_recv_queue_init(rxm_ep, &rxm_ep->recv_queue,
 				  rxm_ep->rxm_info->rx_attr->size,
 				  RXM_RECV_QUEUE_MSG);
 	if (ret)
 		goto err_recv_msg;
 
-	ret = rxm_recv_queue_init(&rxm_ep->trecv_queue,
+	ret = rxm_recv_queue_init(rxm_ep, &rxm_ep->trecv_queue,
 				  rxm_ep->rxm_info->rx_attr->size,
 				  RXM_RECV_QUEUE_TAGGED);
 	if (ret)
@@ -520,8 +521,11 @@ static int rxm_ep_discard_recv(struct rxm_ep *rxm_ep, struct rxm_rx_buf *rx_buf,
 	RXM_DBG_ADDR_TAG(FI_LOG_EP_DATA, "Discarding message",
 			 rx_buf->unexp_msg.addr, rx_buf->unexp_msg.tag);
 
+	fastlock_acquire(&rxm_ep->util_ep.lock);
 	dlist_insert_tail(&rx_buf->repost_entry,
 			  &rx_buf->ep->repost_ready_list);
+	fastlock_release(&rxm_ep->util_ep.lock);
+
 	return ofi_cq_write(rxm_ep->util_ep.rx_cq, context, FI_TAGGED | FI_RECV,
 			    0, NULL, rx_buf->pkt.hdr.data, rx_buf->pkt.hdr.tag);
 }
@@ -922,13 +926,8 @@ rxm_ep_inject_send(struct rxm_ep *rxm_ep, struct rxm_conn *rxm_conn,
 		   struct rxm_tx_buf *tx_buf, size_t pkt_size)
 {
 	ssize_t ret = fi_inject(rxm_conn->msg_ep, &tx_buf->pkt, pkt_size, 0);
-	if (OFI_UNLIKELY(ret)) {
-		FI_DBG(&rxm_prov, FI_LOG_EP_DATA,
-		       "fi_inject for MSG provider failed\n");
-		rxm_cntr_incerr(rxm_ep->util_ep.tx_cntr);
-	} else {
+	if (OFI_LIKELY(!ret))
 		rxm_cntr_inc(rxm_ep->util_ep.tx_cntr);
-	}
 	/* release allocated buffer for further reuse */
 	rxm_tx_buf_release(rxm_ep, tx_buf);
 	return ret;
@@ -942,7 +941,7 @@ void rxm_ep_handle_postponed_tx_op(struct rxm_ep *rxm_ep,
 
 	tx_entry->tx_buf->pkt.ctrl_hdr.conn_id = rxm_conn->handle.remote_key;
 	FI_DBG(&rxm_prov, FI_LOG_EP_DATA,
-	       "Send deffered TX request (len - %zd) for %p conn\n",
+	       "Send deffered TX request (len - %"PRIu64") for %p conn\n",
 	       tx_entry->tx_buf->pkt.hdr.size, rxm_conn);
 
 	if ((tx_size <= rxm_ep->msg_info->tx_attr->inject_size) &&
@@ -1025,7 +1024,7 @@ rxm_ep_inject_common(struct rxm_ep *rxm_ep, const void *buf, size_t len,
 		};
 		ret = ofi_cmap_handle_connect(rxm_ep->util_ep.cmap,
 					      dest_addr, handle);
-		if (OFI_UNLIKELY(ret != -FI_EAGAIN))
+		if (ret && (!rxm_defer_requests || OFI_UNLIKELY(ret != -FI_EAGAIN)))
 			goto cmap_err;
 		rxm_conn = container_of(handle, struct rxm_conn, handle);
 		ret = rxm_ep_postpone_send(rxm_ep, rxm_conn, NULL, 1,
@@ -1087,7 +1086,7 @@ rxm_ep_send_common(struct rxm_ep *rxm_ep, const struct iovec *iov, void **desc,
 	} else if (OFI_UNLIKELY(handle->state != CMAP_CONNECTED)) {
 		ret = ofi_cmap_handle_connect(rxm_ep->util_ep.cmap,
 					      dest_addr, handle);
-		if (OFI_UNLIKELY(ret != -FI_EAGAIN))
+		if (ret && (!rxm_defer_requests || OFI_UNLIKELY(ret != -FI_EAGAIN)))
 			goto cmap_err;
 		rxm_conn = container_of(handle, struct rxm_conn, handle);
 		ret = rxm_ep_postpone_send(
@@ -1484,8 +1483,8 @@ static int rxm_ep_msg_cq_open(struct rxm_ep *rxm_ep, enum fi_wait_obj wait_obj)
 
 	assert((wait_obj == FI_WAIT_NONE) || (wait_obj == FI_WAIT_FD));
 
-	cq_attr.size = (rxm_ep->rxm_info->tx_attr->size +
-			rxm_ep->rxm_info->rx_attr->size);
+	cq_attr.size = (rxm_ep->msg_info->tx_attr->size +
+			rxm_ep->msg_info->rx_attr->size) * rxm_def_univ_size;
 	cq_attr.format = FI_CQ_FORMAT_DATA;
 	cq_attr.wait_obj = wait_obj;
 

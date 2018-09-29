@@ -189,7 +189,7 @@ void rxm_ep_handle_postponed_rma_op(struct rxm_ep *rxm_ep,
 	struct fi_cq_err_entry err_entry;
 
 	FI_DBG(&rxm_prov, FI_LOG_EP_DATA,
-	       "Perform deffered RMA operation (len - %zd) for %p conn\n",
+	       "Perform deffered RMA operation (len - %"PRIu64") for %p conn\n",
 	       tx_entry->rma_buf->pkt.hdr.size, rxm_conn);
 
 	if (tx_entry->comp_flags & FI_WRITE) {
@@ -317,6 +317,8 @@ rxm_ep_rma_common(struct rxm_ep *rxm_ep, const struct fi_msg_rma *msg, uint64_t 
 	void *mr_desc[RXM_IOV_LIMIT] = { 0 };
 	int ret;
 
+	assert(msg->rma_iov_count <= rxm_ep->rxm_info->tx_attr->rma_iov_limit);
+
 	fastlock_acquire(&rxm_ep->util_ep.cmap->lock);
 	handle = ofi_cmap_acquire_handle(rxm_ep->util_ep.cmap, msg->addr);
 	if (OFI_UNLIKELY(!handle)) {
@@ -437,6 +439,8 @@ rxm_ep_rma_inject(struct rxm_ep *rxm_ep, const struct fi_msg_rma *msg, uint64_t 
 	size_t total_size = ofi_total_iov_len(msg->msg_iov, msg->iov_count);
 	ssize_t ret;
 
+	assert(msg->rma_iov_count <= rxm_ep->rxm_info->tx_attr->rma_iov_limit);
+
 	fastlock_acquire(&rxm_ep->util_ep.cmap->lock);
 	handle = ofi_cmap_acquire_handle(rxm_ep->util_ep.cmap, msg->addr);
 	if (OFI_UNLIKELY(!handle)) {
@@ -465,17 +469,20 @@ cmap_err:
 	if ((total_size <= rxm_ep->msg_info->tx_attr->inject_size) &&
 	    !(flags & FI_COMPLETION)) {
 		if (flags & FI_REMOTE_CQ_DATA)
-			return fi_inject_writedata(rxm_conn->msg_ep,
-						   msg->msg_iov->iov_base,
-						   msg->msg_iov->iov_len, msg->data,
-						   msg->addr, msg->rma_iov->addr,
-						   msg->rma_iov->key);
+			ret = fi_inject_writedata(rxm_conn->msg_ep,
+						  msg->msg_iov->iov_base,
+						  msg->msg_iov->iov_len, msg->data,
+						  msg->addr, msg->rma_iov->addr,
+						  msg->rma_iov->key);
 		else
-			return fi_inject_write(rxm_conn->msg_ep,
-					       msg->msg_iov->iov_base,
-					       msg->msg_iov->iov_len, msg->addr,
-					       msg->rma_iov->addr,
-					       msg->rma_iov->key);
+			ret = fi_inject_write(rxm_conn->msg_ep,
+					      msg->msg_iov->iov_base,
+					      msg->msg_iov->iov_len, msg->addr,
+					      msg->rma_iov->addr,
+					      msg->rma_iov->key);
+		if (OFI_LIKELY(!ret))
+			rxm_cntr_inc(rxm_ep->util_ep.wr_cntr);
+		return ret;
 	}
 
 	ret = rxm_ep_format_rma_inject_res(rxm_ep, total_size, flags, FI_WRITE,

@@ -453,14 +453,16 @@ int psmx2_am_atomic_handler(psm2_am_token_t token,
 			addr += mr->offset;
 			psmx2_atomic_do_write(addr, src, datatype, op, count);
 
-			cntr = rx->ep->remote_write_cntr;
-			mr_cntr = mr->cntr;
+			if (rx->ep->caps & FI_RMA_EVENT) {
+				cntr = rx->ep->remote_write_cntr;
+				mr_cntr = mr->cntr;
 
-			if (cntr)
-				psmx2_cntr_inc(cntr);
+				if (cntr)
+					psmx2_cntr_inc(cntr, 0);
 
-			if (mr_cntr && mr_cntr != cntr)
-				psmx2_cntr_inc(mr_cntr);
+				if (mr_cntr && mr_cntr != cntr)
+					psmx2_cntr_inc(mr_cntr, 0);
+			}
 		}
 
 		rep_args[0].u32w0 = PSMX2_AM_REP_ATOMIC_WRITE;
@@ -499,18 +501,20 @@ int psmx2_am_atomic_handler(psm2_am_token_t token,
 			else
 				op_error = -FI_ENOMEM;
 
-			if (op == FI_ATOMIC_READ) {
-				cntr = rx->ep->remote_read_cntr;
-			} else {
-				cntr = rx->ep->remote_write_cntr;
-				mr_cntr = mr->cntr;
+			if (rx->ep->caps & FI_RMA_EVENT) {
+				if (op == FI_ATOMIC_READ) {
+					cntr = rx->ep->remote_read_cntr;
+				} else {
+					cntr = rx->ep->remote_write_cntr;
+					mr_cntr = mr->cntr;
+				}
+
+				if (cntr)
+					psmx2_cntr_inc(cntr, 0);
+
+				if (mr_cntr && mr_cntr != cntr)
+					psmx2_cntr_inc(mr_cntr, 0);
 			}
-
-			if (cntr)
-				psmx2_cntr_inc(cntr);
-
-			if (mr_cntr && mr_cntr != cntr)
-				psmx2_cntr_inc(mr_cntr);
 		} else {
 			tmp_buf = NULL;
 		}
@@ -550,14 +554,16 @@ int psmx2_am_atomic_handler(psm2_am_token_t token,
 			else
 				op_error = -FI_ENOMEM;
 
-			cntr = rx->ep->remote_write_cntr;
-			mr_cntr = mr->cntr;
+			if (rx->ep->caps & FI_RMA_EVENT) {
+				cntr = rx->ep->remote_write_cntr;
+				mr_cntr = mr->cntr;
 
-			if (cntr)
-				psmx2_cntr_inc(cntr);
+				if (cntr)
+					psmx2_cntr_inc(cntr, 0);
 
-			if (mr_cntr && mr_cntr != cntr)
-				psmx2_cntr_inc(mr_cntr);
+				if (mr_cntr && mr_cntr != cntr)
+					psmx2_cntr_inc(mr_cntr, 0);
+			}
 		} else {
 			tmp_buf = NULL;
 		}
@@ -593,7 +599,7 @@ int psmx2_am_atomic_handler(psm2_am_token_t token,
 		}
 
 		if (req->ep->write_cntr)
-			psmx2_cntr_inc(req->ep->write_cntr);
+			psmx2_cntr_inc(req->ep->write_cntr, op_error);
 
 		free(req->tmpbuf);
 		psmx2_am_request_free(req->ep->tx, req);
@@ -631,7 +637,7 @@ int psmx2_am_atomic_handler(psm2_am_token_t token,
 		}
 
 		if (req->ep->read_cntr)
-			psmx2_cntr_inc(req->ep->read_cntr);
+			psmx2_cntr_inc(req->ep->read_cntr, op_error);
 
 		free(req->tmpbuf);
 		psmx2_am_request_free(req->ep->tx, req);
@@ -733,18 +739,22 @@ static int psmx2_atomic_self(int am_cmd,
 		break;
 	}
 
-	if (op == FI_ATOMIC_READ) {
-		cntr = ep->remote_read_cntr;
-	} else {
-		cntr = ep->remote_write_cntr;
-		mr_cntr = mr->cntr;
+	if (ep->caps & FI_RMA_EVENT) {
+		if (op == FI_ATOMIC_READ) {
+			cntr = ep->remote_read_cntr;
+		} else {
+			cntr = ep->remote_write_cntr;
+			mr_cntr = mr->cntr;
+		}
+
+		if (cntr)
+			psmx2_cntr_inc(cntr, 0);
+
+		if (mr_cntr && mr_cntr != cntr)
+			psmx2_cntr_inc(mr_cntr, 0);
 	}
 
-	if (cntr)
-		psmx2_cntr_inc(cntr);
-
-	if (mr_cntr && mr_cntr != cntr)
-		psmx2_cntr_inc(mr_cntr);
+	op_error = err;
 
 gen_local_event:
 	no_event = ((flags & PSMX2_NO_COMPLETION) ||
@@ -769,12 +779,12 @@ gen_local_event:
 	switch (am_cmd) {
 	case PSMX2_AM_REQ_ATOMIC_WRITE:
 		if (ep->write_cntr)
-			psmx2_cntr_inc(ep->write_cntr);
+			psmx2_cntr_inc(ep->write_cntr, op_error);
 		break;
 	case PSMX2_AM_REQ_ATOMIC_READWRITE:
 	case PSMX2_AM_REQ_ATOMIC_COMPWRITE:
 		if (ep->read_cntr)
-			psmx2_cntr_inc(ep->read_cntr);
+			psmx2_cntr_inc(ep->read_cntr, op_error);
 		break;
 	}
 
@@ -877,7 +887,7 @@ ssize_t psmx2_atomic_write_generic(struct fid_ep *ep,
 	psm2_am_request_short(psm2_epaddr,
 			      PSMX2_AM_ATOMIC_HANDLER, args, 5,
 			      (void *)buf, len, am_flags, NULL, NULL);
-
+	psmx2_am_poll(ep_priv->tx);
 	return 0;
 }
 
@@ -996,7 +1006,7 @@ ssize_t psmx2_atomic_writev_generic(struct fid_ep *ep,
 	psm2_am_request_short(psm2_epaddr,
 			      PSMX2_AM_ATOMIC_HANDLER, args, 5,
 			      (void *)buf, len, am_flags, NULL, NULL);
-
+	psmx2_am_poll(ep_priv->tx);
 	return 0;
 }
 
@@ -1189,7 +1199,7 @@ ssize_t psmx2_atomic_readwrite_generic(struct fid_ep *ep,
 	psm2_am_request_short(psm2_epaddr,
 			      PSMX2_AM_ATOMIC_HANDLER, args, 5,
 			      (void *)buf, (buf?len:0), am_flags, NULL, NULL);
-
+	psmx2_am_poll(ep_priv->tx);
 	return 0;
 }
 
@@ -1372,7 +1382,7 @@ ssize_t psmx2_atomic_readwritev_generic(struct fid_ep *ep,
 	psm2_am_request_short(psm2_epaddr,
 			      PSMX2_AM_ATOMIC_HANDLER, args, 5,
 			      (void *)buf, (buf?len:0), am_flags, NULL, NULL);
-
+	psmx2_am_poll(ep_priv->tx);
 	return 0;
 }
 
@@ -1588,7 +1598,7 @@ ssize_t psmx2_atomic_compwrite_generic(struct fid_ep *ep,
 			      PSMX2_AM_ATOMIC_HANDLER, args, 5,
 			      (void *)buf, len * 2, am_flags,
 			      NULL, NULL);
-
+	psmx2_am_poll(ep_priv->tx);
 	return 0;
 }
 
@@ -1796,7 +1806,7 @@ ssize_t psmx2_atomic_compwritev_generic(struct fid_ep *ep,
 	psm2_am_request_short(psm2_epaddr,
 			      PSMX2_AM_ATOMIC_HANDLER, args, 5,
 			      buf, len * 2, am_flags, NULL, NULL);
-
+	psmx2_am_poll(ep_priv->tx);
 	return 0;
 }
 
