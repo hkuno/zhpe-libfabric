@@ -36,6 +36,50 @@
 #define ZHPE_LOG_DBG(...) _ZHPE_LOG_DBG(FI_LOG_EP_DATA, __VA_ARGS__)
 #define ZHPE_LOG_ERROR(...) _ZHPE_LOG_ERROR(FI_LOG_EP_DATA, __VA_ARGS__)
 
+static int
+zhpe_check_user_rma(const struct fi_rma_iov *urma, size_t urma_cnt,
+		    uint32_t qaccess,
+		    struct zhpe_iov_state *rstate, size_t riov_max,
+		    size_t *total_len, struct zhpe_conn *conn)
+{
+	int			ret = 0;
+	struct zhpe_iov		*riov = rstate->viov;
+	size_t			i;
+	size_t			j;
+	struct zhpe_rkey_data	*rkey;
+	struct zhpe_key		zkey;
+
+	*total_len = 0;
+	for (i = 0, j = 0; i < urma_cnt; i++) {
+		if (OFI_UNLIKELY(!urma[i].len))
+			continue;
+		if (urma[i].len > ZHPE_EP_MAX_IOV_LEN || j >= riov_max) {
+			ret = -FI_EMSGSIZE;
+			goto done;
+		}
+		riov[j].iov_addr = urma[i].addr;
+		riov[j].iov_len = urma[i].len;
+		*total_len += urma[i].len;
+		riov[j].iov_key = urma[i].key;
+		zhpe_ziov_to_zkey(&riov[j], &zkey);
+		rkey = zhpe_conn_rkey_get(conn, &zkey);
+		if (!rkey) {
+			rstate->missing |= (1U << j);
+			rstate->cnt = ++j;
+			continue;
+		}
+		riov[j].iov_rkey = rkey;
+		ret = zhpeq_rem_key_access(rkey->kdata,
+					   riov[j].iov_addr, riov[j].iov_len,
+					   qaccess, &riov[j].iov_zaddr);
+		rstate->cnt = ++j;
+		if (ret < 0)
+			goto done;
+	}
+ done:
+	return ret;
+}
+
 static inline ssize_t do_rma_msg(struct fid_ep *ep,
 				 const struct fi_msg_rma *msg,
 				 uint64_t flags)
@@ -43,15 +87,12 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 	int64_t			ret = -FI_EINVAL;
 	int64_t			tindex = -1;
 	struct zhpe_pe_entry	*pe_entry;
-	size_t			i;
-	size_t			j;
 	struct zhpe_conn	*conn;
 	struct zhpe_tx_ctx	*tx_ctx;
 	uint64_t		rma_len;
 	uint64_t		op_flags;
 	struct zhpe_ep		*zhpe_ep;
 	struct zhpe_ep_attr	*ep_attr;
-	struct zhpe_mr		*zmr;
 	struct zhpe_msg_hdr	ohdr;
 
 	switch (ep->fid.fclass) {
@@ -142,106 +183,57 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 	pe_entry->pe_root.status = 0;
 	pe_entry->pe_root.completions = 0;
 	pe_entry->pe_root.flags = ZHPE_PE_NO_RINDEX;
-	pe_entry->zstate.cnt = 0;
 	pe_entry->cq_data = msg->data;
 	pe_entry->rx_id = zhpe_get_rx_id(tx_ctx, msg->addr);
 
-	pe_entry->rma.lstate.viov = pe_entry->rma.liov;
-	pe_entry->rma.lstate.off = 0;
-	pe_entry->rma.lstate.idx = 0;
-	pe_entry->rma.lstate.cnt = 0;
-
-	pe_entry->rem = 0;
-	for (i = 0, j = 0; i < msg->iov_count; i++) {
-		if (!msg->msg_iov[i].iov_len)
-			continue;
-		pe_entry->rma.liov[j].iov_base = msg->msg_iov[i].iov_base;
-		pe_entry->rma.liov[j].iov_len = msg->msg_iov[i].iov_len;
-		pe_entry->rem += msg->msg_iov[i].iov_len;
-		if (msg->desc && (zmr = msg->desc[i])) {
-			pe_entry->rma.liov[j].iov_desc = zmr;
-			ret = zhpeq_lcl_key_access(
-				zmr->kdata, pe_entry->rma.liov[j].iov_base,
-				pe_entry->rma.liov[j].iov_len,
-				((flags & FI_READ) ?
-				 ZHPEQ_MR_GET : ZHPEQ_MR_PUT),
-				&pe_entry->rma.liov[j].iov_zaddr);
-			if (ret < 0)
-				goto done;
-		} else
-			pe_entry->rma.liov[j].iov_desc = NULL;
-		j++;
-		pe_entry->rma.lstate.cnt = j;
-	}
-	if (pe_entry->rem <= ZHPEQ_IMM_MAX)
-		flags |= FI_INJECT;
-	else
-		ret = zhpe_mr_reg_int_oneshot(ep_attr->domain,
-					      pe_entry->rma.liov,
-					      pe_entry->rem, FI_WRITE);
+	ret = zhpe_check_user_iov(msg->msg_iov, msg->desc, msg->iov_count,
+				  ((flags & FI_READ) ?
+				   ZHPEQ_MR_GET : ZHPEQ_MR_PUT),
+				  &pe_entry->lstate, ZHPE_EP_MAX_IOV_LIMIT,
+				  &pe_entry->rem);
 	if (ret < 0)
 		goto done;
-	pe_entry->zstate.viov = pe_entry->ziov;
-	pe_entry->zstate.off = 0;
-	pe_entry->zstate.idx = 0;
 
-	rma_len = 0;
-	for (i = 0, j = 0; i < msg->rma_iov_count; i++) {
-		if (!msg->rma_iov[i].len)
-			continue;
-		pe_entry->ziov[j].iov_addr = msg->rma_iov[i].addr;
-		pe_entry->ziov[j].iov_len = msg->rma_iov[i].len;
-		rma_len += msg->rma_iov[i].len;
-		pe_entry->ziov[j].iov_key = msg->rma_iov[i].key;
-		pe_entry->rkeys[j] =
-			zhpe_conn_rkey_get(conn, pe_entry->ziov[j].iov_key);
-		if (pe_entry->rkeys[j]) {
-			ret = zhpeq_rem_key_access(
-				pe_entry->rkeys[j]->kdata,
-				pe_entry->ziov[j].iov_addr,
-				pe_entry->ziov[j].iov_len,
-				((flags & FI_READ) ?
-				 ZHPEQ_MR_GET_REMOTE : ZHPEQ_MR_PUT_REMOTE),
-				&pe_entry->ziov[j].iov_zaddr);
-			if (ret < 0)
-				goto done;
-		} else {
-			pe_entry->pe_root.completions++;
-			pe_entry->ziov[j].iov_zaddr = 0;
-		}
-		j++;
-		pe_entry->zstate.cnt = j;
-	}
-
-	if (pe_entry->rem != rma_len ||
-	    ((flags & FI_INJECT) && pe_entry->rem > ZHPEQ_IMM_MAX)) {
+	ret = zhpe_check_user_rma(msg->rma_iov, msg->rma_iov_count,
+				  ((flags & FI_READ) ?
+				   ZHPEQ_MR_GET_REMOTE : ZHPEQ_MR_PUT_REMOTE),
+				  &pe_entry->rstate, ZHPE_EP_MAX_IOV_LIMIT,
+				  &rma_len, conn);
+	if (ret < 0)
+		goto done;
+	if (pe_entry->rem != rma_len) {
 		ret = -FI_EINVAL;
 		goto done;
 	}
 
-	if ((flags & (FI_INJECT | FI_WRITE)) == (FI_INJECT | FI_WRITE)) {
-		memcpy(pe_entry->rma.inline_data, msg->msg_iov[0].iov_base,
-		       pe_entry->rem);
-		zhpe_pe_tx_report_complete(pe_entry, FI_INJECT_COMPLETE);
+	if (pe_entry->rem <= ZHPEQ_IMM_MAX) {
+		flags |= FI_INJECT;
+		if (flags & FI_WRITE) {
+			copy_iov_to_mem(pe_entry->inline_data,
+					&pe_entry->lstate, ZHPE_IOV_ZIOV,
+					pe_entry->rem);
+			zhpe_pe_tx_report_complete(pe_entry,
+						   FI_INJECT_COMPLETE);
+		}
+	} else if (pe_entry->lstate.missing) {
+		ret = zhpe_mr_reg_int_iov(ep_attr->domain, &pe_entry->lstate,
+					  pe_entry->rem);
+		if (ret < 0)
+			goto done;
 	}
 
 	pe_entry->flags = flags;
 	pe_entry->pe_root.flags |= ZHPE_PE_KEY_WAIT;
-	if (pe_entry->pe_root.completions > 0) {
+	if (pe_entry->rstate.missing) {
 		ohdr.rx_id = pe_entry->rx_id;
 		ohdr.pe_entry_id = htons(tindex);
-		zhpe_pe_rkey_request(conn, ohdr, &pe_entry->zstate);
+		zhpe_pe_rkey_request(conn, ohdr, &pe_entry->rstate,
+			&pe_entry->pe_root.completions);
 	} else
 		zhpe_pe_tx_rma(pe_entry);
  done:
-	if (ret < 0 && tindex != -1) {
-		if (!(flags & FI_INJECT))
-			zhpe_mr_close_oneshot(pe_entry->rma.liov,
-					      pe_entry->rma.lstate.cnt, true);
-		for (i = 0; i < pe_entry->zstate.cnt; i++)
-			zhpe_rkey_put(pe_entry->rkeys[j]);
+	if (ret < 0 && tindex != -1)
 		zhpe_tx_release(conn->ztx, tindex, 0);
-	}
 
 	return ret;
 }

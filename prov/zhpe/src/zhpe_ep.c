@@ -710,7 +710,7 @@ static int zhpe_ep_close(struct fid *fid)
 	ofi_idm_reset(&zhpe_ep->attr->av_idm);
 	zhpe_conn_map_destroy(zhpe_ep->attr);
 	mutex_release(&zhpe_ep->attr->domain->pe->list_lock);
-	zhpe_tx_free(zhpe_ep->attr->ztx);
+	zhpe_tx_put(zhpe_ep->attr->ztx);
 
 	ofi_atomic_dec32(&zhpe_ep->attr->domain->ref);
 	fastlock_destroy(&zhpe_ep->attr->lock);
@@ -1605,19 +1605,6 @@ int zhpe_alloc_endpoint(struct fid_domain *domain, struct fi_info *info,
 			zhpe_ep->rx_attr = *info->rx_attr;
 		zhpe_ep->attr->info.handle = info->handle;
 	}
-#if 0
-	/* FIXME: Enable shared context */
-	if (zhpe_ep->attr->ep_attr.tx_ctx_cnt == FI_SHARED_CONTEXT)
-		zhpe_ep->attr->tx_shared = 1;
-	if (zhpe_ep->attr->ep_attr.rx_ctx_cnt == FI_SHARED_CONTEXT)
-		zhpe_ep->attr->rx_shared = 1;
-#else
-	if (zhpe_ep->attr->ep_attr.tx_ctx_cnt == FI_SHARED_CONTEXT ||
-	    zhpe_ep->attr->ep_attr.rx_ctx_cnt == FI_SHARED_CONTEXT) {
-		ret = -FI_ENOSYS;
-		goto err2;
-	}
-#endif
 
 	ofi_atomic_initialize32(&zhpe_ep->attr->ref, 0);
 	ofi_atomic_initialize32(&zhpe_ep->attr->num_tx_ctx, 0);

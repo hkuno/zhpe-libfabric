@@ -167,12 +167,18 @@ static int zhpe_dom_close(struct fid *fid)
 	struct zhpe_domain *dom;
 
 	dom = container_of(fid, struct zhpe_domain, dom_fid.fid);
+	if (dom->cache_inited) {
+		fastlock_acquire(&dom->cache_lock);
+		while (ofi_mr_cache_flush(&dom->cache));
+		fastlock_release(&dom->cache_lock);
+	}
 	if (ofi_atomic_get32(&dom->ref))
 		return -FI_EBUSY;
 
 	zhpe_pe_finalize(dom->pe);
 	fastlock_destroy(&dom->lock);
-	ofi_mr_map_close(&dom->mr_map);
+	zhpe_mr_cache_destroy(dom);
+	rbtDelete(dom->mr_tree);
 	zhpeq_domain_free(dom->zdom);
 	zhpe_dom_remove_from_list(dom);
 	free(dom);
@@ -180,78 +186,62 @@ static int zhpe_dom_close(struct fid *fid)
 	return 0;
 }
 
-int mr_close(struct fid *fid, bool revoke_oneshot)
+int zhpe_zmr_put_and_free(struct zhpe_mr *zmr, bool free_zmr)
 {
-	int			ret;
-	struct zhpe_mr		*zmr;
 	struct zhpe_domain	*domain;
-	struct zhpe_conn_map	*map;
 	struct zhpe_kexp_data	*kexp;
 	RbtIterator		*rbt;
+	int32_t			old;
 
-	zmr = container_of(fid, struct zhpe_mr, mr_fid.fid);
+	old = __sync_fetch_and_sub(&zmr->use_count, 1);
+	assert(old > 0);
+	if (old > 1)
+		return 0;
+
 	domain = zmr->domain;
 
 	fastlock_acquire(&domain->lock);
-	zmr->flags |= ZHPE_MR_FLAGS_FREEING;
 	while (!dlist_empty(&zmr->kexp_list)) {
 	        kexp = container_of(zmr->kexp_list.next,
 				   struct zhpe_kexp_data, lentry);
 		dlist_remove(&kexp->lentry);
-		dlist_init(&kexp->lentry);
-		fastlock_release(&domain->lock);
 		fastlock_acquire(&kexp->conn->mr_lock);
-		rbt = rbtFind(kexp->conn->kexp_tree, &zmr->mr_fid.key);
+		rbt = rbtFind(kexp->conn->kexp_tree, &zmr->zkey);
 		if (rbt)
 			rbtErase(kexp->conn->kexp_tree, rbt);
 		fastlock_release(&kexp->conn->mr_lock);
-		if (kexp->exporting) {
-			map = &kexp->conn->ep_attr->cmap;
-			mutex_acquire(&map->mutex);
-			while (kexp->exporting)
-				cond_wait(&map->cond, &map->mutex);
-			mutex_release(&map->mutex);
-		}
-		if (!(zmr->kdata->z.access & ZHPEQ_MR_KEY_ONESHOT) ||
-		    revoke_oneshot)
-			zhpe_send_key_revoke(kexp->conn, zmr->mr_fid.key);
-		zhpe_kexp_put(kexp);
+		fastlock_release(&domain->lock);
+		/* FIXME:race with conn going away? */
+		zhpe_send_key_revoke(kexp->conn, &zmr->zkey);
+		free(kexp);
 		fastlock_acquire(&domain->lock);
 	}
+	fastlock_release(&domain->lock);
 	/* Free key last to prevent re-use race. */
-	ret = ofi_mr_map_remove(&domain->mr_map, zmr->mr_fid.key);
-	if (ret < 0)
-		ZHPE_LOG_ERROR("MR Erase error %d \n", ret);
+	rbt = rbtFind(domain->mr_tree, &zmr->zkey);
+	assert(rbt);
+	if (rbt)
+		rbtErase(domain->mr_tree, rbt);
 	fastlock_release(&domain->lock);
 	ofi_atomic_dec32(&domain->ref);
-	zhpe_mr_put(zmr);
+	if (zmr->kdata)
+		zhpeq_mr_free(zmr->domain->zdom, zmr->kdata);
+	if (free_zmr)
+		free(zmr);
 
 	return 0;
 }
 
-int zhpe_mr_close(struct fid *fid)
+static int zhpe_zmr_put_uncached(struct zhpe_mr *zmr)
 {
-	return mr_close(fid, true);
+	return zhpe_zmr_put_and_free(zmr, true);
 }
 
-int zhpe_mr_close_oneshot(struct zhpe_iov *ziov, uint32_t count, bool revoke)
+static int zhpe_mr_close(struct fid *fid)
 {
-	int			ret = 0;
-	int			rc;
-	uint32_t		i;
-	struct zhpe_mr		*zmr;
-
-	for (i = 0; i < count; i++) {
-		zmr = ziov[i].iov_desc;
-		if (!zmr || !(zmr->kdata->z.access & ZHPEQ_MR_KEY_ONESHOT))
-			continue;
-		rc = mr_close(&zmr->mr_fid.fid, revoke);
-		if (rc < 0 && ret >= 0)
-			ret = rc;
-	}
-
-	return ret;
+	return zhpe_mr_put(container_of(fid, struct zhpe_mr, mr_fid.fid));
 }
+
 
 static struct fi_ops zhpe_mr_fi_ops = {
 	.size = sizeof(struct fi_ops),
@@ -261,96 +251,96 @@ static struct fi_ops zhpe_mr_fi_ops = {
 	.ops_open = fi_no_ops_open,
 };
 
-struct zhpe_mr *zhpe_mr_get(struct zhpe_domain *domain, uint64_t key)
+struct zhpe_mr *zhpe_mr_find(struct zhpe_domain *domain,
+			     const struct zhpe_key *zkey)
 {
-	struct zhpe_mr		*ret;
+	struct zhpe_mr		*ret = NULL;
+	RbtIterator		*rbt;
+	void			*keyp;
 
 	fastlock_acquire(&domain->lock);
-	ret = ofi_mr_map_get(&domain->mr_map, key);
-	if (ret)
-		__sync_fetch_and_add(&ret->use_count, 1);
+	rbt = rbtFind(domain->mr_tree, (void *)zkey);
+	if (rbt) {
+		rbtKeyValue(domain->mr_tree, rbt, &keyp, (void **)&ret);
+		zhpe_mr_get(ret);
+	}
 	fastlock_release(&domain->lock);
 
 	return ret;
 }
 
-static inline int zhpe_regattr_int(struct zhpe_domain *domain,
-				   const struct fi_mr_attr *attr,
-				   uint32_t qaccess, struct fid_mr **mr_out)
+int zhpe_zmr_reg(struct zhpe_domain *domain, const void *buf,
+		 size_t len, uint32_t qaccess, uint64_t key,
+		 struct zhpe_mr *zmr)
 {
-	int			ret = -FI_ENOMEM;
-	struct zhpe_mr		*zmr = NULL;
-	bool			locked = false;
+	int			ret = 0;
+	RbtIterator		*rbt;
 
-	zmr = calloc(1, sizeof(*zmr));
-	if (!zmr)
-		goto done;
 	dlist_init(&zmr->kexp_list);
-
-	fastlock_acquire(&domain->lock);
-	locked = true;
-
 	zmr->mr_fid.fid.fclass = FI_CLASS_MR;
-	zmr->mr_fid.fid.context = attr->context;
 	zmr->mr_fid.fid.ops = &zhpe_mr_fi_ops;
 	zmr->mr_fid.mem_desc = zmr;
+	zmr->mr_fid.key = key;
 	zmr->domain = domain;
 	zmr->flags = 0;
 	zmr->use_count = 1;
+	zmr->zkey.key = key;
+	zmr->zkey.internal = !!(qaccess & ZHPE_MR_KEY_INT);
 
-	ret = ofi_mr_map_insert(&domain->mr_map, attr, &zmr->mr_fid.key, zmr);
+	ret = zhpeq_mr_reg(domain->zdom, buf, len, qaccess, &zmr->kdata);
 	if (ret < 0)
 		goto done;
 
+	fastlock_acquire(&domain->lock);
+	rbt = rbtFind(domain->mr_tree, &zmr->zkey);
+	if (rbt)
+		ret = -FI_ENOKEY;
+	else
+		rbtInsert(domain->mr_tree, &zmr->zkey, zmr);
 	fastlock_release(&domain->lock);
-	locked = false;
-
 	ofi_atomic_inc32(&domain->ref);
-
-	qaccess |= zhpe_convert_access(attr->access);
-	ret = zhpeq_mr_reg(domain->zdom, attr->mr_iov[0].iov_base,
-			   attr->mr_iov[0].iov_len, qaccess, &zmr->kdata);
-	if (ret < 0)
+	if (OFI_UNLIKELY(ret < 0)) {
+		zhpeq_mr_free(domain->zdom, zmr->kdata);
+		zmr->kdata = NULL;
 		goto done;
-	*mr_out = &zmr->mr_fid;
+	}
+
  done:
-	if (ret < 0) {
-		if (locked) {
-			fastlock_release(&domain->lock);
-			free(zmr);
-		} else if (zmr)
-			zhpe_mr_close(&zmr->mr_fid.fid);
+	return ret;
+}
+
+int zhpe_mr_reg_int_uncached(struct zhpe_domain *domain, const void *buf,
+			     size_t len, uint64_t access, uint32_t qaccess,
+			     struct fid_mr **mr)
+{
+	int			ret;
+	struct zhpe_mr		*zmr;
+
+	zmr = malloc(sizeof(*zmr));
+	if (!zmr)
+		return -FI_ENOMEM;
+
+	qaccess |= ZHPE_MR_KEY_INT | zhpe_convert_access(access);
+
+	ret = zhpe_zmr_reg(domain, buf, len, qaccess,
+			   __sync_fetch_and_add(&domain->mr_zhpe_key, 1), zmr);
+	if (OFI_LIKELY(ret >= 0)) {
+		zmr->put = zhpe_zmr_put_uncached;
+		*mr = &zmr->mr_fid;
+	} else {
+		*mr = NULL;
+		free(zmr);
 	}
 
 	return ret;
 }
 
-int zhpe_mr_reg_int(struct zhpe_domain *domain, const void *buf, size_t len,
-		    uint64_t access, uint32_t qaccess, struct fid_mr **mr)
-{
-	struct iovec		iov = {
-		.iov_base	= (void *)buf,
-		.iov_len	= len,
-	};
-	struct fi_mr_attr	attr = {
-		.mr_iov		= &iov,
-		.iov_count	= 1,
-		.access		= access,
-	};
-
-	attr.requested_key = ((uint64_t)UINT32_MAX + 1 +
-			      __sync_fetch_and_add(&domain->mr_zhpe_key, 1));
-	if (!zhpe_mr_key_int(attr.requested_key))
-		return -FI_ENOKEY;
-
-	return zhpe_regattr_int(domain, &attr, qaccess, mr);
-}
-
-int zhpe_mr_reg_int_oneshot(struct zhpe_domain *domain, struct zhpe_iov *ziov,
-			    size_t len, uint64_t access)
+int zhpe_mr_reg_int_iov(struct zhpe_domain *domain,
+			struct zhpe_iov_state *lstate, size_t len)
 {
 	int			ret = 0;
-	size_t			i;
+	struct zhpe_iov		*liov = lstate->viov;
+ 	uint			i;
 	size_t			tlen;
 	size_t			rlen;
 	struct fid_mr		*mr;
@@ -358,62 +348,79 @@ int zhpe_mr_reg_int_oneshot(struct zhpe_domain *domain, struct zhpe_iov *ziov,
 
 	for (tlen = len, i = 0; tlen > 0; tlen -= rlen, i++) {
 		rlen = tlen;
-		if (rlen > ziov[i].iov_len)
-			rlen = ziov[i].iov_len;
-		zmr = ziov[i].iov_desc;
+		if (rlen > liov[i].iov_len)
+			rlen = liov[i].iov_len;
+		zmr = liov[i].iov_desc;
 		if (zmr)
 			continue;
-		ret = zhpe_mr_reg_int(domain, ziov[i].iov_base, rlen,
-				      access, ZHPEQ_MR_KEY_ONESHOT, &mr);
+		ret = domain->reg_int(domain, liov[i].iov_base,
+				      rlen, ZHPE_MR_ACCESS_ALL, 0, &mr);
 		if (ret < 0)
-			goto done;
-		zmr = ziov[i].iov_desc = fi_mr_desc(mr);
-		if (!(access & FI_RECV))
-			continue;
-		ret = zhpeq_lcl_key_access(zmr->kdata,
-					   ziov[i].iov_base, rlen,
-					   ZHPEQ_MR_RECV, &ziov[i].iov_zaddr);
+			break;
+		liov[i].iov_len |= ZHPE_ZIOV_LEN_KEY_INT;
+		zmr = container_of(mr, struct zhpe_mr, mr_fid);
+		liov[i].iov_desc = zmr;
+		ret = zhpeq_lcl_key_access(zmr->kdata, liov[i].iov_base, 0, 0,
+					   &liov[i].iov_zaddr);
 		if (ret < 0)
-			goto done;
+			break;
 	}
- done:
+
 	return ret;
 }
 
 static int zhpe_regattr(struct fid *fid, const struct fi_mr_attr *attr,
-			uint64_t flags, struct fid_mr **mr_out)
+			uint64_t flags, struct fid_mr **mr)
 {
 	int			ret = -FI_EINVAL;
 	uint32_t		qaccess = 0;
-	struct fi_mr_attr	dup_attr;
 	struct zhpe_domain	*domain;
+	uint64_t		key;
+	struct zhpe_mr		*zmr;
 	struct fi_eq_entry	eq_entry;
 
 	if (!fid || fid->fclass != FI_CLASS_DOMAIN ||
-	    !attr || attr->iov_count != 1 ||
+	    !attr || !attr->mr_iov || attr->iov_count != 1 ||
 	    (attr->access & ~(FI_SEND | FI_RECV | FI_READ | FI_WRITE |
-			      FI_REMOTE_READ | FI_REMOTE_WRITE)) || flags)
+			      FI_REMOTE_READ | FI_REMOTE_WRITE)) ||
+	    flags || !mr)
 		goto done;
+
+	zmr = malloc(sizeof(*zmr));
+	if (!zmr) {
+		ret = -FI_ENOMEM;
+		goto done;
+	}
 
 	domain = container_of(fid, struct zhpe_domain, dom_fid.fid);
 
-	dup_attr = *attr;
+	key = attr->requested_key;
 	if (domain->attr.mr_mode & FI_MR_PROV_KEY)
-		dup_attr.requested_key =
-			__sync_fetch_and_add(&domain->mr_user_key, 1);
-	if (zhpe_mr_key_int(dup_attr.requested_key)) {
-		ret = -FI_ENOKEY;
-		goto done;
-	}
+		key = __sync_fetch_and_add(&domain->mr_user_key, 1);
 	if (!(domain->attr.mr_mode & FI_MR_VIRT_ADDR))
 		qaccess |= ZHPEQ_MR_KEY_ZERO_OFF;
+	qaccess |= zhpe_convert_access(attr->access);
 
-	ret = zhpe_regattr_int(domain, &dup_attr, qaccess, mr_out);
-	if (ret >= 0 && domain->mr_eq) {
-		eq_entry.fid = &domain->dom_fid.fid;
+	ret = zhpe_zmr_reg(domain, attr->mr_iov[0].iov_base,
+			   attr->mr_iov[0].iov_len, qaccess, key, zmr);
+	if (OFI_LIKELY(ret >= 0)) {
+		zmr->put = zhpe_zmr_put_uncached;
+		*mr = &zmr->mr_fid;
+	} else {
+		*mr = NULL;
+		free(zmr);
+		goto done;
+	}
+	if (domain->mr_eq) {
+		zmr->mr_fid.fid.context = attr->context;
 		eq_entry.context = attr->context;
+		eq_entry.fid = &domain->dom_fid.fid;
 		ret = zhpe_eq_report_event(domain->mr_eq, FI_MR_COMPLETE,
 					   &eq_entry, sizeof(eq_entry), 0);
+		if (ret < 0) {
+			zhpe_mr_put(zmr);
+			*mr = NULL;
+		}
 	}
  done:
 	return ret;
@@ -554,20 +561,23 @@ int zhpe_domain(struct fid_fabric *fabric, struct fi_info *info,
 	fab = container_of(fabric, struct zhpe_fabric, fab_fid);
 	if (info && info->domain_attr) {
 		ret = zhpe_verify_domain_attr(fabric->api_version, info);
-		if (ret)
-			return -FI_EINVAL;
+		if (ret < 0)
+			goto err0;
 	}
 
 	zhpe_domain = calloc(1, sizeof(*zhpe_domain));
-	if (!zhpe_domain)
-		return -FI_ENOMEM;
+	if (!zhpe_domain) {
+		ret = -FI_ENOMEM;
+		goto err0;
+	}
 
 	fastlock_init(&zhpe_domain->lock);
 	ofi_atomic_initialize32(&zhpe_domain->ref, 0);
 
-	if (info) {
+	if (info)
 		zhpe_domain->info = *info;
-	} else {
+	else {
+		ret = -FI_EINVAL;
 		ZHPE_LOG_ERROR("invalid fi_info\n");
 		goto err1;
 	}
@@ -586,6 +596,7 @@ int zhpe_domain(struct fid_fabric *fabric, struct fi_info *info,
 
 	zhpe_domain->pe = zhpe_pe_init(zhpe_domain);
 	if (!zhpe_domain->pe) {
+		ret = -FI_ENOMEM;
 		ZHPE_LOG_ERROR("Failed to init PE\n");
 		goto err1;
 	}
@@ -603,24 +614,32 @@ int zhpe_domain(struct fid_fabric *fabric, struct fi_info *info,
 			zhpe_domain->attr.mr_mode |= FI_MR_LOCAL;
 	}
 
-	/* Disable key allocation in ofi_mr_map routines. */
-	ret = ofi_mr_map_init(&zhpe_prov,
-			      zhpe_domain->attr.mr_mode & ~FI_MR_PROV_KEY,
-			      &zhpe_domain->mr_map);
-	if (ret)
+	zhpe_domain->mr_tree = rbtNew(zhpe_compare_zkeys);
+	if (!zhpe_domain->mr_tree) {
+		ret = -FI_ENOMEM;
 		goto err2;
-	ret = zhpeq_domain_alloc(&zhpe_domain->zdom);
+	}
+	zhpe_domain->reg_int = zhpe_mr_reg_int_uncached;
+	ret = zhpe_mr_cache_init(zhpe_domain);
 	if (ret < 0)
 		goto err3;
+	ret = zhpeq_domain_alloc(&zhpe_domain->zdom);
+	if (ret < 0)
+		goto err4;
 
 	zhpe_dom_add_to_list(zhpe_domain);
+
 	return 0;
+ err4:
+	zhpe_mr_cache_destroy(zhpe_domain);
  err3:
-	ofi_mr_map_close(&zhpe_domain->mr_map);
+	rbtDelete(&zhpe_domain->mr_tree);
  err2:
 	zhpe_pe_finalize(zhpe_domain->pe);
  err1:
 	fastlock_destroy(&zhpe_domain->lock);
 	free(zhpe_domain);
-	return -FI_EINVAL;
+ err0:
+
+       return ret;
 }
