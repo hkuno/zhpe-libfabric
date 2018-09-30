@@ -324,9 +324,6 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 	void			*nulldesc;
 
 	zhpe_stats_start(&zhpe_stats_send);
-	ZHPEQ_TIMING_UPDATE(&zhpeq_timing_tx_start,
-			    NULL, &zhpeq_timing_tx_start_stamp,
-			    ZHPEQ_TIMING_UPDATE_OLD_CPU);
 
 	switch (ep->fid.fclass) {
 	case FI_CLASS_EP:

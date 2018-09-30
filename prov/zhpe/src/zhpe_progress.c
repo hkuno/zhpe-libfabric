@@ -235,7 +235,6 @@ void zhpe_pe_rx_complete(struct zhpe_rx_ctx *rx_ctx,
 	struct dlist_entry	*dnext;
 	struct dlist_entry	dcomplete;
 	struct dlist_entry	ddrop;
-	ZHPEQ_TIMING_CODE(struct zhpe_timing_stamp sent_stamp);
 
 	/* Assumed:rx_entry on work list and we are only user. */
 	if (!locked)
@@ -268,20 +267,8 @@ void zhpe_pe_rx_complete(struct zhpe_rx_ctx *rx_ctx,
 		rx_cur = container_of(dentry, struct zhpe_rx_entry, lentry);
 		status = rx_cur->pe_root.status;
 
-#ifdef ZHPEQ_TIMING
-		if (status >= 0 && rx_cur->total_len >= sizeof(sent_stamp)) {
-			sent_stamp = *(struct zhpe_timing_stamp *)rx_cur->buf;
-			zhpeq_timing_update(&zhpeq_timing_rx_recv,
-					    &rx_cur->handler_timestamp,
-					    &sent_stamp,
-					    ZHPEQ_TIMING_UPDATE_OLD_CPU);
-		} else
-			sent_stamp.time = 0;
-#endif
 		zhpe_pe_rx_report_complete(rx_ctx, rx_cur, status,
 					   rx_cur->rem);
-		ZHPEQ_TIMING_UPDATE(&zhpeq_timing_rx_recv_done,
-				    NULL, &sent_stamp, 0);
 		if (rx_cur->zhdr.flags & ZHPE_MSG_ANY_COMPLETE)
 			zhpe_send_status(rx_cur->pe_root.conn,
 					 rx_cur->zhdr, status, rx_cur->rem);
@@ -1077,10 +1064,6 @@ static int zhpe_pe_rx_handle_send(struct zhpe_conn *conn,
 	uint64_t		msg_len;
 	uint64_t		*data;
 	void			*src;
-	ZHPEQ_TIMING_CODE(struct zhpe_timing_stamp handler_stamp);
-
-	/* Save timestamp for entry into handler. */
-	ZHPEQ_TIMING_UPDATE_STAMP(&handler_stamp);
 
 	if (zhdr->flags & ZHPE_MSG_INLINE) {
 		msg_len = zhdr->inline_len;
@@ -1120,8 +1103,6 @@ static int zhpe_pe_rx_handle_send(struct zhpe_conn *conn,
 		fastlock_release(&rx_ctx->lock);
 		goto done;
 	}
-	ZHPEQ_TIMING_CODE(rx_entry->handler_timestamp = handler_stamp);
-	ZHPEQ_TIMING_UPDATE_COUNT(&zhpeq_timing_rx_buffered);
 	rx_basic_init(rx_entry, conn, zhdr, msg_len, tag, cq_data, flags);
 	dlist_insert_tail(&rx_entry->lentry, &rx_ctx->rx_buffered_list);
 	if (!rx_buffered_init(rx_entry, zhdr, zpay, NULL)) {
@@ -1148,8 +1129,6 @@ static int zhpe_pe_rx_handle_send(struct zhpe_conn *conn,
 			fastlock_release(&rx_ctx->lock);
 			goto done;
 		}
-		ZHPEQ_TIMING_CODE(rx_entry->handler_timestamp = handler_stamp);
-		ZHPEQ_TIMING_UPDATE_COUNT(&zhpeq_timing_rx_multi);
 		rx_basic_init(rx_entry, conn, zhdr, msg_len, tag, cq_data,
 			      flags);
 		dlist_insert_tail(&rx_entry->lentry, &rx_ctx->rx_work_list);
@@ -1158,7 +1137,6 @@ static int zhpe_pe_rx_handle_send(struct zhpe_conn *conn,
 		goto done;
 	}
 	/* A single posted receive */
-	ZHPEQ_TIMING_CODE(rx_entry->handler_timestamp = handler_stamp);
 	dlist_remove(&rx_entry->lentry);
 	dlist_insert_tail(&rx_entry->lentry, &rx_ctx->rx_work_list);
 	fastlock_release(&rx_ctx->lock);
@@ -1663,7 +1641,6 @@ static void zhpe_pe_wait(struct zhpe_pe *pe)
 	int		rc;
 	struct pollfd	pollfd;
 
-	ZHPEQ_TIMING_UPDATE_COUNT(&zhpeq_timing_rx_sleep);
 	pollfd.fd = read_fd;
 	pollfd.events = POLLIN;
 	rc = poll(&pollfd, 1, 1);

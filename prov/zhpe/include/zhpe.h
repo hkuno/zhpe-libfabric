@@ -1214,7 +1214,6 @@ struct zhpe_rx_entry {
 		};
 		char		inline_data[64];
 	};
-	ZHPEQ_TIMING_CODE(struct zhpe_timing_stamp handler_timestamp);
 	uint8_t			rx_state;
 	uint8_t			buffered;
 };
