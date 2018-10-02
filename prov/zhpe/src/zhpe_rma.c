@@ -127,7 +127,7 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 	if (msg->rma_iov_count > ZHPE_EP_MAX_IOV_LIMIT)
 		goto done;
 
-	if (likely(!(flags & ZHPE_TRIGGERED_OP))) {
+	if (OFI_LIKELY(!(flags & ZHPE_TRIGGERED_OP))) {
 		switch (flags & (FI_READ | FI_WRITE)) {
 
 		case FI_READ:

@@ -120,7 +120,7 @@ static inline ssize_t do_recvmsg(struct fid_ep *ep, const void *vmsg,
 		goto done;
 	}
 
-	if (likely(!(flags & ZHPE_TRIGGERED_OP))) {
+	if (OFI_LIKELY(!(flags & ZHPE_TRIGGERED_OP))) {
 		if (flags &
 		    ~(ZHPE_NO_COMPLETION | ZHPE_USE_OP_FLAGS |
 		      FI_COMPLETION | FI_TRIGGER | FI_MULTI_RECV |
@@ -351,7 +351,7 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 		goto done;
 	}
 
-	if (likely(!(flags & ZHPE_TRIGGERED_OP))) {
+	if (OFI_LIKELY(!(flags & ZHPE_TRIGGERED_OP))) {
 		if (flags &
 		    ~(ZHPE_NO_COMPLETION | ZHPE_USE_OP_FLAGS |
 		      FI_COMPLETION | FI_TRIGGER | FI_INJECT |

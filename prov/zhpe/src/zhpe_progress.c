@@ -50,7 +50,7 @@ static inline void
 zhpe_pe_root_update_status(struct zhpe_pe_root *pe_root,
 			   int32_t status)
 {
-	if (unlikely(status < 0) && likely(pe_root->status >= 0))
+	if (OFI_UNLIKELY(status < 0) && OFI_LIKELY(pe_root->status >= 0))
 	    pe_root->status = status;
 }
 
@@ -61,7 +61,7 @@ void zhpe_pe_release_tx_entry(struct zhpe_pe_root *pe_root)
 	bool			prov = ((pe_root->flags & ZHPE_PE_PROV) != 0);
 	uint32_t		tindex;
 
-	if (unlikely(!(pe_root->flags & ZHPE_PE_NO_RINDEX)))
+	if (OFI_UNLIKELY(!(pe_root->flags & ZHPE_PE_NO_RINDEX)))
 		zhpe_rx_remote_release(conn, pe_root->rindex);
 	tindex = (container_of(pe_root, struct zhpe_pe_entry, pe_root) -
 		  conn->ztx->pentries);
@@ -84,7 +84,7 @@ static void zhpe_pe_report_complete(struct zhpe_cqe *zcqe,
 
 	struct zhpe_triggered_context *trigger_context;
 
-	if (unlikely(zcqe->cqe.flags & ZHPE_TRIGGERED_OP)) {
+	if (OFI_UNLIKELY(zcqe->cqe.flags & ZHPE_TRIGGERED_OP)) {
 		trigger_context = zcqe->cqe.op_context;
 		cntr_fid = trigger_context->trigger.work.completion_cntr;
 		if (cntr_fid) {
@@ -140,7 +140,7 @@ static void zhpe_pe_report_complete(struct zhpe_cqe *zcqe,
 			       (ullong)zcqe->cqe.flags);
 		abort();
 	}
-	if (unlikely(err < 0)) {
+	if (OFI_UNLIKELY(err < 0)) {
 		if (cntr)
 			fi_cntr_adderr(&cntr->cntr_fid, 1);
 		if (cq)
@@ -883,7 +883,7 @@ static void zhpe_pe_rx_get(struct zhpe_rx_entry *rx_entry)
 	struct zhpe_msg_hdr	zhdr;
 	uint8_t			state;
 
-	if (unlikely(rx_entry->pe_root.status < 0))
+	if (OFI_UNLIKELY(rx_entry->pe_root.status < 0))
 		goto complete;
 
 	switch (rx_entry->rx_state) {
@@ -1227,10 +1227,10 @@ void zhpe_pe_tx_rma(struct zhpe_pe_entry *pe_entry)
 	size_t			max_ops;
 	size_t			max_bytes;
 
-	if (unlikely(pe_entry->pe_root.status < 0))
+	if (OFI_UNLIKELY(pe_entry->pe_root.status < 0))
 		goto complete;
 
-	if (unlikely(pe_entry->pe_root.flags & ZHPE_PE_KEY_WAIT)) {
+	if (OFI_UNLIKELY(pe_entry->pe_root.flags & ZHPE_PE_KEY_WAIT)) {
 		if (pe_entry->pe_root.completions)
 			goto done;
 		pe_entry->pe_root.flags &= ~ZHPE_PE_KEY_WAIT;
@@ -1241,7 +1241,7 @@ void zhpe_pe_tx_rma(struct zhpe_pe_entry *pe_entry)
 		if (rc < 0)
 			goto complete;
 	}
-	if (unlikely(pe_entry->pe_root.completions >= ZHPE_EP_MAX_IO_OPS))
+	if (OFI_UNLIKELY(pe_entry->pe_root.completions >= ZHPE_EP_MAX_IO_OPS))
 		goto done;
 
 	if (pe_entry->flags & FI_INJECT) {
@@ -1522,7 +1522,7 @@ static int zhpe_pe_progress_rx_ep(struct zhpe_pe *pe,
 		rx_ringl->head = rindex;
 		mutex_release(&map->mutex);
 		map_locked = false;
-		if (unlikely(ret) < 0)
+		if (OFI_UNLIKELY(ret) < 0)
 			break;
 	}
  done:

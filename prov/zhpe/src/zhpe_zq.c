@@ -200,7 +200,7 @@ static int do_rx_setup(struct zhpe_conn *conn, int conn_fd, int action)
 	/* rx ring will be the same as the tx size. */
 	qlenr = roundup_power_of_two(ep->tx_attr.size) * 2;
 	mem_msg1.rx_ring_size = htonl(qlenr);
-	if (likely(action != ZHPE_CONN_ACTION_SELF)) {
+	if (OFI_LIKELY(action != ZHPE_CONN_ACTION_SELF)) {
 		ret = zhpe_send_blob(conn_fd, &mem_msg1, sizeof(mem_msg1));
 		if (ret < 0)
 			goto done;
@@ -254,7 +254,7 @@ static int do_rx_setup(struct zhpe_conn *conn, int conn_fd, int action)
 	}
 
 	mem_msg2.key = htobe64(fi_mr_key(mr));
-	if (likely(action != ZHPE_CONN_ACTION_SELF)) {
+	if (OFI_LIKELY(action != ZHPE_CONN_ACTION_SELF)) {
 		ret = zhpe_send_blob(conn_fd, &mem_msg2, sizeof(mem_msg2));
 		if (ret < 0)
 			goto done;

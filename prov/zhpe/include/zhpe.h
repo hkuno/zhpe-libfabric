@@ -1691,9 +1691,6 @@ int zhpe_mr_reg_int_iov(struct zhpe_domain *domain,
 			struct zhpe_iov_state *state, size_t len);
 int zhpe_mr_close(struct fid *fid);
 
-#define likely(x)		OFI_LIKELY(x)
-#define unlikely(x)		OFI_UNLIKELY(x)
-
 #define ZHPE_CONTEXT_IGNORE	((uintptr_t)1)
 #define ZHPE_CONTEXT_IGNORE_PTR	((void *)ZHPE_CONTEXT_IGNORE)
 
@@ -2400,7 +2397,7 @@ static inline int zhpe_pe_tx_ring(struct zhpe_pe_entry *pe_entry,
 	int64_t			rindex = -1;
 	uint64_t		rzaddr;
 
-	if (unlikely(pe_root->flags & ZHPE_PE_RETRY)) {
+	if (OFI_UNLIKELY(pe_root->flags & ZHPE_PE_RETRY)) {
 		ret = zhpe_pe_retry(conn, zhpe_pe_retry_tx_ring1, pe_root);
 		goto done;
 	}
@@ -2430,7 +2427,7 @@ static inline int zhpe_pe_tx_ring(struct zhpe_pe_entry *pe_entry,
 		goto done;
 	zhpe_pe_signal(conn->ep_attr->domain->pe);
  done:
-	if (likely(ret >= 0))
+	if (OFI_LIKELY(ret >= 0))
 		zhpe_pe_tx_report_complete(pe_entry, FI_INJECT_COMPLETE);
 	else {
 		zhpe_tx_free_res(conn, -1, zindex, rindex, pe_root->flags);

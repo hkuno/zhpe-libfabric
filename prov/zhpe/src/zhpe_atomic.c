@@ -89,7 +89,7 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 	}
 
 	/* When used by trigger, flags are assumed to be correct. */
-	if (likely(!(flags & ZHPE_TRIGGERED_OP))) {
+	if (OFI_LIKELY(!(flags & ZHPE_TRIGGERED_OP))) {
 		if (flags &
 		    ~(ZHPE_NO_COMPLETION | ZHPE_USE_OP_FLAGS |
 		      ZHPE_TRIGGERED_OP | FI_COMPLETION | FI_TRIGGER |
