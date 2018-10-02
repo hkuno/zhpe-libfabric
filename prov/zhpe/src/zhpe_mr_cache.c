@@ -44,24 +44,53 @@
 #define ZHPE_LOG_DBG(...) _ZHPE_LOG_DBG(FI_LOG_DOMAIN, __VA_ARGS__)
 #define ZHPE_LOG_ERROR(...) _ZHPE_LOG_ERROR(FI_LOG_DOMAIN, __VA_ARGS__)
 
+static inline struct zhpe_mr_cached **entry_data(struct ofi_mr_entry *entry)
+{
+	return (void *)entry->data;
+}
+
+static void zhpe_zmr_free_cached(void *ptr)
+{
+	struct zhpe_mr		*zmr = ptr;
+	struct zhpe_mr_cached	*zmc =
+		container_of(zmr, struct zhpe_mr_cached, zmr);
+
+	free(zmc);
+}
+
 static int zhpe_zmr_put_cached(struct zhpe_mr *zmr)
 {
 	struct zhpe_domain	*domain = zmr->domain;
-	typeof(((struct ofi_mr_entry *)0)->data) *data = (void *)zmr;
-	int32_t			old;
+	struct zhpe_mr_cached	*zmc =
+		container_of(zmr, struct zhpe_mr_cached, zmr);
 
-	old = __sync_fetch_and_sub(&zmr->use_count, 1);
-	assert(old > 1);
-	if (old > 2)
+	if (!zmr)
 		return 0;
 
 	fastlock_acquire(&domain->cache_lock);
-	ofi_mr_cache_delete(&zmr->domain->cache,
-			    container_of(data, struct ofi_mr_entry, data));
+	/* If the entry is NULL, it has been freed from the cache,
+	 * but someone else might have a hold on the zmr.
+	 */
+	if (zmc->entry)
+		ofi_mr_cache_delete(&zmr->domain->cache, zmc->entry);
+	else
+		zhpe_zmr_put_uncached(&zmc->zmr);
 	fastlock_release(&domain->cache_lock);
 
 	return 0;
 }
+
+static struct zhpe_mr_ops zmr_ops_cached = {
+	.fi_ops = {
+		.size		= sizeof(struct fi_ops),
+		.close		= zhpe_mr_close,
+		.bind		= fi_no_bind,
+		.control	= fi_no_control,
+		.ops_open	= fi_no_ops_open,
+	},
+	.free			= zhpe_zmr_free_cached,
+	.put			= zhpe_zmr_put_cached,
+};
 
 static int zhpe_mr_reg_int_cached(struct zhpe_domain *domain, const void *buf,
 				  size_t len, uint64_t access, uint32_t qaccess,
@@ -78,20 +107,17 @@ static int zhpe_mr_reg_int_cached(struct zhpe_domain *domain, const void *buf,
 		.access		= access,
 	};
 	struct ofi_mr_entry	*entry;
-	struct  zhpe_mr		*zmr;
+	struct  zhpe_mr_cached	*zmc;
 
 	assert(!qaccess);
 	fastlock_acquire(&domain->cache_lock);
 	ret = ofi_mr_cache_search(&domain->cache, &attr, &entry);
+	fastlock_release(&domain->cache_lock);
 	if (OFI_LIKELY(ret >= 0)) {
-		zmr = (void *)entry->data;
-		/* We'll do use counting in the zmr. */
-		entry->use_cnt = 1;
-		(void)__sync_fetch_and_add(&zmr->use_count, 1);
-		*mr = &zmr->mr_fid;
+		zmc = *entry_data(entry);
+		*mr = &zmc->zmr.mr_fid;
 	} else
 		*mr = NULL;
-	fastlock_release(&domain->cache_lock);
 
 	return ret;
 }
@@ -108,36 +134,48 @@ static int zhpe_mr_cache_add_region(struct ofi_mr_cache *cache,
 	int			ret;
 	struct zhpe_domain	*domain =
 		container_of(cache->domain, struct zhpe_domain, util_domain);
-	struct zhpe_mr		*zmr = (void *)entry->data;
 	void			*buf = entry->iov.iov_base;
 	size_t			len = entry->iov.iov_len;
 	uint32_t		qaccess =
 		(ZHPEQ_MR_GET | ZHPEQ_MR_PUT | ZHPEQ_MR_GET_REMOTE |
 		 ZHPEQ_MR_PUT_REMOTE | ZHPEQ_MR_SEND | ZHPEQ_MR_RECV |
 		 ZHPEQ_MR_KEY_ZERO_OFF | ZHPE_MR_KEY_INT);
+	struct zhpe_mr_cached	*zmc;
+
+	zmc = malloc(sizeof(*zmc));
+	*entry_data(entry) = zmc;
+	if (!zmc) {
+		ret = -FI_ENOMEM;
+		goto done;
+	}
+	zmc->entry = entry;
 
 	ret = zhpe_zmr_reg(domain, buf, len, qaccess,
-			   __sync_fetch_and_add(&domain->mr_zhpe_key, 1), zmr);
-	if (OFI_LIKELY(ret >= 0))
-		zmr->put = zhpe_zmr_put_cached;
-	else
+			   __sync_fetch_and_add(&domain->mr_zhpe_key, 1),
+			   &zmc->zmr, &zmr_ops_cached);
+	if (ret < 0) {
+		free(zmc);
+		*entry_data(entry) = NULL;
 		ZHPE_LOG_ERROR("Failed to register memory 0x%lx-0x%lx,"
 			       " error %d:%s\n",
 			       (uintptr_t)buf, (uintptr_t)buf + len - 1,
 			       ret, fi_strerror(-ret));
-
+	}
+ done:
 	return ret;
 }
 
 static void zhpe_mr_cache_delete_region(struct ofi_mr_cache *cache,
 					struct ofi_mr_entry *entry)
 {
-	struct zhpe_mr		*zmr = (void *)entry->data;
+	struct zhpe_mr_cached	*zmc = *entry_data(entry);
 	void			*buf = entry->iov.iov_base;
 	size_t			len = entry->iov.iov_len;
 	int			rc;
 
-	rc = zhpe_zmr_put_and_free(zmr, false);
+	/* domain->cache_lock is held */
+	zmc->entry = NULL;
+	rc = zhpe_zmr_put_uncached(&zmc->zmr);
 	if (rc < 0)
 		ZHPE_LOG_ERROR("Failed to unregister memory 0x%lx-0x%lx,"
 			       " error %d:%s\n",

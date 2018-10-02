@@ -826,15 +826,25 @@ struct zhpe_cntr {
 	int			err_flag;
 };
 
+struct zhpe_mr_ops {
+	struct fi_ops		fi_ops;
+	void			(*free)(void *ptr);
+	int			(*put)(struct zhpe_mr *zmr);
+};
+
 struct zhpe_mr {
 	struct fid_mr		mr_fid;
-	int			(*put)(struct zhpe_mr *zmr);
 	struct zhpe_domain	*domain;
 	uint64_t		flags;
 	struct zhpeq_key_data	*kdata;
 	struct dlist_entry	kexp_list;
 	struct zhpe_key		zkey;
 	int32_t			use_count;
+};
+
+struct zhpe_mr_cached {
+	struct zhpe_mr		zmr;
+	struct ofi_mr_entry	*entry;
 };
 
 struct zhpe_av_addr {
@@ -1671,14 +1681,15 @@ int zhpe_iov_to_get_imm(struct zhpe_pe_root *pe_root,
 
 int zhpe_zmr_reg(struct zhpe_domain *domain, const void *buf,
 		 size_t len, uint32_t qaccess, uint64_t key,
-		 struct zhpe_mr *zmr);
-int zhpe_zmr_put_and_free(struct zhpe_mr *zmr, bool free_zmr);
+		 struct zhpe_mr *zmr, struct zhpe_mr_ops *ops);
+int zhpe_zmr_put_uncached(struct zhpe_mr *zmr);
 
 int zhpe_mr_reg_int_uncached(struct zhpe_domain *domain, const void *buf,
 			     size_t len, uint64_t access, uint32_t qaccess,
 			     struct fid_mr **mr);
 int zhpe_mr_reg_int_iov(struct zhpe_domain *domain,
 			struct zhpe_iov_state *state, size_t len);
+int zhpe_mr_close(struct fid *fid);
 
 #define likely(x)		OFI_LIKELY(x)
 #define unlikely(x)		OFI_UNLIKELY(x)
@@ -1753,10 +1764,14 @@ static inline int64_t zhpe_tx_reserve(struct zhpe_tx *ztx, uint8_t pe_flags)
 
 static inline int zhpe_mr_put(struct zhpe_mr *zmr)
 {
+	struct zhpe_mr_ops	*zmr_ops;
+
 	if (!zmr)
 		return 0;
 
-	return zmr->put(zmr);
+	zmr_ops = container_of(zmr->mr_fid.fid.ops, struct zhpe_mr_ops, fi_ops);
+
+	return zmr_ops->put(zmr);
 }
 
 static inline void zhpe_tx_put(struct zhpe_tx *ztx)
