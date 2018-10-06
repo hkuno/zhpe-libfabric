@@ -323,6 +323,7 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 	uint64_t		base;
 	void			*nulldesc;
 
+	zhpe_stats_start(&zhpe_stats_send);
 	ZHPEQ_TIMING_UPDATE(&zhpeq_timing_tx_start,
 			    NULL, &zhpeq_timing_tx_start_stamp,
 			    ZHPEQ_TIMING_UPDATE_OLD_CPU);
@@ -496,6 +497,7 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
  done:
 	if (ret < 0 && tindex != -1)
 		zhpe_tx_release(conn->ztx, tindex, false);
+	zhpe_stats_stop(&zhpe_stats_send, (ret >= 0));
 
 	return ret;
 }

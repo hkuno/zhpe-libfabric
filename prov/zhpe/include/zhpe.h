@@ -94,6 +94,49 @@
 #include <ofi_rbuf.h>
 #include <ofi_util.h>
 
+enum {
+	ZHPE_STATS_STOPPED,
+	ZHPE_STATS_RUNNING,
+	ZHPE_STATS_PAUSED,
+};
+
+struct zhpe_stats {
+	struct dlist_entry	lentry;
+	void			*buf;
+	uint64_t		buf_len;
+	int			fd;
+	uint16_t		uid;
+	uint8_t			state;
+};
+
+
+#define DEFINE_ZHPE_STATS(_name, _uid)				\
+	struct zhpe_stats _name = { .uid = _uid, .fd = -1 }
+
+extern struct zhpe_stats	zhpe_stats_test;
+extern struct zhpe_stats	zhpe_stats_send;
+extern struct zhpe_stats	zhpe_stats_recv;
+
+#ifdef HAVE_ZHPE_SIM
+
+#include <api_linux64.h>
+
+void zhpe_stats_init(void);
+void zhpe_stats_start(struct zhpe_stats *stats);
+void zhpe_stats_stop(struct zhpe_stats *stats, bool do_write);
+void zhpe_stats_pause(struct zhpe_stats *stats);
+void zhpe_stats_close(struct zhpe_stats *stats);
+
+#else
+
+static inline void zhpe_stats_init(void) {}
+static inline void zhpe_stats_start(struct zhpe_stats *stats) {}
+static inline void zhpe_stats_stop(struct zhpe_stats *stats, bool do_write) {}
+static inline void zhpe_stats_pause(struct zhpe_stats *stats) {}
+static inline void zhpe_stats_close(struct zhpe_stats *stats) {}
+
+#endif
+
 /* Type checking container_of */
 #ifdef container_of
 #undef container_of
@@ -105,6 +148,7 @@
 })
 
 #define _ZHPE_LOG_DBG(subsys, ...) FI_DBG(&zhpe_prov, subsys, __VA_ARGS__)
+#define _ZHPE_LOG_INFO(subsys, ...) FI_INFO(&zhpe_prov, subsys, __VA_ARGS__)
 #define _ZHPE_LOG_ERROR(subsys, ...) FI_WARN(&zhpe_prov, subsys, __VA_ARGS__)
 
 #ifdef ENABLE_DEBUG
@@ -399,6 +443,8 @@ extern int zhpe_mr_cache_enable;
 extern int zhpe_mr_cache_merge_regions;
 extern size_t zhpe_mr_cache_max_cnt;
 extern size_t zhpe_mr_cache_max_size;
+extern char *zhpe_stats_dir;
+extern char *zhpe_stats_unique;
 
 static inline void *zhpe_mremap(void *old_address, size_t old_size,
 				size_t new_size)

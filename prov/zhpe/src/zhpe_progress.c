@@ -284,7 +284,7 @@ void zhpe_pe_rx_complete(struct zhpe_rx_ctx *rx_ctx,
 				    NULL, &sent_stamp, 0);
 		if (rx_cur->zhdr.flags & ZHPE_MSG_ANY_COMPLETE)
 			zhpe_send_status(rx_cur->pe_root.conn,
-					 rx_cur->zhdr,status, rx_cur->rem);
+					 rx_cur->zhdr, status, rx_cur->rem);
 	}
 	/* Free resources after completion to reduce latency (I hope). */
 	fastlock_acquire(&rx_ctx->lock);
@@ -298,6 +298,7 @@ void zhpe_pe_rx_complete(struct zhpe_rx_ctx *rx_ctx,
 	}
  done:
 	fastlock_release(&rx_ctx->lock);
+	zhpe_stats_stop(&zhpe_stats_recv, true);
 }
 
 void zhpe_pe_rx_peek_recv(struct zhpe_rx_ctx *rx_ctx,
@@ -769,10 +770,12 @@ static int zhpe_pe_tx_handle_rx_get(struct zhpe_pe_root *pe_root,
 	struct zhpe_rx_entry	*rx_entry =
 		container_of(pe_root, struct zhpe_rx_entry, pe_root);
 
+	zhpe_stats_start(&zhpe_stats_recv);
 	if (zq_cqe->z.status != ZHPEQ_CQ_STATUS_SUCCESS)
 		zhpe_pe_root_update_status(&rx_entry->pe_root, -FI_EIO);
 	pe_root->completions--;
 	zhpe_pe_rx_get(rx_entry);
+	zhpe_stats_pause(&zhpe_stats_recv);
 
 	return 0;
 }
@@ -1497,7 +1500,9 @@ static int zhpe_pe_progress_rx_ep(struct zhpe_pe *pe,
 				break;
 
 			case ZHPE_OP_SEND:
+				zhpe_stats_start(&zhpe_stats_recv);
 				ret = zhpe_pe_rx_handle_send(conn, zhdr);
+				zhpe_stats_pause(&zhpe_stats_recv);
 				break;
 
 			case ZHPE_OP_STATUS:
