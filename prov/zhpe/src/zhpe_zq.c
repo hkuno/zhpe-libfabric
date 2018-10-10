@@ -432,7 +432,7 @@ int __zhpe_conn_pull(struct zhpe_conn *conn)
 			 &rx_ringr->pull_pe_root);
 	if (ret < 0)
 		goto done;
-	ret = zhpeq_commit(conn->ztx->zq, zindex, 1);
+	ret = zhpe_zq_commit_spin(conn->ztx->zq, zindex, 1);
 
  done:
 	if (ret < 0)
@@ -446,8 +446,6 @@ int zhpe_tx_free_res(struct zhpe_conn *conn, int64_t tindex,
 {
 	int			ret = 0;
 	struct zhpe_tx		*ztx = conn->ztx;
-	struct zhpe_msg_hdr	zhdr;
-	uint64_t		rzaddr;
 
 	if (!conn)
 		goto done;
@@ -457,7 +455,7 @@ int zhpe_tx_free_res(struct zhpe_conn *conn, int64_t tindex,
 	 * not allocated.
 	 */
 	if (tindex >= 0)
-		zhpe_tx_release(ztx, tindex, pe_flags);
+		zhpe_tx_release(conn, &ztx->pentries[tindex]);
 
 	if (zindex < 0)
 		goto done;
@@ -471,17 +469,14 @@ int zhpe_tx_free_res(struct zhpe_conn *conn, int64_t tindex,
 		goto commit;
 	}
 
-	/* Send NOP to receive ring. */
-	memset(&zhdr, 0, sizeof(zhdr));
-	zhdr.op_type = ZHPE_OP_NOP;
-	rzaddr = conn->rx_remote.rz_zentries + zhpe_ring_off(conn, rindex);
-	ret = zhpeq_puti(ztx->zq, zindex, false, &zhdr, sizeof(zhdr), rzaddr,
-			 ZHPE_CONTEXT_IGNORE_PTR);
-	if (ret < 0)
-		goto done;
+	/* Send NOP to receive ring... this shouldn't happen since
+	 * we shouldn't reserve the ring slot until we have all the
+	 * resources; so just abort.
+	 */
+	abort();
 
 commit:
-	ret = zhpeq_commit(ztx->zq, zindex, 1);
+	ret = zhpe_zq_commit_spin(ztx->zq, zindex, 1);
 	if (ret < 0)
 		goto done;
  done:
@@ -929,7 +924,8 @@ int zhpe_iov_op(struct zhpe_pe_root *pe_root,
 			zhpeq_nop(zq, zindex + ops, false,
 				  ZHPE_CONTEXT_IGNORE_PTR);
 	}
-	rc = zhpeq_commit(zq, zindex, max_ops);
+	rc = zhpe_zq_commit_spin(zq, zindex, max_ops);
+
  done:
 	if (rc) {
 		if (!ret)

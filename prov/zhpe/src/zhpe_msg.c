@@ -493,7 +493,7 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 	ret = zhpe_pe_tx_ring(pe_entry, zhdr, lzaddr, cmd_len);
  done:
 	if (ret < 0 && tindex != -1)
-		zhpe_tx_release(conn->ztx, tindex, false);
+		zhpe_tx_release(conn, pe_entry);
 	zhpe_stats_stop(&zhpe_stats_send, (ret >= 0));
 
 	return ret;

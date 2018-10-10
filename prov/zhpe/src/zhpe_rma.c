@@ -182,7 +182,7 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 	pe_entry->pe_root.context = msg->context;
 	pe_entry->pe_root.status = 0;
 	pe_entry->pe_root.completions = 0;
-	pe_entry->pe_root.flags = ZHPE_PE_NO_RINDEX;
+	pe_entry->pe_root.flags |= ZHPE_PE_NO_RINDEX;
 	pe_entry->cq_data = msg->data;
 	pe_entry->rx_id = zhpe_get_rx_id(tx_ctx, msg->addr);
 
@@ -233,7 +233,7 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 		zhpe_pe_tx_rma(pe_entry);
  done:
 	if (ret < 0 && tindex != -1)
-		zhpe_tx_release(conn->ztx, tindex, 0);
+		zhpe_tx_release(conn, pe_entry);
 
 	return ret;
 }

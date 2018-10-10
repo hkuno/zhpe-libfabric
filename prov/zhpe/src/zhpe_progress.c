@@ -54,22 +54,6 @@ zhpe_pe_root_update_status(struct zhpe_pe_root *pe_root,
 	    pe_root->status = status;
 }
 
-static inline
-void zhpe_pe_release_tx_entry(struct zhpe_pe_root *pe_root)
-{
-	struct zhpe_conn	*conn = pe_root->conn;
-	bool			prov = ((pe_root->flags & ZHPE_PE_PROV) != 0);
-	uint32_t		tindex;
-
-	if (OFI_UNLIKELY(!(pe_root->flags & ZHPE_PE_NO_RINDEX)))
-		zhpe_rx_remote_release(conn, pe_root->rindex);
-	tindex = (container_of(pe_root, struct zhpe_pe_entry, pe_root) -
-		  conn->ztx->pentries);
-	zhpe_tx_release(conn->ztx, tindex, prov);
-
-	ZHPE_LOG_DBG("tx_progress entry %p released\n", pe_root);
-}
-
 static void zhpe_pe_report_complete(struct zhpe_cqe *zcqe,
 				    int32_t err, uint64_t rem)
 {
@@ -516,22 +500,23 @@ int zhpe_pe_tx_handle_entry(struct zhpe_pe_root *pe_root,
 {
 	struct zhpe_pe_entry	*pe_entry =
 		container_of(pe_root, struct zhpe_pe_entry, pe_root);
+	struct zhpe_pe_entry	*pe_entryu;
 
 	if (zq_cqe && zq_cqe->z.status != ZHPEQ_CQ_STATUS_SUCCESS)
-		zhpe_pe_root_update_status(pe_root, -FI_EIO);
-	pe_root->completions--;
-	if (!pe_root->completions) {
-		if (!(pe_root->flags & ZHPE_PE_PROV)) {
+		zhpe_pe_root_update_status(&pe_entry->pe_root, -FI_EIO);
+	pe_entry->pe_root.completions--;
+	if (!pe_entry->pe_root.completions) {
+		if (!(pe_entry->pe_root.flags & ZHPE_PE_PROV)) {
 			zhpe_pe_tx_report_complete(pe_entry,
 						   FI_TRANSMIT_COMPLETE |
 						   FI_DELIVERY_COMPLETE);
-		} else if ((pe_entry = pe_root->context)) {
-			zhpe_pe_tx_report_complete(pe_entry,
+		} else if ((pe_entryu = pe_entry->pe_root.context)) {
+			zhpe_pe_tx_report_complete(pe_entryu,
 						   FI_TRANSMIT_COMPLETE |
 						   FI_DELIVERY_COMPLETE);
-			zhpe_pe_release_tx_entry(&pe_entry->pe_root);
+			zhpe_tx_release(pe_entryu->pe_root.conn, pe_entryu);
 		}
-		zhpe_pe_release_tx_entry(pe_root);
+		zhpe_tx_release(pe_entry->pe_root.conn, pe_entry);
 	}
 
 	return 0;
@@ -760,7 +745,7 @@ static int zhpe_pe_tx_handle_rx_get(struct zhpe_pe_root *pe_root,
 	zhpe_stats_start(&zhpe_stats_recv);
 	if (zq_cqe->z.status != ZHPEQ_CQ_STATUS_SUCCESS)
 		zhpe_pe_root_update_status(&rx_entry->pe_root, -FI_EIO);
-	pe_root->completions--;
+	rx_entry->pe_root.completions--;
 	zhpe_pe_rx_get(rx_entry);
 	zhpe_stats_pause(&zhpe_stats_recv);
 
@@ -928,7 +913,7 @@ static void zhpe_pe_rx_get(struct zhpe_rx_entry *rx_entry)
 		if (rc == -FI_EAGAIN) {
 			rc = zhpe_pe_retry(rx_entry->pe_root.conn,
 					   zhpe_pe_retry_rx_get, rx_entry);
-			if (rc < 0)
+			if (rc >= 0)
 				goto done;
 		}
 		zhpe_pe_root_update_status(&rx_entry->pe_root, rc);
@@ -1165,13 +1150,11 @@ int zhpe_pe_tx_handle_rma(struct zhpe_pe_root *pe_root,
 	struct zhpe_pe_entry	*pe_entry =
 		container_of(pe_root, struct zhpe_pe_entry, pe_root);
 
-	/* Assume the compiler does not understrand the aliasing. */
-	pe_root = &pe_entry->pe_root;
-	pe_root->completions--;
+	pe_entry->pe_root.completions--;
 	if (zq_cqe) {
 		if (zq_cqe->z.status != ZHPEQ_CQ_STATUS_SUCCESS)
-			zhpe_pe_root_update_status(pe_root, -FI_EIO);
-		if (!pe_root->completions &&
+			zhpe_pe_root_update_status(&pe_entry->pe_root, -FI_EIO);
+		if (!pe_entry->pe_root.completions &&
 		    ((pe_entry->flags & (FI_INJECT | FI_READ)) ==
 		     (FI_INJECT | FI_READ)))
 			copy_mem_to_iov(&pe_entry->lstate, ZHPE_IOV_ZIOV,
@@ -1255,7 +1238,7 @@ void zhpe_pe_tx_rma(struct zhpe_pe_entry *pe_entry)
 		if (rc == -FI_EAGAIN) {
 			rc = zhpe_pe_retry(pe_entry->pe_root.conn,
 					   zhpe_pe_retry_tx_rma, pe_entry);
-			if (rc > 0)
+			if (rc >= 0)
 				goto done;
 		}
 		zhpe_pe_root_update_status(&pe_entry->pe_root, rc);
@@ -1274,7 +1257,7 @@ void zhpe_pe_tx_rma(struct zhpe_pe_entry *pe_entry)
 	zhpe_pe_tx_report_complete(pe_entry,
 				   FI_TRANSMIT_COMPLETE |
 				   FI_DELIVERY_COMPLETE);
-	zhpe_pe_release_tx_entry(&pe_entry->pe_root);
+	zhpe_tx_release(pe_entry->pe_root.conn, pe_entry);
  done:
 	return;
 }
@@ -1308,9 +1291,9 @@ int zhpe_pe_tx_handle_atomic(struct zhpe_pe_root *pe_root,
 	int			rc;
 
 	if (zq_cqe && zq_cqe->z.status != ZHPEQ_CQ_STATUS_SUCCESS)
-		zhpe_pe_root_update_status(pe_root, -FI_EIO);
-	pe_root->completions--;
-	if (!pe_root->completions) {
+		zhpe_pe_root_update_status(&pe_entry->pe_root, -FI_EIO);
+	pe_entry->pe_root.completions--;
+	if (!pe_entry->pe_root.completions) {
 		if (pe_entry->result) {
 			switch (pe_entry->result_type) {
 
@@ -1340,7 +1323,7 @@ int zhpe_pe_tx_handle_atomic(struct zhpe_pe_root *pe_root,
 		zhpe_pe_tx_report_complete(pe_entry,
 					   FI_TRANSMIT_COMPLETE |
 					   FI_DELIVERY_COMPLETE);
-		zhpe_pe_release_tx_entry(pe_root);
+		zhpe_tx_release(pe_entry->pe_root.conn, pe_entry);
 	}
  done:
 

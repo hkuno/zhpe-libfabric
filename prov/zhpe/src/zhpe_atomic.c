@@ -254,7 +254,7 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 	ret = zhpe_pe_tx_ring(pe_entry, zhdr, lzaddr, cmd_len);
  done:
 	if (ret < 0 && tindex != -1)
-		zhpe_tx_release(conn->ztx, tindex, false);
+		zhpe_tx_release(conn, pe_entry);
 
 	return ret;
 }

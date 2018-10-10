@@ -686,6 +686,7 @@ typedef int (*zhpe_pe_tx_handler)(struct zhpe_pe_root *pe_root,
 #define ZHPE_PE_RETRY			(0x02)
 #define ZHPE_PE_KEY_WAIT		(0x04)
 #define ZHPE_PE_NO_RINDEX		(0x08)
+#define ZHPE_PE_INUSE			(0x10)
 
 struct zhpe_conn;
 
@@ -1798,6 +1799,7 @@ static inline int64_t zhpe_tx_reserve(struct zhpe_tx *ztx, uint8_t pe_flags)
 		old.blob = new.blob;
 	}
 	ret = old.index;
+	pe_entry->pe_root.flags = ZHPE_PE_INUSE;
 	zhpe_iov_state_init(&pe_entry->lstate, pe_entry->liov);
 	zhpe_iov_state_init(&pe_entry->rstate, pe_entry->riov);
  done:
@@ -1871,22 +1873,31 @@ static inline void zhpe_rstate_release(struct zhpe_iov_state *rstate)
 }
 
 static inline void
-zhpe_tx_release(struct zhpe_tx *ztx, uint32_t tindex, uint8_t pe_flags)
+zhpe_rx_remote_release(struct zhpe_conn *conn, uint32_t rindex);
+
+static inline void
+zhpe_tx_release(struct zhpe_conn *conn, struct zhpe_pe_entry *pe_entry)
 {
-	struct zhpe_pe_entry	*pe_entry = &ztx->pentries[tindex];
+	struct zhpe_tx		*ztx = conn->ztx;
+	uint32_t		tindex;
 	uint64_t		*blobp;
 	union zhpe_free_index	old;
 	union zhpe_free_index	new;
 
+	pe_entry->pe_root.flags &= ~ZHPE_PE_INUSE;
+
+	if (!(pe_entry->pe_root.flags & ZHPE_PE_NO_RINDEX))
+		zhpe_rx_remote_release(conn, pe_entry->pe_root.rindex);
 	zhpe_lstate_release(&pe_entry->lstate);
 	zhpe_rstate_release(&pe_entry->rstate);
+	tindex = pe_entry - ztx->pentries;
 	/* Using a union this way is not in the C spec, just expected to
 	 * work with most compilers/processors.
 	 */
-	blobp = ((pe_flags & ZHPE_PE_PROV) ?
+	blobp = ((pe_entry->pe_root.flags & ZHPE_PE_PROV) ?
 		 &ztx->pfree.blob : &ztx->ufree.blob);
 	for (old.blob = new.blob = atomic_load_lazy_uint64(blobp);;) {
-		ztx->pentries[tindex].pe_root.status = new.index;
+		pe_entry->pe_root.status = new.index;
 		new.index = tindex;
 		new.count++;
 		new.seq++;
@@ -1940,7 +1951,6 @@ do {									\
 		(_lzaddr) = _ztx->lz_zentries + _off;			\
 		(_zhdr) = (void *)(_ztx->zentries + _off);		\
 		(_pe_entry) = &_ztx->pentries[tindex];			\
-		(_pe_entry)->pe_root.flags = 0;				\
 	} else if ((_pe_flags) & ZHPE_PE_RETRY) {			\
 		if ((_ret) != -FI_EAGAIN)				\
 			goto _err; 					\
@@ -2432,6 +2442,26 @@ static inline void zhpe_pe_tx_report_complete(struct zhpe_pe_entry *pe_entry,
 		_zhpe_pe_tx_report_complete(pe_entry);
 }
 
+static inline int zhpe_zq_commit_spin(struct zhpeq *zq, uint32_t qindex,
+				      uint32_t n_entries)
+{
+	int			ret;
+	int			i;
+
+	ret = zhpeq_commit(zq, qindex, n_entries);
+	if (OFI_LIKELY(ret >= 0) || ret != -EAGAIN)
+		return ret;
+
+	for (;;) {
+		for (i = 0; i < 10; i++) {
+			ret = zhpeq_commit(zq, qindex, n_entries);
+			if (ret != -EAGAIN)
+				return ret;
+		}
+		sched_yield();
+	}
+}
+
 static inline int zhpe_pe_tx_ring(struct zhpe_pe_entry *pe_entry,
 				  struct zhpe_msg_hdr *zhdr, uintptr_t zbuf,
 				  size_t len)
@@ -2469,7 +2499,7 @@ static inline int zhpe_pe_tx_ring(struct zhpe_pe_entry *pe_entry,
 		ret = -FI_EINVAL;
 	if (ret < 0)
 		goto done;
-	ret = zhpeq_commit(ztx->zq, zindex, 1);
+	ret = zhpe_zq_commit_spin(ztx->zq, zindex, 1);
 	if (ret < 0)
 		goto done;
 	zhpe_pe_signal(conn->ep_attr->domain->pe);
@@ -2482,7 +2512,7 @@ static inline int zhpe_pe_tx_ring(struct zhpe_pe_entry *pe_entry,
 			ret = zhpe_pe_retry(conn, zhpe_pe_retry_tx_ring2,
 					    pe_entry);
 	}
-	/* Must be done after zhpeq_commit() to prevent deadlock. */
+	/* Must be done after zhpe_zq_commit_spin() to prevent deadlock. */
 	zhpe_conn_pull(conn);
 
 	return ret;
