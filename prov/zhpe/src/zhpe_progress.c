@@ -44,7 +44,7 @@ do {							\
 	__rx_entry->rx_state = (_state);		\
 } while (0)
 
-static void zhpe_pe_rx_get(struct zhpe_rx_entry *rx_entry);
+static void zhpe_pe_rx_get(struct zhpe_rx_entry *rx_entry, bool retry);
 
 static inline void
 zhpe_pe_root_update_status(struct zhpe_pe_root *pe_root,
@@ -413,7 +413,7 @@ static inline void rx_user_claim(struct zhpe_rx_entry *rx_buffered,
 			set_rx_state(rx_buffered, ZHPE_RX_STATE_RND_BUF);
 		}
 #endif
-		zhpe_pe_rx_get(rx_buffered);
+		zhpe_pe_rx_get(rx_buffered, false);
 		goto done;
 
 	case ZHPE_RX_STATE_EAGER_CLAIMED:
@@ -746,7 +746,7 @@ static int zhpe_pe_tx_handle_rx_get(struct zhpe_pe_root *pe_root,
 	if (zq_cqe->z.status != ZHPEQ_CQ_STATUS_SUCCESS)
 		zhpe_pe_root_update_status(&rx_entry->pe_root, -FI_EIO);
 	rx_entry->pe_root.completions--;
-	zhpe_pe_rx_get(rx_entry);
+	zhpe_pe_rx_get(rx_entry, false);
 	zhpe_stats_pause(&zhpe_stats_recv);
 
 	return 0;
@@ -803,11 +803,15 @@ void zhpe_pe_retry_tx_ring2(struct zhpe_pe_retry *pe_retry)
 		ZHPE_LOG_ERROR("Retry failed %d\n", rc);
 		abort();
 	}
+	free(pe_retry);
 }
 
 static void zhpe_pe_retry_rx_get(struct zhpe_pe_retry *pe_retry)
 {
-	zhpe_pe_rx_get(pe_retry->data);
+	zhpe_stats_start(&zhpe_stats_recv);
+	zhpe_pe_rx_get(pe_retry->data, true);
+	zhpe_stats_pause(&zhpe_stats_recv);
+	free(pe_retry);
 }
 
 static inline int zhpe_pe_rem_setup(struct zhpe_conn *conn,
@@ -848,7 +852,7 @@ static inline int zhpe_pe_rem_setup(struct zhpe_conn *conn,
 	return ret;
 }
 
-static void zhpe_pe_rx_get(struct zhpe_rx_entry *rx_entry)
+static void zhpe_pe_rx_get(struct zhpe_rx_entry *rx_entry, bool retry)
 {
 	int			rc;
 	size_t			max_ops;
@@ -867,7 +871,7 @@ static void zhpe_pe_rx_get(struct zhpe_rx_entry *rx_entry)
 	case ZHPE_RX_STATE_EAGER_CLAIMED:
 	case ZHPE_RX_STATE_RND_BUF:
 	case ZHPE_RX_STATE_RND_DIRECT:
-		if (rx_entry->total_len != rx_entry->rem)
+		if (rx_entry->total_len != rx_entry->rem || retry)
 			break;
 		rc = 0;
 		if (rx_entry->lstate.missing) {
@@ -1100,7 +1104,7 @@ static int zhpe_pe_rx_handle_send(struct zhpe_conn *conn,
 		fastlock_release(&rx_ctx->lock);
 	} else {
 		fastlock_release(&rx_ctx->lock);
-		zhpe_pe_rx_get(rx_entry);
+		zhpe_pe_rx_get(rx_entry, false);
 	}
 	goto done;
  found:
@@ -1136,7 +1140,7 @@ static int zhpe_pe_rx_handle_send(struct zhpe_conn *conn,
 	}
 	rx_riov_init(rx_entry, zpay);
 	set_rx_state(rx_entry, ZHPE_RX_STATE_RND_DIRECT);
-	zhpe_pe_rx_get(rx_entry);
+	zhpe_pe_rx_get(rx_entry, false);
  done:
 	if (ret < 0)
 		ZHPE_LOG_ERROR("Error %d\n", ret);
@@ -1168,6 +1172,7 @@ int zhpe_pe_tx_handle_rma(struct zhpe_pe_root *pe_root,
 static void zhpe_pe_retry_tx_rma(struct zhpe_pe_retry *pe_retry)
 {
 	zhpe_pe_tx_rma(pe_retry->data);
+	free(pe_retry);
 }
 
 static int zhpe_pe_writedata(struct zhpe_pe_entry *pe_entry)

@@ -207,7 +207,7 @@ int zhpe_zmr_put_uncached(struct zhpe_mr *zmr)
 				   struct zhpe_kexp_data, lentry);
 		dlist_remove(&kexp->lentry);
 		fastlock_acquire(&kexp->conn->mr_lock);
-		rbt = rbtFind(kexp->conn->kexp_tree, &zmr->zkey);
+		rbt = zhpe_zkey_rbtFind(kexp->conn->kexp_tree, &zmr->zkey);
 		if (rbt)
 			rbtErase(kexp->conn->kexp_tree, rbt);
 		fastlock_release(&kexp->conn->mr_lock);
@@ -218,7 +218,7 @@ int zhpe_zmr_put_uncached(struct zhpe_mr *zmr)
 		fastlock_acquire(&domain->lock);
 	}
 	/* Free key last to prevent re-use race. */
-	rbt = rbtFind(domain->mr_tree, &zmr->zkey);
+	rbt = zhpe_zkey_rbtFind(domain->mr_tree, &zmr->zkey);
 	assert(rbt);
 	if (rbt)
 		rbtErase(domain->mr_tree, rbt);
@@ -254,12 +254,11 @@ struct zhpe_mr *zhpe_mr_find(struct zhpe_domain *domain,
 {
 	struct zhpe_mr		*ret = NULL;
 	RbtIterator		*rbt;
-	void			*keyp;
 
 	fastlock_acquire(&domain->lock);
-	rbt = rbtFind(domain->mr_tree, (void *)zkey);
+	rbt = zhpe_zkey_rbtFind(domain->mr_tree, zkey);
 	if (rbt) {
-		rbtKeyValue(domain->mr_tree, rbt, &keyp, (void **)&ret);
+		ret = zhpe_rbtKeyValue(domain->mr_tree, rbt);
 		zhpe_mr_get(ret);
 	}
 	fastlock_release(&domain->lock);
@@ -290,11 +289,11 @@ int zhpe_zmr_reg(struct zhpe_domain *domain, const void *buf,
 		goto done;
 
 	fastlock_acquire(&domain->lock);
-	rbt = rbtFind(domain->mr_tree, &zmr->zkey);
+	rbt = zhpe_zkey_rbtFind(domain->mr_tree, &zmr->zkey);
 	if (rbt)
 		ret = -FI_ENOKEY;
 	else
-		rbtInsert(domain->mr_tree, &zmr->zkey, zmr);
+		zhpe_zmr_rbtInsert(domain->mr_tree, zmr);
 	fastlock_release(&domain->lock);
 	ofi_atomic_inc32(&domain->ref);
 	if (OFI_UNLIKELY(ret < 0)) {

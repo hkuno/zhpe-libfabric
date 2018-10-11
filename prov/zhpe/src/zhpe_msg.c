@@ -445,7 +445,7 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 			ret = zhpe_conn_key_export(conn, hdr,
 						   pe_entry->liov[i].iov_desc);
 			if (ret < 0)
-				break;
+				goto done;
 		}
 		/* Align payload to uint64_t boundary. */
 		zpay = zhpe_pay_ptr(conn, zhdr, 0, alignof(*zpay));

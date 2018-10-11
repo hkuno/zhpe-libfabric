@@ -1774,7 +1774,7 @@ zhpe_conn_pull(struct zhpe_conn *conn)
 
 static inline int64_t zhpe_tx_reserve(struct zhpe_tx *ztx, uint8_t pe_flags)
 {
-	int64_t			ret = -FI_EAGAIN;
+	int64_t			ret;
 	uint64_t		*blobp;
 	union zhpe_free_index	old;
 	union zhpe_free_index	new;
@@ -1786,8 +1786,10 @@ static inline int64_t zhpe_tx_reserve(struct zhpe_tx *ztx, uint8_t pe_flags)
 	blobp = ((pe_flags & ZHPE_PE_PROV) ?
 		 &ztx->pfree.blob : &ztx->ufree.blob);
 	for (old.blob = new.blob = atomic_load_lazy_uint64(blobp);;) {
-		if (!new.count)
+		if (!new.count) {
+			ret = -FI_EAGAIN;
 			goto done;
+		}
 		pe_entry = &ztx->pentries[new.index];
 		new.index = pe_entry->pe_root.status;
 		new.count--;
@@ -2532,6 +2534,7 @@ static inline int zhpe_tx_op(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
 
 	zhpe_tx_reserve_vars(ret, zhpe_pe_tx_handle_entry, conn, context,
 			     tindex, pe_entry, zhdr, lzaddr, done, pe_flags);
+	pe_entry->flags = 0;
 	*zhdr = ohdr;
 	if (!(pe_flags & ZHPE_PE_PROV))
 		zhdr->pe_entry_id = htons(tindex);
@@ -2741,5 +2744,41 @@ int zhpe_check_user_iov(const struct iovec *uiov, void **udesc,
 			size_t uiov_cnt, uint32_t qaccess,
 			struct zhpe_iov_state *lstate, size_t liov_max,
 			size_t *total_len);
+
+/* Type checked rbt calls. */
+
+static inline RbtIterator
+zhpe_zkey_rbtFind(RbtHandle h, const struct zhpe_key *zkey)
+{
+	return rbtFind(h, (void *)zkey);
+}
+
+static inline RbtStatus
+zhpe_kexp_rbtInsert(RbtHandle h, struct zhpe_kexp_data *kexp)
+{
+	return rbtInsert(h, &kexp->zkey, kexp);
+}
+
+static inline RbtStatus
+zhpe_rkey_rbtInsert(RbtHandle h, struct zhpe_rkey_data *rkey)
+{
+	return rbtInsert(h, &rkey->zkey, rkey);
+}
+
+static inline RbtStatus
+zhpe_zmr_rbtInsert(RbtHandle h, struct zhpe_mr *zmr)
+{
+	return rbtInsert(h, &zmr->zkey, zmr);
+}
+
+static inline void *zhpe_rbtKeyValue(RbtHandle h, RbtIterator i)
+{
+	void			*keyp;
+	void			*kval;
+
+	rbtKeyValue(h, i, &keyp, &kval);
+
+	return kval;
+}
 
 #endif /* _ZHPE_H_ */

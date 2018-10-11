@@ -370,7 +370,6 @@ int zhpe_conn_z_setup(struct zhpe_conn *conn, int conn_fd, int action)
 
 void zhpe_conn_z_free(struct zhpe_conn *conn)
 {
-	void			*keyp;
 	RbtIterator		*rbt;
 	struct zhpe_rkey_data	*rkey;
 	struct zhpe_kexp_data	*kexp;
@@ -381,8 +380,7 @@ void zhpe_conn_z_free(struct zhpe_conn *conn)
 			fastlock_acquire(&conn->ep_attr->domain->lock);
 			fastlock_acquire(&conn->mr_lock);
 			while ((rbt = rbtBegin(conn->kexp_tree)))  {
-				rbtKeyValue(conn->kexp_tree, rbt, &keyp,
-					    (void **)&kexp);
+				kexp = zhpe_rbtKeyValue(conn->kexp_tree, rbt);
 				rbtErase(conn->kexp_tree, rbt);
 				/* FIXME: Think about driver disconnect. */
 				dlist_remove(&kexp->lentry);
@@ -396,8 +394,7 @@ void zhpe_conn_z_free(struct zhpe_conn *conn)
 				free(rkey);
 			}
 			while ((rbt = rbtBegin(conn->rkey_tree)))  {
-				rbtKeyValue(conn->rkey_tree, rbt, &keyp,
-					    (void **)&rkey);
+				rkey = zhpe_rbtKeyValue(conn->rkey_tree, rbt);
 				rbtErase(conn->rkey_tree, rbt);
 				fastlock_release(&conn->mr_lock);
 				zhpe_rkey_put(rkey);
@@ -878,6 +875,8 @@ int zhpe_iov_op(struct zhpe_pe_root *pe_root,
 		zhpe_ziov_state_adv(lstate, len);
 		zhpe_ziov_state_adv(rstate, len);
 	}
+	*lstate = save_lstate;
+	*rstate = save_rstate;
 
 	max_ops = ops;
 	if (!ops)
@@ -896,8 +895,6 @@ int zhpe_iov_op(struct zhpe_pe_root *pe_root,
 
 	pe_root->completions += max_ops;
 
-	*lstate = save_lstate;
-	*rstate = save_rstate;
 	for (ops = 0; ops < max_ops; ops++) {
 		llen = zhpe_ziov_state_len(lstate);
 		lptr = zhpe_iov_state_ptr(lstate, ZHPE_IOV_ZIOV);
@@ -1004,12 +1001,11 @@ static inline struct zhpe_rkey_data *conn_rkey_get(struct zhpe_conn *conn,
 {
 	struct zhpe_rkey_data	*ret;
 	RbtIterator		*rbt;
-	void			*keyp;
 
-	rbt = rbtFind(conn->rkey_tree, (void *)zkey);
+	rbt = zhpe_zkey_rbtFind(conn->rkey_tree, zkey);
 	if (!rbt)
 		return NULL;
-	rbtKeyValue(conn->rkey_tree, rbt, &keyp, (void **)&ret);
+	ret = zhpe_rbtKeyValue(conn->rkey_tree, rbt);
 	__sync_fetch_and_add(&ret->use_count, 1);
 
 	return ret;
@@ -1037,15 +1033,61 @@ int zhpe_conn_key_export(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
 	uint8_t			pe_flags = 0;
 	size_t			blob_len;
 	RbtIterator		*rbt;
-	void			*keyp;
-	struct zhpe_kexp_data	*kexp;
+	int			rc;
+	uint16_t		seq;
+	size_t			pay_len;
 
 	fastlock_acquire(&conn->mr_lock);
+	rbt = zhpe_zkey_rbtFind(conn->kexp_tree, &zmr->zkey);
+	fastlock_release(&conn->mr_lock);
+
+	if (ohdr.op_type == ZHPE_OP_KEY_REQUEST) {
+		/* A response is always expected. */
+		ohdr.op_type = ZHPE_OP_KEY_RESPONSE;
+	} else if (!rbt)
+		/* Only send if we have not already done so. */
+		ohdr.op_type = ZHPE_OP_KEY_EXPORT;
+	else
+		goto done;
+
+	blob_len = sizeof(msg_data.blob);
+	ret = zhpeq_zmmu_export(zhpeq_dom(conn->ztx->zq),
+				zmr->kdata, msg_data.blob, &blob_len);
+	if (ret < 0)
+		goto done;
+
+	seq = __sync_fetch_and_add(&conn->kexp_seq, 1);
+	ohdr.seq = htons(seq);
+	pay_len = offsetof(struct zhpe_msg_key_data, blob) + blob_len;
+	ret = zhpe_prov_op(conn, ohdr, pe_flags, &msg_data, pay_len);
+	/* If zhpe_prov_op() returns -FI_EAGAIN, we don't want to create
+	 * the rkey data. If KEY_EXPORT failed, we try to rewind the sequence;
+	 * if that can't be done, we must force it out to fill the sequence
+	 * remotely. We must also return -FI_EAGAIN to tell the caller to
+	 * retry. A KEY_RESPONSE is always forced out and the error is
+	 * hidden.
+	 */
+	if (ret == -FI_EAGAIN) {
+		if (ohdr.op_type == ZHPE_OP_KEY_REQUEST)
+			ret = 0;
+		else if (__sync_bool_compare_and_swap(&conn->kexp_seq,
+						      seq + 1, seq))
+			goto done;
+		pe_flags |= ZHPE_PE_RETRY;
+		rc = zhpe_prov_op(conn, ohdr, pe_flags, &msg_data, pay_len);
+		if (rc < 0)
+			ret = rc;
+		goto done;
+	} else if (ret < 0)
+		goto done;
+
+	/* Create rkey data. This is racy, but will become less so when
+	 * everything is sequenced.
+	 */
+ 	fastlock_acquire(&conn->mr_lock);
 	for (;;) {
-		rbt = rbtFind(conn->kexp_tree, &zmr->zkey);
+		rbt = zhpe_zkey_rbtFind(conn->kexp_tree, &zmr->zkey);
 		if (rbt) {
-			rbtKeyValue(conn->kexp_tree, rbt, &keyp,
-				    (void **)&kexp);
 			if (new) {
 				fastlock_release(&domain->lock);
 				free(new);
@@ -1066,33 +1108,13 @@ int zhpe_conn_key_export(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
 			fastlock_acquire(&conn->mr_lock);
 			continue;
 		}
-		rbtInsert(conn->kexp_tree, &new->zkey, new);
+		zhpe_kexp_rbtInsert(conn->kexp_tree, new);
 		dlist_insert_tail(&new->lentry, &zmr->kexp_list);
-		kexp = new;
 		fastlock_release(&domain->lock);
 		break;
 	}
 	fastlock_release(&conn->mr_lock);
 
-	if (ohdr.op_type == ZHPE_OP_KEY_REQUEST) {
-		/* A response is always expected. */
-		ohdr.op_type = ZHPE_OP_KEY_RESPONSE;
-		pe_flags |= ZHPE_PE_RETRY;
-	} else if (kexp == new)
-		/* If the kexp is new, we do the export. */
-		ohdr.op_type = ZHPE_OP_KEY_EXPORT;
-	else
-		goto done;
-
-	blob_len = sizeof(msg_data.blob);
-	ret = zhpeq_zmmu_export(zhpeq_dom(conn->ztx->zq),
-				zmr->kdata, msg_data.blob, &blob_len);
-	if (ret < 0)
-		goto done;
-
-	ohdr.seq = htons(__sync_fetch_and_add(&conn->kexp_seq, 1));
-	ret = zhpe_prov_op(conn, ohdr, pe_flags, &msg_data,
-			   offsetof(struct zhpe_msg_key_data, blob) + blob_len);
  done:
 	return ret;
 }
@@ -1103,12 +1125,11 @@ static bool process_rkey_revoke(struct zhpe_conn *conn,
 	bool			ret = false;
 	struct zhpe_rkey_data	*old = NULL;
 	RbtIterator		*rbt;
-	void			*keyp;
 
 	/* conn->mr_lock must be held; return true if unlocked */
-	rbt = rbtFind(conn->rkey_tree, &zkey);
+	rbt = zhpe_zkey_rbtFind(conn->rkey_tree, zkey);
 	if (rbt) {
-		rbtKeyValue(conn->rkey_tree, rbt, &keyp, (void **)&old);
+		old = zhpe_rbtKeyValue(conn->rkey_tree, rbt);
 		rbtErase(conn->rkey_tree, rbt);
 	}
 	if (old) {
@@ -1126,15 +1147,14 @@ static bool process_rkey_import(struct zhpe_conn *conn,
 	bool			ret = false;
 	struct zhpe_rkey_data	*old = NULL;
 	RbtIterator		*rbt;
-	void			*keyp;
 
 	/* conn->mr_lock must be held; return true if unlocked */
-	rbt = rbtFind(conn->rkey_tree, &new->zkey);
+	rbt = zhpe_zkey_rbtFind(conn->rkey_tree, &new->zkey);
 	if (rbt) {
-		rbtKeyValue(conn->rkey_tree, rbt, &keyp, (void **)&old);
+		old = zhpe_rbtKeyValue(conn->rkey_tree, rbt);
 		rbtErase(conn->rkey_tree, rbt);
 	}
-	rbtInsert(conn->rkey_tree, &new->zkey, new);
+	zhpe_rkey_rbtInsert(conn->rkey_tree, new);
 	if (old) {
 		fastlock_release(&conn->mr_lock);
 		zhpe_rkey_put(old);
@@ -1280,7 +1300,6 @@ int zhpe_conn_rkey_revoke(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
 		/* conn->mr_lock was dropped. */
 		goto done;
 	}
-
 	/* Deferred processing. */
 	fastlock_release(&conn->mr_lock);
 	new = malloc(sizeof(*new));
@@ -1393,50 +1412,47 @@ int zhpe_recv_fixed_blob(int sock_fd, void *blob, size_t blob_len)
 
 #if ENABLE_DEBUG
 
-static int zmr_print(void *keyp, void *datap)
+static int zmr_print(void *datap)
 {
 	struct zhpe_mr		*zmr = datap;
 
-	printf("zmr  %p key 0x%Lx/%d use_count %d\n",
-	       zmr, (ullong)zmr->zkey.key, zmr->zkey.internal, zmr->use_count);
+	fprintf(stderr, "zmr  %p key 0x%Lx/%d use_count %d\n",
+		zmr, (ullong)zmr->zkey.key, zmr->zkey.internal, zmr->use_count);
 
 	return 0;
 }
 
-static int rkey_print(void *keyp, void *datap)
+static int rkey_print(void *datap)
 {
 	struct zhpe_rkey_data	*rkey = datap;
 
-	printf("rkey %p key 0x%Lx/%d use_count %d\n",
-	       rkey, (ullong)rkey->zkey.key, rkey->zkey.internal,
-	       rkey->use_count);
+	fprintf(stderr, "rkey %p key 0x%Lx/%d use_count %d\n",
+		rkey, (ullong)rkey->zkey.key, rkey->zkey.internal,
+		rkey->use_count);
 
 	return 0;
 }
 
-static int kexp_print(void *keyp, void *datap)
+static int kexp_print(void *datap)
 {
 	struct zhpe_kexp_data	*kexp = datap;
 
-	printf("kexp %p key 0x%Lx/%d conn %p\n",
-	       kexp, (ullong)kexp->zkey.key, kexp->zkey.internal, kexp->conn);
+	fprintf(stderr, "kexp %p key 0x%Lx/%d conn %p\n",
+		kexp, (ullong)kexp->zkey.key, kexp->zkey.internal, kexp->conn);
 
 	return 0;
 }
 
-static int tree_work(RbtHandle *tree, int (*work)(void *keyp, void *data))
+static int tree_work(RbtHandle *tree, int (*work)(void *data))
 {
 	int			ret = 0;
-	RbtIterator		*rbt;
-	void			*keyp;
-	void			*datap;
+	RbtIterator		rbt;
 
 	rbt = rbtBegin(tree);
 	if (!rbt)
 		return 0;
 	do {
-		rbtKeyValue(tree, rbt, &keyp, &datap);
-		ret = work(keyp, datap);
+		ret = work(zhpe_rbtKeyValue(tree, rbt));
 		if (ret)
 			break;
 	} while ((rbt = rbtNext(tree, rbt)));
