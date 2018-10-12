@@ -718,10 +718,12 @@ static int zhpe_pe_rx_handle_key_request(struct zhpe_conn *conn,
 static int zhpe_pe_rx_handle_key_revoke(struct zhpe_conn *conn,
 					struct zhpe_msg_hdr *zhdr)
 {
+	int			ret = 0;
 	union zhpe_msg_payload	*zpay;
 	size_t			i;
 	size_t			keys;
 	struct zhpe_key		zkey;
+	int			rc;
 
 	zpay = zhpe_pay_ptr(conn, zhdr, 0, alignof(*zpay));
 	keys = ((zhdr->inline_len - ((char *)zpay - (char *)zhdr)) /
@@ -730,10 +732,12 @@ static int zhpe_pe_rx_handle_key_revoke(struct zhpe_conn *conn,
 		memcpy(&zkey, &zpay->key_req.zkeys[i], sizeof(zkey));
 		zkey.key = be64toh(zkey.key);
 		zkey.internal = !!zkey.internal;
-		zhpe_conn_rkey_revoke(conn, *zhdr, &zkey);
+		rc = zhpe_conn_rkey_revoke(conn, *zhdr, &zkey);
+		if (rc < 0 && ret >= 0)
+			ret = rc;
 	}
 
-	return 0;
+	return ret;
 }
 
 static int zhpe_pe_tx_handle_rx_get(struct zhpe_pe_root *pe_root,

@@ -274,7 +274,7 @@ static int do_rx_setup(struct zhpe_conn *conn, int conn_fd, int action)
 	ret = zhpe_conn_rkey_import(conn, ohdr, be64toh(mem_msg2.key),
 				    blob, blob_len, &rx_ringr->cmn.rkey);
 	if (ret < 0) {
-		ZHPE_LOG_ERROR("zhpeq_zmmu_alloc() error %d\n", ret);
+		ZHPE_LOG_ERROR("zhpeq_conn_key_import() error %d\n", ret);
 		goto done;
 	}
 	ret = zhpeq_rem_key_access(rx_ringr->cmn.rkey->kdata, 0, 0, 0,
@@ -1222,8 +1222,8 @@ static void insert_rkey_deferred(struct zhpe_conn *conn,
 }
 
 int zhpe_conn_rkey_import(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
-			  uint64_t key, const void *blob, size_t blob_len,
-			  struct zhpe_rkey_data **rkey_out)
+			   uint64_t key, const void *blob, size_t blob_len,
+			   struct zhpe_rkey_data **rkey_out)
 {
 	int			ret;
 	struct zhpe_rkey_data	*new = NULL;
@@ -1253,33 +1253,18 @@ int zhpe_conn_rkey_import(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
 	}
 
 	fastlock_acquire(&conn->mr_lock);
-	if (ohdr.seq != conn->rkey_seq && ohdr.op_type != ZHPE_OP_NONE) {
-		insert_rkey_deferred(conn, new);
-		fastlock_release(&conn->mr_lock);
-		goto done;
-	}
-	if (ohdr.op_type != ZHPE_OP_NONE)
+	if (ohdr.op_type != ZHPE_OP_NONE) {
+		if (ohdr.seq != conn->rkey_seq) {
+			insert_rkey_deferred(conn, new);
+			fastlock_release(&conn->mr_lock);
+			goto done;
+		}
 		conn->rkey_seq++;
+	}
 	process_rkey_deferred(conn, !process_rkey_import(conn, new));
 	/* conn->mr_lock was dropped. */
-	ret = 0;
 
  done:
-	if (ret < 0) {
-		/* We're probably dead, but try. */
-		if (rkey_out)
-			*rkey_out = NULL;
-		if (ohdr.op_type != ZHPE_OP_NONE) {
-			if (ohdr.op_type == ZHPE_OP_KEY_RESPONSE)
-				zhpe_pe_complete_key_response(conn, ohdr, ret);
-			fastlock_acquire(&conn->mr_lock);
-			if (ohdr.seq == conn->rkey_seq) {
-				conn->rkey_seq++;
-				process_rkey_deferred(conn, true);
-			} else
-				fastlock_release(&conn->mr_lock);
-		}
-	}
 
 	return ret;
 }
@@ -1294,9 +1279,7 @@ int zhpe_conn_rkey_revoke(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
 	fastlock_acquire(&conn->mr_lock);
 	if (ohdr.seq == conn->rkey_seq) {
 		conn->rkey_seq++;
-		if (process_rkey_revoke(conn, zkey))
-			ret = -FI_ENOKEY;
-		process_rkey_deferred(conn, !ret);
+		process_rkey_deferred(conn, !process_rkey_revoke(conn, zkey));
 		/* conn->mr_lock was dropped. */
 		goto done;
 	}
