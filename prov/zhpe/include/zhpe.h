@@ -119,7 +119,7 @@ extern struct zhpe_stats	zhpe_stats_recv;
 
 #ifdef HAVE_ZHPE_SIM
 
-#include <api_linux64.h>
+#include <hpe_sim_api_linux64.h>
 
 void zhpe_stats_init(void);
 void zhpe_stats_start(struct zhpe_stats *stats);
