@@ -280,7 +280,7 @@ static int zhpe_eq_fi_close(struct fid *fid)
 	dlistfd_head_free(&zhpe_eq->list);
 	dlistfd_head_free(&zhpe_eq->err_list);
 	fastlock_destroy(&zhpe_eq->lock);
-	ofi_atomic_dec32(&zhpe_eq->zhpe_fab->ref);
+	atm_dec(&zhpe_eq->zhpe_fab->ref);
 
 	if (zhpe_eq->signal && zhpe_eq->attr.wait_obj == FI_WAIT_MUTEX_COND)
 		zhpe_wait_close(&zhpe_eq->waitset->fid);
@@ -393,7 +393,7 @@ int zhpe_eq_open(struct fid_fabric *fabric, struct fi_eq_attr *attr,
 		goto err2;
 
 	fastlock_init(&zhpe_eq->lock);
-	ofi_atomic_inc32(&zhpe_eq->zhpe_fab->ref);
+	atm_inc(&zhpe_eq->zhpe_fab->ref);
 
 	switch (zhpe_eq->attr.wait_obj) {
 	case FI_WAIT_NONE:

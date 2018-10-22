@@ -68,13 +68,12 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 
 	case FI_CLASS_EP:
 		zhpe_ep = container_of(ep, struct zhpe_ep, ep);
-		tx_ctx = zhpe_ep->attr->tx_ctx->use_shared ?
-			zhpe_ep->attr->tx_ctx->stx_ctx : zhpe_ep->attr->tx_ctx;
+		tx_ctx = zhpe_ep->attr->tx_ctx;
 		ep_attr = zhpe_ep->attr;
 		op_flags = zhpe_ep->tx_attr.op_flags;
 		break;
 	case FI_CLASS_TX_CTX:
-		tx_ctx = container_of(ep, struct zhpe_tx_ctx, fid.ctx);
+		tx_ctx = container_of(ep, struct zhpe_tx_ctx, ctx);
 		ep_attr = tx_ctx->ep_attr;
 		op_flags = tx_ctx->attr.op_flags;
 		break;
@@ -194,9 +193,9 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 	 * hardware.
 	 */
 	hdr.flags |= ZHPE_MSG_DELIVERY_COMPLETE;
-	pe_entry->pe_root.completions++;
+	pe_entry->pe_root.compstat.completions++;
 
-	zpay = zhpe_pay_ptr(conn, zhdr, 0, alignof(*zpay));
+	zpay = zhpe_pay_ptr(conn, zhdr, 0, __alignof__(*zpay));
 
 	o64 = 0;
 	if (msg->op != FI_ATOMIC_READ) {
@@ -254,7 +253,7 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 	ret = zhpe_pe_tx_ring(pe_entry, zhdr, lzaddr, cmd_len);
  done:
 	if (ret < 0 && tindex != -1)
-		zhpe_tx_release(conn, pe_entry);
+		zhpe_tx_release(pe_entry);
 
 	return ret;
 }

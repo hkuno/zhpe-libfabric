@@ -94,6 +94,8 @@
 #include <ofi_rbuf.h>
 #include <ofi_util.h>
 
+#include <zhpeq_util.h>
+
 enum {
 	ZHPE_STATS_STOPPED,
 	ZHPE_STATS_RUNNING,
@@ -155,203 +157,6 @@ static inline void zhpe_stats_close(struct zhpe_stats *stats) {}
 void gdb_hook(void);
 #endif
 
-typedef long long		llong;
-typedef unsigned long long	ullong;
-
-union sockaddr_in46 {
-	uint64_t		alignment;
-	/* sa_family common to all, sin_port common to IPv4/6. */
-	struct {
-		sa_family_t	sa_family;
-		in_port_t	sin_port;
-	};
-	struct sockaddr_in	addr4;
-	struct sockaddr_in6	addr6;
-};
-
-static inline size_t sockaddr_len(const void *addr)
-{
-	const union sockaddr_in46 *sa = addr;
-
-	switch (sa->sa_family) {
-
-	case AF_INET:
-		return sizeof(struct sockaddr_in);
-
-	case AF_INET6:
-		return sizeof(struct sockaddr_in6);
-
-	default:
-		return 0;
-	}
-}
-
-static inline bool sockaddr_valid(const void *addr, size_t src_len,
-				  bool check_len)
-{
-	size_t			len = sockaddr_len(addr);
-
-	if (!len)
-		return false;
-
-	return (!check_len || src_len >= len);
-}
-
-static inline void sockaddr_cpy(union sockaddr_in46 *dst, const void *src)
-{
-	memcpy(dst, src, sockaddr_len(src));
-}
-
-static inline union sockaddr_in46 *sockaddr_dup(const void *src)
-{
-	union sockaddr_in46	*ret = NULL;
-	size_t			len = sockaddr_len(src);
-
-	if (len)
-		ret = malloc(sizeof(*ret));
-	if (ret)
-		memcpy(ret, src, len);
-
-	return ret;
-}
-
-static inline int sockaddr_cmp_noport(const void *addr1, const void *addr2)
-{
-	int			ret;
-	const union sockaddr_in46 *sa1 = addr1;
-	const union sockaddr_in46 *sa2 = addr2;
-
-	ret = memcmp(&sa1->sa_family, &sa2->sa_family, sizeof(sa1->sa_family));
-	if (ret)
-		goto done;
-
-	switch (sa1->sa_family) {
-
-	case AF_INET:
-		ret = memcmp(&sa1->addr4.sin_addr, &sa2->addr4.sin_addr,
-			     sizeof(sa1->addr4.sin_addr));
-		break;
-
-	case AF_INET6:
-		ret = memcmp(&sa1->addr6.sin6_addr, &sa2->addr6.sin6_addr,
-			     sizeof(sa1->addr6.sin6_addr));
-		break;
-
-	default:
-		ret = -1;
-		break;
-	}
-
- done:
-	return ret;
-}
-
-static inline int sockaddr_portcmp(const void *addr1, const void *addr2)
-{
-	int			ret;
-	const union sockaddr_in46 *sa1 = addr1;
-	const union sockaddr_in46 *sa2 = addr2;
-
-	ret = memcmp(&sa1->sin_port, &sa2->sin_port, sizeof(sa1->sin_port));
-
-	return ret;
-}
-
-static inline int sockaddr_cmp(const void *addr1, const void *addr2)
-{
-	int			ret;
-	const union sockaddr_in46 *sa1 = addr1;
-	const union sockaddr_in46 *sa2 = addr2;
-
-	ret = sockaddr_cmp_noport(sa1, sa2);
-	if (ret)
-		goto done;
-
-	ret = sockaddr_portcmp(sa1, sa2);
- done:
-	return ret;
-}
-
-static inline const char *sockaddr_ntop(const void *addr,
-					char *buf, size_t len)
-{
-	const char		*ret = NULL;
-	const union sockaddr_in46 *sa = addr;
-
-	switch (sa->sa_family) {
-
-	case AF_INET:
-		ret = inet_ntop(AF_INET, &sa->addr4.sin_addr, buf, len);
-		break;
-
-	case AF_INET6:
-		ret = inet_ntop(AF_INET6, &sa->addr6.sin6_addr, buf, len);
-		break;
-
-	default:
-		if (*buf && len)
-			buf[0] = '\0';
-		errno = EAFNOSUPPORT;
-		break;
-	}
-
-	return ret;
-}
-
-static inline bool sockaddr_wildcard(const void *addr)
-{
-	bool			ret = false;
-	const union sockaddr_in46 *sa = addr;
-
-	switch (sa->sa_family) {
-
-	case AF_INET:
-		ret = (sa->addr4.sin_addr.s_addr == htonl(INADDR_ANY));
-		break;
-
-	case AF_INET6:
-		ret = !memcmp(&sa->addr6.sin6_addr, &in6addr_any,
-			      sizeof(in6addr_any));
-		break;
-
-	default:
-		break;
-	}
-
-	return ret;
-}
-
-static inline bool sockaddr_loopback6(const struct sockaddr_in6 *sa)
-{
-	return !memcmp(&sa->sin6_addr, &in6addr_loopback,
-		       sizeof(sa->sin6_addr));
-}
-
-static inline bool sockaddr_loopback(const void *addr, bool loopany)
-{
-	bool			ret = false;
-	const union sockaddr_in46 *sa = addr;
-	uint32_t		netmask;
-
-	switch (sa->sa_family) {
-
-	case AF_INET:
-		netmask = (loopany ? IN_CLASSA_NET : ~(uint32_t)0);
-		ret = ((ntohl(sa->addr4.sin_addr.s_addr) & netmask) ==
-		       (INADDR_LOOPBACK & netmask));
-		break;
-
-	case AF_INET6:
-		ret = sockaddr_loopback6(&sa->addr6);
-		break;
-
-	default:
-		break;
-	}
-
-	return ret;
-}
-
 static inline int zhpe_sa_family(const struct fi_info *info)
 {
 	if (info) {
@@ -375,58 +180,6 @@ static inline int zhpe_sa_family(const struct fi_info *info)
 	return AF_UNSPEC;
 }
 
-/* FIXME. */
-#define alignof			__alignof__
-
-#define NOOPTIMIZE      asm volatile("")
-
-#if defined(__x86_32__) || defined( __x86_64__)
-
-#define _BARRIER_DEFINED
-
-static inline void smp_mb(void)
-{
-	asm volatile("mfence":::"memory");
-}
-
-static inline void smp_rmb(void)
-{
-	asm volatile("lfence":::"memory");
-}
-
-static inline void smp_wmb(void)
-{
-	asm volatile("sfence":::"memory");
-}
-
-#endif
-
-/* Compiler won't reorder; lazy (no CPU barriers); won't be torn. */
-
-static inline uint32_t atomic_load_lazy_uint32(uint32_t *p)
-{
-	return *(volatile uint32_t *)p;
-}
-
-static inline void atomic_store_lazy_uint32(uint32_t *p, uint32_t v)
-{
-	*(volatile uint32_t *)p = v;
-}
-
-static inline uint64_t atomic_load_lazy_uint64(uint64_t *p)
-{
-	return *(volatile uint64_t *)p;
-}
-
-static inline void atomic_store_lazy_uint64(uint64_t *p, uint64_t v)
-{
-	*(volatile uint64_t *)p = v;
-}
-
-#ifndef ARRAY_SIZE
-#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
-#endif
-
 extern const char zhpe_fab_name[];
 extern const char zhpe_dom_name[];
 extern const char zhpe_prov_name[];
@@ -443,8 +196,22 @@ extern int zhpe_mr_cache_enable;
 extern int zhpe_mr_cache_merge_regions;
 extern size_t zhpe_mr_cache_max_cnt;
 extern size_t zhpe_mr_cache_max_size;
+extern const struct fi_domain_attr zhpe_domain_attr;
+extern const struct fi_fabric_attr zhpe_fabric_attr;
+extern struct fi_ops_msg zhpe_ep_msg_ops_locked;
+extern struct fi_ops_tagged zhpe_ep_tagged_locked;
+extern struct fi_ops_msg zhpe_ep_msg_ops_unlocked;
+extern struct fi_ops_tagged zhpe_ep_tagged_unlocked;
+extern struct fi_ops_rma zhpe_ep_rma;
+extern struct fi_ops_atomic zhpe_ep_atomic;
 extern char *zhpe_stats_dir;
 extern char *zhpe_stats_unique;
+
+/* For the moment, we're going to assume these will always use locks. */
+extern struct fi_ops_cm zhpe_ep_cm_ops;
+extern struct fi_ops_ep zhpe_ep_ops;
+extern struct fi_ops zhpe_ep_fi_ops;
+extern struct fi_ops_ep zhpe_ctx_ep_ops;
 
 static inline void *zhpe_mremap(void *old_address, size_t old_size,
 				size_t new_size)
@@ -516,7 +283,6 @@ enum {
 };
 
 enum {
-	ZHPE_CONN_STATE_FREE,
 	ZHPE_CONN_STATE_INIT,
 	ZHPE_CONN_STATE_RACED,
 	ZHPE_CONN_STATE_READY,
@@ -552,6 +318,7 @@ enum {
 #define ZHPE_NO_COMPLETION	(1ULL << 60)
 #define ZHPE_USE_OP_FLAGS	(1ULL << 61)
 #define ZHPE_TRIGGERED_OP	(1ULL << 62)
+#define ZHPE_PROV_FLAGS		(0xFULL << 60)
 
 #define ZHPE_BAD_FLAGS_MASK	(0xFULL << 60)
 
@@ -571,7 +338,7 @@ enum {
 
 struct zhpe_fabric {
 	struct fid_fabric	fab_fid;
-	ofi_atomic32_t		ref;
+	int32_t			ref;
 	struct dlist_entry	service_list;
 	struct dlist_entry	fab_lentry;
 	fastlock_t		lock;
@@ -581,16 +348,21 @@ struct zhpe_fabric {
 
 #define ZHPE_RING_TX_CQ_ENTRIES		(16)
 
-#define ZHPE_BAD_INDEX			(~(uint32_t)0)
+struct zhpe_free_index {
+	uint32_t		seq;
+	uint16_t		index;
+	uint16_t		count;
+} INT64_ALIGNED;
 
-union zhpe_free_index {
-	struct {
-		uint32_t        seq;
-		uint16_t        index;
-		uint16_t	count;
-	};
-	uint64_t		blob;
-};
+struct zhpe_rx_tail {
+	uint32_t		tail;
+	uint32_t		shadow_head;
+} INT64_ALIGNED;
+
+
+#define MS_PER_SEC		(1000UL)
+#define US_PER_SEC		(1000000UL)
+#define NS_PER_SEC		(1000000000UL)
 
 /* Free entry:on pointer boundary.
  * Bit 0 of size zero => prev_size valid
@@ -613,7 +385,6 @@ struct zhpe_slab {
 	uint32_t		size;
 	struct dlist_entry	free_list;
 	struct zhpe_mr		*zmr;
-	fastlock_t		lock;
 	int32_t			use_count;
 };
 
@@ -651,15 +422,22 @@ struct zhpe_kexp_data {
 };
 
 struct zhpe_tx {
+	struct dlist_entry	pe_lentry;
+	struct zhpe_ep_attr	*ep_attr;
 	char			*zentries;
 	struct zhpe_pe_entry	*pentries;
 	struct zhpe_mr		*zmr;
 	uint64_t		lz_zentries;
-	union zhpe_free_index	ufree;
-	union zhpe_free_index	pfree;
+	struct zhpe_free_index	ufree;
+	struct zhpe_free_index	pfree;
 	struct zhpeq		*zq;
+	pthread_mutex_t		mutex;
 	uint32_t		mask;
 	int32_t			use_count;
+	struct zhpeu_atm_list_ptr pe_retry_free_list;
+	struct zhpeu_atm_snatch_head pe_retry_list;
+	struct zhpeu_atm_snatch_head rx_poll_list CACHE_ALIGNED;
+
 };
 
 struct zhpe_rx_common {
@@ -679,25 +457,26 @@ struct zhpe_rx_peer_visible {
 
 struct zhpe_pe_root;
 
-typedef int (*zhpe_pe_tx_handler)(struct zhpe_pe_root *pe_root,
-				  struct zhpeq_cq_entry *zq_cqe);
-
 #define ZHPE_PE_PROV			(0x01)
 #define ZHPE_PE_RETRY			(0x02)
 #define ZHPE_PE_KEY_WAIT		(0x04)
-#define ZHPE_PE_NO_RINDEX		(0x08)
-#define ZHPE_PE_INUSE			(0x10)
+#define ZHPE_PE_INUSE			(0x08)
 
 struct zhpe_conn;
 
+/* Need to atomically update status and completion in some cases. */
+struct zhpe_pe_compstat {
+	int16_t			status;
+	int8_t			completions;
+	uint8_t			flags;
+} INT32_ALIGNED;
+
 struct zhpe_pe_root {
-	zhpe_pe_tx_handler	handler;
+	void			(*handler)(struct zhpe_pe_root *pe_root,
+					   struct zhpeq_cq_entry *zq_cqe);
 	struct zhpe_conn	*conn;
 	void			*context;
-	int32_t			status;
-	uint16_t		rindex;
-	uint8_t			completions;
-	uint8_t			flags;
+	struct zhpe_pe_compstat	compstat;
 };
 
 struct zhpe_rx_remote {
@@ -705,10 +484,9 @@ struct zhpe_rx_remote {
 	uint64_t		rz_zentries;
 	uint64_t		rz_peer_visible;
 	uint32_t		completed;
-	uint32_t		tail;
 	struct zhpe_pe_root	pull_pe_root;
-	uint32_t		pull_busy;
-	uint32_t		shadow;
+	struct zhpe_rx_tail	tail CACHE_ALIGNED;
+	int32_t			pull_busy;
 };
 
 struct zhpe_rx_local {
@@ -722,33 +500,25 @@ struct zhpe_conn {
 	union sockaddr_in46	addr;
 	struct zhpe_ep_attr	*ep_attr;
 	fi_addr_t		fi_addr;
-	size_t			av_index;
 	struct dlist_entry	ep_lentry;
+	struct zhpeu_atm_list_next rx_poll_next;
 	struct zhpe_tx_ctx	*tx_ctx;
 	struct zhpe_rx_ctx	*rx_ctx;
 	fi_addr_t		zq_index;
 	struct zhpe_tx		*ztx;
 	struct zhpe_rx_local	rx_local;
 	struct zhpe_rx_remote	rx_remote;
-	fastlock_t		mr_lock;
+	/* rkey stuff locked by rx_ctx->mutex */
 	RbtHandle		rkey_tree;
-	RbtHandle		kexp_tree;
-	pthread_mutex_t		mutex;
-	pthread_cond_t		cond;
 	struct dlist_entry	rkey_deferred_list;
-	uint16_t		kexp_seq;
 	uint16_t		rkey_seq;
+	/* kexp stuff locked by tx_ctx->mutex */
+	RbtHandle		kexp_tree;
+	uint16_t		kexp_seq;
+
 	uint8_t			hdr_off;
 	uint8_t			state;
 	bool			local;
-};
-
-struct zhpe_conn_map {
-	struct zhpe_conn	*table;
-	int			used;
-	int			size;
-	pthread_mutex_t		mutex;
-	pthread_cond_t		cond;
 };
 
 struct zhpe_domain {
@@ -757,7 +527,7 @@ struct zhpe_domain {
 	struct fi_domain_attr	attr;
 	struct zhpe_fabric	*fab;
 	fastlock_t		lock;
-	ofi_atomic32_t		ref;
+	int32_t			ref;
 
 	struct zhpe_eq		*eq;
 	struct zhpe_eq		*mr_eq;
@@ -807,6 +577,7 @@ struct zhpe_triggered_context {
 
 struct zhpe_trigger {
 	enum fi_op_type op_type;
+	bool lock;
 	size_t threshold;
 	struct dlist_entry lentry;
 
@@ -852,10 +623,10 @@ struct zhpe_trigger {
 struct zhpe_cntr {
 	struct fid_cntr		cntr_fid;
 	struct zhpe_domain	*domain;
-	ofi_atomic32_t		value;
-	ofi_atomic32_t		ref;
-	ofi_atomic32_t		err_cnt;
-	ofi_atomic32_t		last_read_val;
+	uint32_t		value;
+	int32_t			ref;
+	uint32_t		err_cnt;
+	uint32_t		last_read_val;
 	pthread_cond_t 		cond;
 	pthread_mutex_t		mut;
 	struct fi_cntr_attr	attr;
@@ -869,13 +640,13 @@ struct zhpe_cntr {
 
 	struct fid_wait		*waitset;
 	int			signal;
-	ofi_atomic32_t		num_waiting;
+	uint32_t		num_waiting;
 	int			err_flag;
 };
 
 struct zhpe_mr_ops {
 	struct fi_ops		fi_ops;
-	void			(*free)(void *ptr);
+	void			(*freeme)(void *ptr);
 	int			(*put)(struct zhpe_mr *zmr);
 };
 
@@ -906,7 +677,7 @@ struct zhpe_av_table_hdr {
 struct zhpe_av {
 	struct fid_av av_fid;
 	struct zhpe_domain *domain;
-	ofi_atomic32_t ref;
+	int32_t ref;
 	struct fi_av_attr attr;
 	uint64_t mask;
 	int rx_ctx_bits;
@@ -1092,13 +863,10 @@ struct zhpe_conn_listener {
 };
 
 struct zhpe_ep_attr {
-	size_t fclass;
-
-	int tx_shared;
-	int rx_shared;
+	size_t			fclass;
 	size_t min_multi_recv;
 
-	ofi_atomic32_t ref;
+	int32_t ref;
 	struct zhpe_eq *eq;
 	struct zhpe_av *av;
 	struct zhpe_domain *domain;
@@ -1108,8 +876,8 @@ struct zhpe_ep_attr {
 
 	struct zhpe_rx_ctx **rx_array;
 	struct zhpe_tx_ctx **tx_array;
-	ofi_atomic32_t num_rx_ctx;
-	ofi_atomic32_t num_tx_ctx;
+	uint32_t num_rx_ctx;
+	uint32_t num_tx_ctx;
 
 	struct dlist_entry rx_ctx_lentry;
 	struct dlist_entry tx_ctx_lentry;
@@ -1127,13 +895,12 @@ struct zhpe_ep_attr {
 	bool			rma_event;
 	struct zhpe_cm_entry cm;
 	struct zhpe_conn_listener listener;
-	fastlock_t lock;
 
-	struct index_map av_idm;
-	struct zhpe_conn_map cmap;
+	pthread_mutex_t		conn_mutex;
+	pthread_cond_t		conn_cond;
+	struct dlist_entry	conn_list;
+	struct index_map	av_idm;
 
-	fastlock_t		pe_retry_lock;
-	struct dlist_entry	pe_retry_list;
 	/* Lower-level data */
 	struct zhpe_tx		*ztx;
 	/* We need to get back to the ep and it less pain to have a pointer.
@@ -1164,34 +931,38 @@ struct zhpe_pe_retry;
 typedef void (*zhpe_pe_retry_handler)(struct zhpe_pe_retry *pe_retry);
 
 struct zhpe_pe_retry {
+	struct zhpeu_atm_list_next next;
 	zhpe_pe_retry_handler	handler;
-	struct dlist_entry	lentry;
 	void			*data;
+	void			(*freedata)(void *data);
 };
 
 enum zhpe_rx_state {
 	ZHPE_RX_STATE_IDLE,
 	ZHPE_RX_STATE_INLINE,
-	ZHPE_RX_STATE_RND,
 	ZHPE_RX_STATE_RND_BUF,
 	ZHPE_RX_STATE_RND_DIRECT,
 	ZHPE_RX_STATE_EAGER,
 	ZHPE_RX_STATE_EAGER_CLAIMED,
 	ZHPE_RX_STATE_EAGER_DONE,
-	ZHPE_RX_STATE_COMPLETE,
 	ZHPE_RX_STATE_DISCARD,
-	ZHPE_RX_STATE_DROP,
 };
 
-enum zhpe_rx_buf {
-	ZHPE_RX_BUF_USER,
-	ZHPE_RX_BUF,
-	ZHPE_RX_BUF_EAGER,
+struct zhpe_rx_entry_free {
+	struct zhpe_rx_ctx	*rx_ctx;
+	struct zhpeu_atm_list_ptr rx_fifo_list;
+	struct util_buf_pool	*rx_entry_pool;
 };
 
 struct zhpe_rx_entry {
 	struct dlist_entry	lentry;
-	struct zhpe_pe_root	pe_root;
+	struct zhpe_rx_entry_free *rx_free;
+	struct zhpeu_atm_list_next rx_match_next;
+	struct zhpeu_atm_list_next rx_iodone_next;
+	struct zhpe_rx_entry	*rx_user;
+	struct zhpe_conn	*conn;
+	void			*context;
+	struct zhpe_pe_entry	*pe_entry;
 
 	uint64_t		flags;
 	uint64_t		addr;
@@ -1200,91 +971,63 @@ struct zhpe_rx_entry {
 	uint64_t		ignore;
 	uint64_t		total_len;
 	uint64_t		rem;
-	void			*context;
 	void			*buf;
 	struct zhpe_msg_hdr	zhdr;
 
-	struct zhpe_iov_state	ustate;
 	struct zhpe_iov_state	lstate;
 	struct zhpe_iov		liov[ZHPE_EP_MAX_IOV_LIMIT];
 	union {
-		struct {
-			struct zhpe_iov_state rstate;
-			struct zhpe_iov riov[ZHPE_EP_MAX_IOV_LIMIT];
-			void	*inline_ptr;
-		};
-		char		inline_data[64];
+		int32_t		multi_cnt;
+		char		inline_data[ZHPE_RING_ENTRY_LEN];
 	};
+	int			status;
 	uint8_t			rx_state;
-	uint8_t			buffered;
+	bool			slab;
 };
 
 struct zhpe_rx_ctx {
-	struct fid_ep ctx;
-
-	uint8_t rx_id;
-	int enabled;
-	int progress;
-	int recv_cq_event;
-	int use_shared;
-
-	size_t buffered_len;
-	size_t min_multi_recv;
-	uint64_t addr;
-	struct zhpe_comp comp;
-	struct zhpe_rx_ctx *srx_ctx;
-
-	struct zhpe_ep_attr *ep_attr;
-	struct zhpe_av *av;
-	struct zhpe_eq *eq;
- 	struct zhpe_domain *domain;
-
+	struct fid_ep		ctx;
+	pthread_mutex_t		mutex;
+	struct zhpe_ep_attr	*ep_attr;
+	struct zhpe_av		*av;
+	struct zhpe_eq		*eq;
+ 	struct zhpe_domain	*domain;
 	struct dlist_entry	pe_lentry;
 	struct dlist_entry	cq_lentry;
+	struct zhpe_comp	comp;
 
+	struct fi_rx_attr	attr;
+	uint8_t			rx_id;
+	bool			enabled;
+
+	struct zhpe_slab	eager;
+	size_t			min_multi_recv;
 	struct dlist_entry	rx_posted_list;
 	struct dlist_entry	rx_buffered_list;
 	struct dlist_entry	rx_work_list;
-	struct dlist_entry	ep_list;
-	fastlock_t lock;
 
-	struct fi_rx_attr attr;
+	struct zhpe_rx_entry_free rx_user_free CACHE_ALIGNED;
 
-	struct util_buf_pool	*rx_entry_pool;
-	struct zhpe_slab	eager;
+	struct zhpe_rx_entry_free rx_prog_free CACHE_ALIGNED;
+	struct zhpeu_atm_snatch_head rx_match_list;
+	struct zhpeu_atm_snatch_head rx_iodone_list;
+	uint32_t		rx_io_count;
 };
 
 struct zhpe_tx_ctx {
-	union {
-		struct fid_ep ctx;
-		struct fid_stx stx;
-	} fid;
-	size_t fclass;
+	struct fid_ep		ctx;
+	pthread_mutex_t		mutex;
+	struct zhpe_ep_attr	*ep_attr;
+	struct zhpe_av		*av;
+	struct zhpe_eq		*eq;
+ 	struct zhpe_domain	*domain;
+	struct dlist_entry	pe_lentry;
+	struct dlist_entry	cq_lentry;
+	struct zhpe_comp	comp;
 
-	fastlock_t wlock;
-	fastlock_t rlock;
-
-	uint16_t tx_id;
-	uint8_t enabled;
-	uint8_t progress;
-
-	int use_shared;
-	uint64_t addr;
-	struct zhpe_comp comp;
-	struct zhpe_tx_ctx *stx_ctx;
-
-	struct zhpe_ep_attr *ep_attr;
-	struct zhpe_av *av;
-	struct zhpe_eq *eq;
- 	struct zhpe_domain *domain;
-
-	struct dlist_entry pe_lentry;
-	struct dlist_entry cq_lentry;
-
-	struct dlist_entry ep_list;
-
-	struct fi_tx_attr attr;
-	fastlock_t lock;
+	struct fi_tx_attr	attr;
+	uint8_t			tx_id;
+	bool			enabled;
 };
 
 struct zhpe_msg_send_indirect {
@@ -1310,7 +1053,7 @@ struct zhpe_msg_key_data {
 /* Must fit in 32 bytes for put-immediate-based implementation. */
 struct zhpe_msg_status {
 	uint64_t		rem;
-	int32_t			status;
+	int16_t			status;
 	char			end[0];
 };
 
@@ -1372,22 +1115,18 @@ struct zhpe_pe_entry {
 };
 
 struct zhpe_pe {
-	struct zhpe_domain *domain;
-	fastlock_t signal_lock;
-	pthread_mutex_t list_lock;
-	int wcnt, rcnt;
-	int signal_fds[2];
-	uint64_t waittime;
+	struct zhpeu_work_head	work_head;
+	struct zhpe_domain	*domain;
+	int64_t			waittime;
 
-	struct util_buf_pool *pe_rx_pool;
-	struct util_buf_pool *atomic_rx_pool;
+	bool			(*progress_queue)(struct zhpe_tx *ztx);
+	bool			(*progress_rx)(struct zhpe_rx_ctx *rx_ctx);
 
-	struct dlist_entry tx_list;
-	struct dlist_entry rx_list;
+	struct dlist_entry	queue_list;
+	struct dlist_entry	rx_list;
 
-	pthread_t progress_thread;
-	uint32_t do_progress;
-	struct zhpe_pe_entry *pe_atomic;
+	pthread_t		progress_thread;
+	bool			do_progress;
 };
 
 typedef int (*zhpe_cq_report_fn) (struct zhpe_cq *cq, fi_addr_t addr,
@@ -1404,7 +1143,7 @@ struct zhpe_cq {
 	struct fid_cq cq_fid;
 	struct zhpe_domain *domain;
 	ssize_t cq_entry_size;
-	ofi_atomic32_t ref;
+	int32_t ref;
 	struct fi_cq_attr attr;
 
 	struct ofi_ringbuf addr_rb;
@@ -1416,7 +1155,7 @@ struct zhpe_cq {
 
 	struct fid_wait *waitset;
 	int signal;
-	ofi_atomic32_t signaled;
+	uint32_t signaled;
 
 	struct dlist_entry ep_list;
 	struct dlist_entry rx_list;
@@ -1531,12 +1270,6 @@ int zhpe_msg_passive_ep(struct fid_fabric *fabric, struct fi_info *info,
 int zhpe_ep_enable(struct fid_ep *ep);
 int zhpe_ep_disable(struct fid_ep *ep);
 
-int zhpe_stx_ctx(struct fid_domain *domain,
-		 struct fi_tx_attr *attr, struct fid_stx **stx, void *context);
-int zhpe_srx_ctx(struct fid_domain *domain,
-		 struct fi_rx_attr *attr, struct fid_ep **srx, void *context);
-
-
 int zhpe_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr,
 		 struct fid_cq **cq, void *context);
 int zhpe_cq_report_error(struct zhpe_cq *cq, struct fi_cq_tagged_entry *entry,
@@ -1570,15 +1303,14 @@ void zhpe_cntr_remove_rx_ctx(struct zhpe_cntr *cntr,
 			     struct zhpe_rx_ctx *rx_ctx);
 
 
-struct zhpe_rx_ctx *zhpe_rx_ctx_alloc(const struct fi_rx_attr *attr,
-				      void *context, int use_shared,
-				      struct zhpe_domain *domain);
+struct zhpe_rx_ctx *
+zhpe_rx_ctx_alloc(const struct fi_rx_attr *attr, void *context,
+		  struct zhpe_domain *domain);
+
 void zhpe_rx_ctx_free(struct zhpe_rx_ctx *rx_ctx);
 
 struct zhpe_tx_ctx *zhpe_tx_ctx_alloc(const struct fi_tx_attr *attr,
-				      void *context, int use_shared);
-struct zhpe_tx_ctx *zhpe_stx_ctx_alloc(const struct fi_tx_attr *attr,
-				       void *context);
+				      void *context);
 void zhpe_tx_ctx_free(struct zhpe_tx_ctx *tx_ctx);
 
 int zhpe_poll_open(struct fid_domain *domain, struct fi_poll_attr *attr,
@@ -1593,26 +1325,27 @@ int zhpe_wait_close(fid_t fid);
 int zhpe_av_open(struct fid_domain *domain, struct fi_av_attr *attr,
 		 struct fid_av **av, void *context);
 int zhpe_av_compare_addr(struct zhpe_av *av, fi_addr_t addr1, fi_addr_t addr2);
-int zhpe_av_get_addr_index(struct zhpe_av *av,
-			   const union sockaddr_in46 *addr);
+int zhpe_av_get_addr_index(struct zhpe_av *av, const void *addr,
+			   size_t *av_index);
+int zhpe_av_get_addr(struct zhpe_av *av, size_t av_index,
+		     union sockaddr_in46 *sa);
 
 int zhpe_ep_get_conn(struct zhpe_ep_attr *ep_attr, fi_addr_t index,
 		     struct zhpe_conn **pconn);
 int zhpe_ep_connect(struct zhpe_ep_attr *attr, struct zhpe_conn *conn);
-struct zhpe_conn *zhpe_conn_map_lookup(struct zhpe_ep_attr *ep_attr,
-				       const union sockaddr_in46 *addr,
-				       bool local);
-struct zhpe_conn *zhpe_conn_map_insert(struct zhpe_ep_attr *ep_attr,
-				       const union sockaddr_in46 *addr,
-				       bool local);
+struct zhpe_conn *zhpe_conn_lookup(struct zhpe_ep_attr *ep_attr,
+				   const union sockaddr_in46 *addr,
+				   bool local);
+struct zhpe_conn *zhpe_conn_insert(struct zhpe_ep_attr *ep_attr,
+				   const union sockaddr_in46 *addr,
+				   bool local);
 ssize_t zhpe_conn_send_src_addr(struct zhpe_ep_attr *ep_attr,
 				struct zhpe_tx_ctx *tx_ctx,
 				struct zhpe_conn *conn);
 int zhpe_conn_listen(struct zhpe_ep_attr *ep_attr);
-void zhpe_conn_map_destroy(struct zhpe_ep_attr *ep_attr);
 void zhpe_conn_release_entry(struct zhpe_ep_attr *attr,
 			     struct zhpe_conn *conn);
-int zhpe_conn_map_init(struct zhpe_ep *ep, int init_size);
+void zhpe_conn_list_destroy(struct zhpe_ep_attr *attr);
 int zhpe_set_sockopts_connect(int sock);
 int zhpe_set_sockopts_listen(int sock);
 int zhpe_set_sockopts_accept(int sock);
@@ -1631,20 +1364,23 @@ void zhpe_send_key_revoke(struct zhpe_conn *conn, const struct zhpe_key *zkey);
 void zhpe_pe_complete_key_response(struct zhpe_conn *conn,
 				   struct zhpe_msg_hdr ohdr, int rc);
 
+static inline void zhpe_pe_signal(struct zhpe_pe *pe)
+{
+	zhpeu_thr_wait_signal(&pe->work_head.thr_wait);
+}
+
 struct zhpe_pe *zhpe_pe_init(struct zhpe_domain *domain);
-void zhpe_pe_add_tx_ctx(struct zhpe_pe *pe,
-			struct zhpe_tx_ctx *ctx);
-void zhpe_pe_add_rx_ctx(struct zhpe_pe *pe, struct zhpe_rx_ctx *ctx);
-void zhpe_pe_signal(struct zhpe_pe *pe);
-void zhpe_pe_poll_add(struct zhpe_pe *pe, int fd);
-void zhpe_pe_poll_del(struct zhpe_pe *pe, int fd);
-int zhpe_pe_progress_rx_ctx(struct zhpe_pe *pe, struct zhpe_rx_ctx *rx_ctx);
-int zhpe_pe_progress_tx_ctx(struct zhpe_pe *pe, struct zhpe_tx_ctx *tx_ctx);
+void zhpe_pe_add_queue(struct zhpe_tx *ztx);
+void zhpe_pe_add_tx_ctx(struct zhpe_tx_ctx *tx_ctx);
+void zhpe_pe_add_rx_ctx(struct zhpe_rx_ctx *rx_ctx);
+void zhpe_pe_progress_tx_ctx(struct zhpe_pe *pe, struct zhpe_tx_ctx *tx_ctx);
+void zhpe_pe_progress_rx_ctx(struct zhpe_pe *pe, struct zhpe_rx_ctx *rx_ctx);
+void zhpe_pe_remove_queue(struct zhpe_tx *ztx);
 void zhpe_pe_remove_tx_ctx(struct zhpe_tx_ctx *tx_ctx);
 void zhpe_pe_remove_rx_ctx(struct zhpe_rx_ctx *rx_ctx);
 void zhpe_pe_finalize(struct zhpe_pe *pe);
-int zhpe_pe_tx_handle_entry(struct zhpe_pe_root *pe_root,
-			    struct zhpeq_cq_entry *zq_cqe);
+void zhpe_pe_tx_handle_entry(struct zhpe_pe_root *pe_root,
+			     struct zhpeq_cq_entry *zq_cqe);
 void zhpe_pe_rx_peek_recv(struct zhpe_rx_ctx *rx_ctx, fi_addr_t addr,
 			  uint64_t tag, uint64_t ignore,
 			  uint64_t flags, struct fi_context *context);
@@ -1652,16 +1388,17 @@ void zhpe_pe_rx_claim_recv(struct zhpe_rx_entry *rx_claimed,
 			   struct zhpe_rx_entry *rx_entry);
 void zhpe_pe_rx_post_recv(struct zhpe_rx_ctx *rx_ctx,
 			  struct zhpe_rx_entry *rx_entry);
+void zhpe_pe_rx_post_recv_multi(struct zhpe_rx_ctx *rx_ctx,
+				struct zhpe_rx_entry *rx_entry);
 void zhpe_pe_rx_complete(struct zhpe_rx_ctx *rx_ctx,
-			 struct zhpe_rx_entry *rx_entry,
-			 int status, bool locked);
-int zhpe_pe_tx_handle_rma(struct zhpe_pe_root *pe_root,
-			  struct zhpeq_cq_entry *zq_cqe);
-int zhpe_pe_tx_handle_atomic(struct zhpe_pe_root *pe_root,
-			     struct zhpeq_cq_entry *zq_cqe);
-void zhpe_pe_tx_rma(struct zhpe_pe_entry *pe_entry);
+			 struct zhpe_rx_entry *rx_entry, int status);
+void zhpe_pe_tx_rma_completion(struct zhpe_pe_entry *pe_entry);
+void zhpe_pe_tx_handle_rma(struct zhpe_pe_root *pe_root,
+			   struct zhpeq_cq_entry *zq_cqe);
+void zhpe_pe_tx_handle_atomic(struct zhpe_pe_root *pe_root,
+			      struct zhpeq_cq_entry *zq_cqe);
 void zhpe_pe_rkey_request(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
-			  struct zhpe_iov_state *rstate, uint8_t *completions);
+			  struct zhpe_iov_state *rstate, int8_t *completions);
 
 ssize_t zhpe_do_recvmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 			bool tagged);
@@ -1734,7 +1471,7 @@ int zhpe_mr_reg_int_uncached(struct zhpe_domain *domain, const void *buf,
 			     size_t len, uint64_t access, uint32_t qaccess,
 			     struct fid_mr **mr);
 int zhpe_mr_reg_int_iov(struct zhpe_domain *domain,
-			struct zhpe_iov_state *state, size_t len);
+			struct zhpe_iov_state *state);
 int zhpe_mr_close(struct fid *fid);
 
 #define ZHPE_CONTEXT_IGNORE	((uintptr_t)1)
@@ -1742,32 +1479,37 @@ int zhpe_mr_close(struct fid *fid);
 
 int __zhpe_conn_pull(struct zhpe_conn *conn);
 
+static inline uint32_t _zhpe_rx_tail_inuse(struct zhpe_rx_tail cur)
+{
+	return (cur.tail - cur.shadow_head);
+}
+
+static inline uint32_t zhpe_rx_tail_inuse(struct zhpe_rx_tail *tailp)
+{
+	return _zhpe_rx_tail_inuse(atm_load_rlx(tailp));
+}
+
 static inline void
 zhpe_conn_pull(struct zhpe_conn *conn)
 {
 	int			rc;
-	uint32_t		*shadowp = &conn->rx_remote.shadow;
-	uint32_t		*currentp = &conn->rx_remote.tail;
-	uint32_t		threshold;
+	const uint32_t		threshold = (conn->rx_remote.cmn.mask + 1) / 4;
 
-	/* Check if we want to pull; 1/4 is pulled out of the air. */
-	threshold = (conn->rx_remote.cmn.mask + 1) / 4;
-	if ((atomic_load_lazy_uint32(currentp) -
-	     atomic_load_lazy_uint32(shadowp)) < threshold)
+	/* Check if we want to pull; threshold is pulled out of the air. */
+	if (zhpe_rx_tail_inuse(&conn->rx_remote.tail) < threshold)
 		goto done;
 	/* Is there a pull in progress or, given that atomic is a CPU fence,
-	 * has shadow updated?
+	 * has shadow_head updated?
 	 */
-	if (__sync_fetch_and_add(&conn->rx_remote.pull_busy, 1) ||
-	    (atomic_load_lazy_uint32(currentp) -
-	     atomic_load_lazy_uint32(shadowp)) < threshold) {
+	if (atm_inc(&conn->rx_remote.pull_busy) == 1 ||
+	    zhpe_rx_tail_inuse(&conn->rx_remote.tail) < threshold) {
 		/* Yes. */
-		__sync_fetch_and_sub(&conn->rx_remote.pull_busy, 1);
+		atm_dec(&conn->rx_remote.pull_busy);
 		goto done;
 	}
 	rc = __zhpe_conn_pull(conn);
 	if (rc < 0)
-		__sync_fetch_and_sub(&conn->rx_remote.pull_busy, 1);
+		atm_dec(&conn->rx_remote.pull_busy);
  done:
 	return;
 }
@@ -1775,33 +1517,26 @@ zhpe_conn_pull(struct zhpe_conn *conn)
 static inline int64_t zhpe_tx_reserve(struct zhpe_tx *ztx, uint8_t pe_flags)
 {
 	int64_t			ret;
-	uint64_t		*blobp;
-	union zhpe_free_index	old;
-	union zhpe_free_index	new;
+	struct zhpe_free_index	*freep;
+	struct zhpe_free_index	old;
+	struct zhpe_free_index	new;
 	struct zhpe_pe_entry	*pe_entry;
 
-	/* Using a union this way is not in the C spec, just expected to
-	 * work with most compilers/processors.
-	 */
-	blobp = ((pe_flags & ZHPE_PE_PROV) ?
-		 &ztx->pfree.blob : &ztx->ufree.blob);
-	for (old.blob = new.blob = atomic_load_lazy_uint64(blobp);;) {
-		if (!new.count) {
+	freep = ((pe_flags & ZHPE_PE_PROV) ? &ztx->pfree : &ztx->ufree);
+	for (old = atm_load_rlx(freep) ;;) {
+		if (!old.count) {
 			ret = -FI_EAGAIN;
 			goto done;
 		}
-		pe_entry = &ztx->pentries[new.index];
-		new.index = pe_entry->pe_root.status;
-		new.count--;
-		new.seq++;
-		new.blob = __sync_val_compare_and_swap(blobp,
-						       old.blob, new.blob);
-		if (old.blob == new.blob)
+		pe_entry = &ztx->pentries[old.index];
+		new.index = pe_entry->pe_root.compstat.status;
+		new.count = old.count - 1;
+		new.seq = old.seq + 1;
+		if (atm_cmpxchg(freep, &old, new))
 			break;
-		old.blob = new.blob;
 	}
 	ret = old.index;
-	pe_entry->pe_root.flags = ZHPE_PE_INUSE;
+	pe_entry->pe_root.compstat.flags = ZHPE_PE_INUSE;
 	zhpe_iov_state_init(&pe_entry->lstate, pe_entry->liov);
 	zhpe_iov_state_init(&pe_entry->rstate, pe_entry->riov);
  done:
@@ -1828,7 +1563,7 @@ static inline void zhpe_tx_put(struct zhpe_tx *ztx)
 
 	if (!ztx)
 		return;
-	old = __sync_fetch_and_sub(&ztx->use_count, 1);
+	old = atm_dec(&ztx->use_count);
 	assert(old > 0);
 	if (old > 1)
 		return;
@@ -1836,20 +1571,20 @@ static inline void zhpe_tx_put(struct zhpe_tx *ztx)
 	zhpe_tx_free(ztx);
 }
 
+void zhpe_rkey_free(struct zhpe_rkey_data *rkey);
+
 static inline void zhpe_rkey_put(struct zhpe_rkey_data *rkey)
 {
 	int32_t			old;
 
 	if (!rkey)
 		return;
-	old = __sync_fetch_and_sub(&rkey->use_count, 1);
+	old = atm_dec(&rkey->use_count);
 	assert(old > 0);
 	if (old > 1)
 		return;
 
-	zhpeq_zmmu_free(zhpeq_dom(rkey->ztx->zq), rkey->kdata);
-	zhpe_tx_put(rkey->ztx);
-	free(rkey);
+	zhpe_rkey_free(rkey);
 }
 
 static inline void zhpe_lstate_release(struct zhpe_iov_state *lstate)
@@ -1868,46 +1603,35 @@ static inline void zhpe_rstate_release(struct zhpe_iov_state *rstate)
 	struct zhpe_iov		*ziov = rstate->viov;
 	int			i;
 
-	for (i = 0; i < rstate->cnt; i++) {
-		if (!(rstate->missing & (1U << i)))
-			zhpe_rkey_put(ziov[i].iov_rkey);
-	}
+	for (i = 0; i < rstate->cnt; i++)
+		zhpe_rkey_put(ziov[i].iov_rkey);
 }
 
 static inline void
-zhpe_rx_remote_release(struct zhpe_conn *conn, uint32_t rindex);
-
-static inline void
-zhpe_tx_release(struct zhpe_conn *conn, struct zhpe_pe_entry *pe_entry)
+zhpe_tx_release(struct zhpe_pe_entry *pe_entry)
 {
+	struct zhpe_conn	*conn = pe_entry->pe_root.conn;
 	struct zhpe_tx		*ztx = conn->ztx;
 	uint32_t		tindex;
-	uint64_t		*blobp;
-	union zhpe_free_index	old;
-	union zhpe_free_index	new;
+	struct zhpe_free_index	*freep;
+	struct zhpe_free_index	old;
+	struct zhpe_free_index	new;
 
-	pe_entry->pe_root.flags &= ~ZHPE_PE_INUSE;
+	pe_entry->pe_root.compstat.flags &= ~ZHPE_PE_INUSE;
 
-	if (!(pe_entry->pe_root.flags & ZHPE_PE_NO_RINDEX))
-		zhpe_rx_remote_release(conn, pe_entry->pe_root.rindex);
 	zhpe_lstate_release(&pe_entry->lstate);
 	zhpe_rstate_release(&pe_entry->rstate);
+
 	tindex = pe_entry - ztx->pentries;
-	/* Using a union this way is not in the C spec, just expected to
-	 * work with most compilers/processors.
-	 */
-	blobp = ((pe_entry->pe_root.flags & ZHPE_PE_PROV) ?
-		 &ztx->pfree.blob : &ztx->ufree.blob);
-	for (old.blob = new.blob = atomic_load_lazy_uint64(blobp);;) {
-		pe_entry->pe_root.status = new.index;
+	freep = ((pe_entry->pe_root.compstat.flags & ZHPE_PE_PROV) ?
+		 &ztx->pfree : &ztx->ufree);
+	for (old = atm_load_rlx(freep) ;;) {
+		pe_entry->pe_root.compstat.status = old.index;
 		new.index = tindex;
-		new.count++;
-		new.seq++;
-		new.blob = __sync_val_compare_and_swap(blobp,
-						       old.blob, new.blob);
-		if (old.blob == new.blob)
+		new.count = old.count + 1;
+		new.seq = old.seq + 1;
+		if (atm_cmpxchg(freep, &old, new))
 			break;
-		old.blob = new.blob;
 	}
 }
 
@@ -1915,9 +1639,7 @@ static inline uint32_t
 zhpe_rx_remote_avail(struct zhpe_rx_remote *rx_ringr)
 {
 	/* Can be stale, but never too large. */
-	return rx_ringr->cmn.mask + 1 -
-		(atomic_load_lazy_uint32(&rx_ringr->tail) -
-		 atomic_load_lazy_uint32(&rx_ringr->shadow));
+	return rx_ringr->cmn.mask + 1 - zhpe_rx_tail_inuse(&rx_ringr->tail);
 }
 
 static inline size_t zhpe_ring_off(struct zhpe_conn *conn, uint32_t index)
@@ -1949,10 +1671,10 @@ do {									\
 		(_ret) = zhpe_tx_reserve(_ztx, (_pe_flags));		\
 	if ((_ret) >= 0) {						\
 		(_tindex) = (_ret);					\
-		_off = zhpe_ring_off(conn, tindex);			\
+		_off = zhpe_ring_off(conn, (_tindex));			\
 		(_lzaddr) = _ztx->lz_zentries + _off;			\
 		(_zhdr) = (void *)(_ztx->zentries + _off);		\
-		(_pe_entry) = &_ztx->pentries[tindex];			\
+		(_pe_entry) = &_ztx->pentries[(_tindex)];		\
 	} else if ((_pe_flags) & ZHPE_PE_RETRY) {			\
 		if ((_ret) != -FI_EAGAIN)				\
 			goto _err; 					\
@@ -1963,42 +1685,42 @@ do {									\
 			goto _err;					\
 		(_zhdr) = (void *)((char *)((_pe_entry) + 1) +		\
 				   (_conn)->hdr_off);			\
-		(_pe_entry)->pe_root.flags = ZHPE_PE_RETRY;		\
+		(_pe_entry)->pe_root.compstat.flags = ZHPE_PE_RETRY;	\
 	} else								\
 		goto _err;						\
 	(_pe_entry)->pe_root.handler = (_handler);			\
 	(_pe_entry)->pe_root.conn = (_conn);				\
 	(_pe_entry)->pe_root.context = (_context);			\
-	(_pe_entry)->pe_root.status = 0;				\
-	(_pe_entry)->pe_root.completions = 1;				\
-	(_pe_entry)->pe_root.flags |= ((_pe_flags) & ~ZHPE_PE_RETRY);	\
+	(_pe_entry)->pe_root.compstat.status = 0;			\
+	(_pe_entry)->pe_root.compstat.completions = 1;			\
+	(_pe_entry)->pe_root.compstat.flags |=				\
+		((_pe_flags) & ~ZHPE_PE_RETRY);				\
 } while (0)
 
 static inline int64_t
 zhpe_rx_remote_reserve(struct zhpe_conn *conn, struct zhpe_msg_hdr *hdr)
 {
 	int64_t			ret = -FI_EAGAIN;
-	struct zhpe_rx_remote   *rx_ringr = &conn->rx_remote;
-	uint32_t		tail;
-	uint32_t		new;
+	struct zhpe_rx_remote	*rx_ringr = &conn->rx_remote;
+	uint32_t		rlen = conn->rx_remote.cmn.mask + 1;
+	struct zhpe_rx_tail	old;
+	struct zhpe_rx_tail	new;
 	uint32_t		avail;
 
-	for (tail = atomic_load_lazy_uint32(&rx_ringr->tail);;) {
-		avail = (rx_ringr->cmn.mask + 1 -
-			 (tail - atomic_load_lazy_uint32(&rx_ringr->shadow)));
+	for (old = atm_load_rlx(&rx_ringr->tail) ;;) {
+		avail = rlen - _zhpe_rx_tail_inuse(old);
 		if (!avail)
 			goto done;
-		new = __sync_val_compare_and_swap(&rx_ringr->tail,
-						  tail, tail + 1);
-		if (new == tail)
+		new.tail = old.tail + 1;
+		new.shadow_head = old.shadow_head;
+		if (atm_cmpxchg(&rx_ringr->tail, &old, new))
 			break;
-		tail = new;
 	}
-	if (tail & (rx_ringr->cmn.mask + 1))
+	ret = (old.tail & rx_ringr->cmn.mask);
+	if (old.tail & rlen)
 	    hdr->flags &= ~ZHPE_MSG_VALID_TOGGLE;
 	else
 	    hdr->flags |= ZHPE_MSG_VALID_TOGGLE;
-	ret = (tail & rx_ringr->cmn.mask);
  done:
 	return ret;
 }
@@ -2032,23 +1754,15 @@ zhpe_rx_scoreboard(struct zhpe_rx_common *rx_cmn, uint32_t rindex,
 }
 
 static inline void
-zhpe_rx_remote_release(struct zhpe_conn *conn, uint32_t rindex)
-{
-	/* Caller responsible for making sure rindex valid. */
-	conn->rx_remote.completed =
-		zhpe_rx_scoreboard(&conn->rx_remote.cmn, rindex,
-				   conn->rx_remote.completed);
-}
-
-static inline void
 zhpe_rx_local_release(struct zhpe_conn *conn, uint32_t rindex)
 {
+	uint32_t		*comp =
+		&conn->rx_local.peer_visible->completed;
 	uint32_t		completed;
 
-	completed = ntohl(conn->rx_local.peer_visible->completed);
+	completed = ntohl(atm_load_rlx(comp));
 	completed = zhpe_rx_scoreboard(&conn->rx_local.cmn, rindex, completed);
-	atomic_store_lazy_uint32(&conn->rx_local.peer_visible->completed,
-				 htonl(completed));
+	atm_store_rlx(comp, htonl(completed));
 }
 
 static inline bool
@@ -2066,7 +1780,7 @@ zhpe_rx_match_entry(struct zhpe_rx_entry *rx_entry, bool entry_buffered,
 		/* addr is from user and sanitized. */
 		if (addr == FI_ADDR_UNSPEC)
 			return true;
-		oaddr = rx_entry->pe_root.conn->fi_addr;
+		oaddr = rx_entry->conn->fi_addr;
 		/* Racing, but do_recvmsg will fix it. */
 		if (oaddr == FI_ADDR_NOTAVAIL)
 			return false;
@@ -2100,7 +1814,7 @@ static inline void *zhpe_iov_entry(const void *viov,
 		break;
 
 	default:
-		abort();;
+		abort();
 	}
 
 	return ((char *)viov + size * idx);
@@ -2386,26 +2100,40 @@ static inline size_t copy_mem_to_iov(struct zhpe_iov_state *dstate,
 	return copy_iov(dstate, dtype, &sstate, ZHPE_IOV_IOVEC, n);
 }
 
-static inline void zhpe_pe_retry_insert(struct zhpe_conn *conn,
+static inline void zhpe_pe_retry_insert(struct zhpe_tx *ztx,
 					struct zhpe_pe_retry *pe_retry)
 {
-	struct zhpe_ep_attr	*ep_attr = conn->ep_attr;
-
-	fastlock_acquire(&ep_attr->pe_retry_lock);
-	dlist_insert_tail(&pe_retry->lentry, &conn->ep_attr->pe_retry_list);
-	fastlock_release(&ep_attr->pe_retry_lock);
+	zhpeu_atm_snatch_insert(&ztx->pe_retry_list, &pe_retry->next);
 }
 
-static inline int zhpe_pe_retry(struct zhpe_conn *conn,
-				zhpe_pe_retry_handler handler, void *data)
+static inline void zhpe_pe_retry_free(struct zhpe_tx *ztx,
+				      struct zhpe_pe_retry *pe_retry)
 {
-	struct zhpe_pe_retry	*pe_retry = malloc(sizeof(*pe_retry));
+	if (pe_retry->freedata)
+		pe_retry->freedata(pe_retry->data);
+	zhpeu_atm_fifo_push(&ztx->pe_retry_free_list, &pe_retry->next);
+}
 
+static inline int zhpe_pe_retry(struct zhpe_tx *ztx,
+				zhpe_pe_retry_handler handler, void *data,
+				void (*freedata)(void *data))
+{
+	struct zhpe_pe_retry	*pe_retry;
+	struct zhpeu_atm_list_next *next;
+
+
+	next = zhpeu_atm_fifo_pop(&ztx->pe_retry_free_list);
+	if (next)
+		pe_retry = container_of(next, struct zhpe_pe_retry, next);
+	else
+		pe_retry = malloc(sizeof(*pe_retry));
 	if (!pe_retry)
 		return -FI_ENOMEM;
+
 	pe_retry->handler = handler;
 	pe_retry->data = data;
-	zhpe_pe_retry_insert(conn, pe_retry);
+	pe_retry->freedata = freedata;
+	zhpe_pe_retry_insert(ztx, pe_retry);
 
 	return 0;
 }
@@ -2476,8 +2204,9 @@ static inline int zhpe_pe_tx_ring(struct zhpe_pe_entry *pe_entry,
 	int64_t			rindex = -1;
 	uint64_t		rzaddr;
 
-	if (OFI_UNLIKELY(pe_root->flags & ZHPE_PE_RETRY)) {
-		ret = zhpe_pe_retry(conn, zhpe_pe_retry_tx_ring1, pe_root);
+	if (OFI_UNLIKELY(pe_root->compstat.flags & ZHPE_PE_RETRY)) {
+		ret = zhpe_pe_retry(conn->ztx, zhpe_pe_retry_tx_ring1,
+				    pe_root, zhpeu_free_ptr);
 		goto done;
 	}
 
@@ -2488,7 +2217,7 @@ static inline int zhpe_pe_tx_ring(struct zhpe_pe_entry *pe_entry,
 	ret = zhpe_rx_remote_reserve(conn, zhdr);
 	if (ret < 0)
 		goto done;
-	pe_root->rindex = rindex = ret;
+	rindex = ret;
 	rzaddr = conn->rx_remote.rz_zentries + zhpe_ring_off(conn, rindex);
 
 	if (len <= ZHPEQ_IMM_MAX)
@@ -2509,10 +2238,12 @@ static inline int zhpe_pe_tx_ring(struct zhpe_pe_entry *pe_entry,
 	if (OFI_LIKELY(ret >= 0))
 		zhpe_pe_tx_report_complete(pe_entry, FI_INJECT_COMPLETE);
 	else {
-		zhpe_tx_free_res(conn, -1, zindex, rindex, pe_root->flags);
-		if (ret == -FI_EAGAIN && (pe_root->flags & ZHPE_PE_PROV))
-			ret = zhpe_pe_retry(conn, zhpe_pe_retry_tx_ring2,
-					    pe_entry);
+		zhpe_tx_free_res(conn, -1, zindex, rindex,
+				 pe_root->compstat.flags);
+		if (ret == -FI_EAGAIN &&
+		    (pe_root->compstat.flags & ZHPE_PE_PROV))
+			ret = zhpe_pe_retry(conn->ztx, zhpe_pe_retry_tx_ring2,
+					    pe_entry, NULL);
 	}
 	/* Must be done after zhpe_zq_commit_spin() to prevent deadlock. */
 	zhpe_conn_pull(conn);
@@ -2539,7 +2270,7 @@ static inline int zhpe_tx_op(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
 	if (!(pe_flags & ZHPE_PE_PROV))
 		zhdr->pe_entry_id = htons(tindex);
 	zhdr->flags = 0;
-	zpay = zhpe_pay_ptr(conn, zhdr, 0, alignof(*zpay));
+	zpay = zhpe_pay_ptr(conn, zhdr, 0, __alignof__(*zpay));
 	memcpy(zpay, pay, pay_len);
 	cmd_len = ((char *)zpay - (char *)zhdr) + pay_len;
 	zhdr->inline_len = cmd_len;
@@ -2573,7 +2304,7 @@ struct zhpe_mr *zhpe_mr_find(struct zhpe_domain *domain,
 
 static inline void zhpe_mr_get(struct zhpe_mr *zmr)
 {
-	(void)__sync_fetch_and_add(&zmr->use_count, 1);
+	atm_inc(&zmr->use_count);
 }
 
 int zhpe_conn_key_export(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
@@ -2610,119 +2341,58 @@ static inline uint32_t zhpe_convert_access(uint64_t access) {
 }
 
 static inline struct zhpe_rx_entry *
-zhpe_rx_new_entry(struct zhpe_rx_ctx *rx_ctx)
+zhpe_rx_new_entry(struct zhpe_rx_entry_free *rx_free)
 {
 	struct zhpe_rx_entry	*ret;
+	struct zhpeu_atm_list_next *next;
 
-	/* rx_ctx->lock assumed to be locked. */
-	ret = util_buf_alloc(rx_ctx->rx_entry_pool);
+	next = zhpeu_atm_fifo_pop(&rx_free->rx_fifo_list);
+	if (OFI_LIKELY(!!next))
+		ret = container_of(next, struct zhpe_rx_entry, rx_match_next);
+	else
+		ret = util_buf_alloc(rx_free->rx_entry_pool);
 	if (!ret)
 		goto done;
 	_ZHPE_LOG_DBG(FI_LOG_EP_DATA,
-		      "New rx_entry: %p, ctx: %p\n", ret, rx_ctx);
-	ret->pe_root.status = 0;
-	ret->buffered = ZHPE_RX_BUF_USER;
+		      "New rx_entry: %p, free: %p\n", ret, rx_free);
+	ret->rx_free = rx_free;
+	ret->pe_entry = NULL;
+	ret->rx_user = NULL;
+	ret->status = 0;
+	ret->rx_state = ZHPE_RX_STATE_IDLE;
+	ret->slab = false;
 	ret->flags = FI_MSG | FI_RECV;
 	zhpe_iov_state_init(&ret->lstate, ret->liov);
-	zhpe_iov_state_init(&ret->rstate, ret->riov);
+	dlist_init(&ret->lentry);
  done:
 	return ret;
 }
 
-static inline void zhpe_rx_release_entry(struct zhpe_rx_ctx *rx_ctx,
-					 struct zhpe_rx_entry *rx_entry)
-
+static inline void zhpe_rx_release_entry(struct zhpe_rx_entry *rx_entry)
 {
+	struct zhpe_rx_entry_free *rx_free = rx_entry->rx_free;
 	struct zhpe_iov		*liov;
+	struct zhpe_pe_entry	*pe_entry;
 
-	/* rx_ctx->lock assumed to be locked. */
 	if (!rx_entry)
 		return;
-	if (rx_entry->buffered == ZHPE_RX_BUF_EAGER) {
-		liov = rx_entry->liov;
-		zhpe_slab_free(&rx_ctx->eager, liov->iov_base);
-		__sync_fetch_and_sub(&rx_ctx->buffered_len, liov->iov_len);
+	assert(dlist_empty(&rx_entry->lentry));
+	pe_entry = rx_entry->pe_entry;
+	if (pe_entry) {
+		if (rx_entry->slab) {
+			liov = pe_entry->liov;
+			zhpe_slab_free(&rx_free->rx_ctx->eager, liov->iov_base);
+		}
+		if (pe_entry->pe_root.compstat.flags & ZHPE_PE_RETRY)
+			free(rx_entry);
+		else
+			zhpe_tx_release(pe_entry);
 	}
-	zhpe_lstate_release(&rx_entry->lstate);
-	zhpe_rstate_release(&rx_entry->rstate);
+	if (rx_free == &rx_free->rx_ctx->rx_user_free)
+		zhpe_lstate_release(&rx_entry->lstate);
+	zhpeu_atm_fifo_push(&rx_free->rx_fifo_list, &rx_entry->rx_match_next);
 	_ZHPE_LOG_DBG(FI_LOG_EP_DATA, "Releasing rx_entry: %p\n", rx_entry);
-	util_buf_release(rx_ctx->rx_entry_pool, rx_entry);
 }
-
-static inline void abort_if_nonzero(int ret, const char *func, uint line)
-{
-	if (!ret)
-		return;
-
-	_ZHPE_LOG_ERROR(FI_LOG_CORE, "Unexpected error %d\n", ret);
-	abort();
-}
-
-static inline int abort_trylock(int ret, const char *func, uint line)
-{
-	if (!ret)
-		return 0;
-	if (ret == EBUSY)
-		return -FI_EBUSY;
-
-	_ZHPE_LOG_ERROR(FI_LOG_CORE, "Unexpected error %d\n", ret);
-	abort();
-}
-
-static inline int abort_timedwait(int ret, const char *func, uint line)
-{
-	if (!ret)
-		return 0;
-	if (ret == ETIMEDOUT)
-		return -FI_ETIMEDOUT;
-
-	_ZHPE_LOG_ERROR(FI_LOG_CORE, "Unexpected error %d\n", ret);
-	abort();
-}
-
-#define mutexattr_settype(...) \
-    abort_if_nonzero(pthread_mutexattr_settype(__VA_ARGS__), __func__, __LINE__)
-
-#define mutexattr_init(...) \
-    abort_if_nonzero(pthread_mutexattr_init(__VA_ARGS__), __func__, __LINE__)
-
-#define mutexattr_destroy(...) \
-    abort_if_nonzero(pthread_mutexattr_destroy(__VA_ARGS__), \
-		     __func__, __LINE__)
-
-#define mutex_init(...) \
-    abort_if_nonzero(pthread_mutex_init(__VA_ARGS__), __func__, __LINE__)
-
-#define mutex_destroy(...) \
-    abort_if_nonzero(pthread_mutex_destroy(__VA_ARGS__), \
-		     __func__, __LINE__)
-
-#define mutex_acquire(...) \
-    abort_if_nonzero(pthread_mutex_lock(__VA_ARGS__), __func__, __LINE__)
-
-#define mutex_release(...) \
-    abort_if_nonzero(pthread_mutex_unlock(__VA_ARGS__), __func__, __LINE__)
-
-#define mutex_trylock(...) \
-    abort_trylock(pthread_mutex_trylock(__VA_ARGS__), __func__, __LINE__)
-
-#define cond_init(...) \
-    abort_if_nonzero(pthread_cond_init(__VA_ARGS__), __func__, __LINE__)
-
-#define cond_destroy(...) \
-    abort_if_nonzero(pthread_cond_destroy(__VA_ARGS__),  __func__, __LINE__)
-
-#define cond_signal(...) \
-	abort_if_nonzero(pthread_cond_signal(__VA_ARGS__),  __func__, __LINE__)
-
-#define cond_broadcast(...) \
-    abort_if_nonzero(pthread_cond_broadcast(__VA_ARGS__), __func__, __LINE__)
-
-#define cond_wait(...) \
-    abort_if_nonzero(pthread_cond_wait(__VA_ARGS__), __func__, __LINE__)
-
-#define cond_timedwait(...) \
-    abort_timedwait(pthread_cond_timedwait(__VA_ARGS__), __func__, __LINE__)
 
 static inline uint8_t zhpe_get_rx_id(struct zhpe_tx_ctx *tx_ctx,
 				     fi_addr_t fiaddr)
@@ -2735,6 +2405,12 @@ static inline uint8_t zhpe_get_rx_id(struct zhpe_tx_ctx *tx_ctx,
 
 	return ret;
 
+}
+
+static inline bool zhpe_needs_locking(struct zhpe_domain *domain)
+{
+	return (domain->attr.threading != FI_THREAD_COMPLETION ||
+		domain->progress_mode == FI_PROGRESS_AUTO);
 }
 
 int zhpe_mr_cache_init(struct zhpe_domain *domain);

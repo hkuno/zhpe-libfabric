@@ -46,19 +46,20 @@ const struct fi_cntr_attr zhpe_cntr_attr = {
 void zhpe_cntr_add_tx_ctx(struct zhpe_cntr *cntr, struct zhpe_tx_ctx *tx_ctx)
 {
 	int ret;
-	struct fid *fid = &tx_ctx->fid.ctx.fid;
+	struct fid *fid = &tx_ctx->ctx.fid;
 	ret = fid_list_insert(&cntr->tx_list, &cntr->list_lock, fid);
 	if (ret)
 		ZHPE_LOG_ERROR("Error in adding ctx to progress list\n");
 	else
-		ofi_atomic_inc32(&cntr->ref);
+		atm_inc(&cntr->ref);
 }
 
 void zhpe_cntr_remove_tx_ctx(struct zhpe_cntr *cntr, struct zhpe_tx_ctx *tx_ctx)
 {
-	struct fid *fid = &tx_ctx->fid.ctx.fid;
+	struct fid *fid = &tx_ctx->ctx.fid;
+
 	fid_list_remove(&cntr->tx_list, &cntr->list_lock, fid);
-	ofi_atomic_dec32(&cntr->ref);
+	atm_dec(&cntr->ref);
 }
 
 void zhpe_cntr_add_rx_ctx(struct zhpe_cntr *cntr, struct zhpe_rx_ctx *rx_ctx)
@@ -69,14 +70,15 @@ void zhpe_cntr_add_rx_ctx(struct zhpe_cntr *cntr, struct zhpe_rx_ctx *rx_ctx)
 	if (ret)
 		ZHPE_LOG_ERROR("Error in adding ctx to progress list\n");
 	else
-		ofi_atomic_inc32(&cntr->ref);
+		atm_inc(&cntr->ref);
 }
 
 void zhpe_cntr_remove_rx_ctx(struct zhpe_cntr *cntr, struct zhpe_rx_ctx *rx_ctx)
 {
 	struct fid *fid = &rx_ctx->ctx.fid;
+
 	fid_list_remove(&cntr->rx_list, &cntr->list_lock, fid);
-	ofi_atomic_dec32(&cntr->ref);
+	atm_dec(&cntr->ref);
 }
 
 int zhpe_cntr_progress(struct zhpe_cntr *cntr)
@@ -93,23 +95,15 @@ int zhpe_cntr_progress(struct zhpe_cntr *cntr)
 	dlist_foreach_container(&cntr->tx_list, struct fid_list_entry,
 				fid_entry, entry) {
 		tx_ctx = container_of(fid_entry->fid, struct zhpe_tx_ctx,
-				      fid.ctx.fid);
-		if (tx_ctx->use_shared)
-			zhpe_pe_progress_tx_ctx(cntr->domain->pe,
-						tx_ctx->stx_ctx);
-		else
-			zhpe_pe_progress_tx_ctx(cntr->domain->pe, tx_ctx);
+				      ctx.fid);
+		zhpe_pe_progress_tx_ctx(cntr->domain->pe, tx_ctx);
 	}
 
 	dlist_foreach_container(&cntr->rx_list, struct fid_list_entry,
 				fid_entry, entry) {
 		rx_ctx = container_of(fid_entry->fid, struct zhpe_rx_ctx,
 				      ctx.fid);
-		if (rx_ctx->use_shared)
-			zhpe_pe_progress_rx_ctx(cntr->domain->pe,
-						rx_ctx->srx_ctx);
-		else
-			zhpe_pe_progress_rx_ctx(cntr->domain->pe, rx_ctx);
+		zhpe_pe_progress_rx_ctx(cntr->domain->pe, rx_ctx);
 	}
 
 	fastlock_release(&cntr->list_lock);
@@ -126,39 +120,40 @@ void zhpe_cntr_check_trigger_list(struct zhpe_cntr *cntr)
 	fastlock_acquire(&cntr->trigger_lock);
 	dlist_foreach_safe(&cntr->trigger_list, dentry, dnext) {
 		trigger = container_of(dentry, struct zhpe_trigger, lentry);
-		if (ofi_atomic_get32(&cntr->value) <
-		    (int)trigger->threshold)
+		if (atm_load_rlx(&cntr->value) < trigger->threshold)
 			continue;
 
 		switch (trigger->op_type) {
+
 		case FI_OP_SEND:
-			ret = zhpe_do_sendmsg(trigger->ep,
-					      &trigger->op.msg.msg,
+			ret = zhpe_do_sendmsg(trigger->ep, &trigger->op.msg.msg,
 					      trigger->flags, false);
 			break;
+
 		case FI_OP_RECV:
-			ret = zhpe_do_recvmsg(trigger->ep,
-					      &trigger->op.msg.msg,
+			ret = zhpe_do_recvmsg(trigger->ep, &trigger->op.msg.msg,
 					      trigger->flags, false);
 			break;
+
 		case FI_OP_TSEND:
 			ret = zhpe_do_sendmsg(trigger->ep,
 					      &trigger->op.tmsg.msg,
 					      trigger->flags, true);
 			break;
+
 		case FI_OP_TRECV:
 			ret = zhpe_do_recvmsg(trigger->ep,
 					      &trigger->op.tmsg.msg,
 					      trigger->flags, true);
 			break;
+
 		case FI_OP_WRITE:
-			ret = zhpe_do_rma_msg(trigger->ep,
-					      &trigger->op.rma.msg,
+			ret = zhpe_do_rma_msg(trigger->ep, &trigger->op.rma.msg,
 					      trigger->flags);
 			break;
+
 		case FI_OP_READ:
-			ret = zhpe_do_rma_msg(trigger->ep,
-					      &trigger->op.rma.msg,
+			ret = zhpe_do_rma_msg(trigger->ep, &trigger->op.rma.msg,
 					      trigger->flags);
 			break;
 
@@ -193,18 +188,18 @@ static uint64_t zhpe_cntr_read(struct fid_cntr *fid_cntr)
 	struct zhpe_cntr *cntr;
 	cntr = container_of(fid_cntr, struct zhpe_cntr, cntr_fid);
 	zhpe_cntr_progress(cntr);
-	return ofi_atomic_get32(&cntr->value);
+	return atm_load_rlx(&cntr->value);
 }
 
 void zhpe_cntr_inc(struct zhpe_cntr *cntr)
 {
-	mutex_acquire(&cntr->mut);
-	ofi_atomic_inc32(&cntr->value);
-	if (ofi_atomic_get32(&cntr->num_waiting))
+	mutex_lock(&cntr->mut);
+	atm_inc(&cntr->value);
+	if (atm_load_rlx(&cntr->num_waiting))
 		cond_broadcast(&cntr->cond);
 	if (cntr->signal)
 		zhpe_wait_signal(cntr->waitset);
-	mutex_release(&cntr->mut);
+	mutex_unlock(&cntr->mut);
 
 	zhpe_cntr_check_trigger_list(cntr);
 }
@@ -215,14 +210,14 @@ static int zhpe_cntr_add(struct fid_cntr *fid_cntr, uint64_t value)
 	struct zhpe_cntr *cntr;
 	cntr = container_of(fid_cntr, struct zhpe_cntr, cntr_fid);
 
-	mutex_acquire(&cntr->mut);
-	new_val = ofi_atomic_add32(&cntr->value, value);
-	ofi_atomic_set32(&cntr->last_read_val, new_val);
-	if (ofi_atomic_get32(&cntr->num_waiting))
+	mutex_lock(&cntr->mut);
+	new_val = atm_add(&cntr->value, value);
+	atm_store_rlx(&cntr->last_read_val, new_val);
+	if (atm_load_rlx(&cntr->num_waiting))
 		cond_broadcast(&cntr->cond);
 	if (cntr->signal)
 		zhpe_wait_signal(cntr->waitset);
-	mutex_release(&cntr->mut);
+	mutex_unlock(&cntr->mut);
 
 	zhpe_cntr_check_trigger_list(cntr);
 	return 0;
@@ -230,18 +225,17 @@ static int zhpe_cntr_add(struct fid_cntr *fid_cntr, uint64_t value)
 
 static int zhpe_cntr_set(struct fid_cntr *fid_cntr, uint64_t value)
 {
-	uint64_t new_val;
 	struct zhpe_cntr *cntr;
 	cntr = container_of(fid_cntr, struct zhpe_cntr, cntr_fid);
 
-	mutex_acquire(&cntr->mut);
-	new_val = ofi_atomic_set32(&cntr->value, value);
-	ofi_atomic_set32(&cntr->last_read_val, new_val);
-	if (ofi_atomic_get32(&cntr->num_waiting))
+	mutex_lock(&cntr->mut);
+	atm_store_rlx(&cntr->value, value);
+	atm_store_rlx(&cntr->last_read_val, value);
+	if (atm_load_rlx(&cntr->num_waiting))
 		cond_broadcast(&cntr->cond);
 	if (cntr->signal)
 		zhpe_wait_signal(cntr->waitset);
-	mutex_release(&cntr->mut);
+	mutex_unlock(&cntr->mut);
 
 	zhpe_cntr_check_trigger_list(cntr);
 	return 0;
@@ -252,14 +246,14 @@ static int zhpe_cntr_adderr(struct fid_cntr *fid_cntr, uint64_t value)
 	struct zhpe_cntr *cntr;
 	cntr = container_of(fid_cntr, struct zhpe_cntr, cntr_fid);
 
-	mutex_acquire(&cntr->mut);
-	ofi_atomic_add32(&cntr->err_cnt, value);
+	mutex_lock(&cntr->mut);
+	atm_add(&cntr->err_cnt, value);
 	if (!cntr->err_flag)
 		cntr->err_flag = 1;
 	cond_signal(&cntr->cond);
 	if (cntr->signal)
 		zhpe_wait_signal(cntr->waitset);
-	mutex_release(&cntr->mut);
+	mutex_unlock(&cntr->mut);
 
 	return 0;
 }
@@ -269,14 +263,14 @@ static int zhpe_cntr_seterr(struct fid_cntr *fid_cntr, uint64_t value)
 	struct zhpe_cntr *cntr;
 
 	cntr = container_of(fid_cntr, struct zhpe_cntr, cntr_fid);
-	mutex_acquire(&cntr->mut);
-	ofi_atomic_set32(&cntr->err_cnt, value);
+	mutex_lock(&cntr->mut);
+	atm_store_rlx(&cntr->err_cnt, value);
 	if (!cntr->err_flag)
 		cntr->err_flag = 1;
 	cond_signal(&cntr->cond);
 	if (cntr->signal)
 		zhpe_wait_signal(cntr->waitset);
-	mutex_release(&cntr->mut);
+	mutex_unlock(&cntr->mut);
 
 	return 0;
 
@@ -290,32 +284,32 @@ static int zhpe_cntr_wait(struct fid_cntr *fid_cntr, uint64_t threshold,
 	struct zhpe_cntr *cntr;
 	cntr = container_of(fid_cntr, struct zhpe_cntr, cntr_fid);
 
-	mutex_acquire(&cntr->mut);
+	mutex_lock(&cntr->mut);
 	if (cntr->err_flag) {
 		ret = -FI_EAVAIL;
 		goto out;
 	}
 
-	if (ofi_atomic_get32(&cntr->value) >= (int)threshold) {
+	if (atm_load_rlx(&cntr->value) >= threshold) {
 		ret = 0;
 		goto out;
 	}
 
-	ofi_atomic_inc32(&cntr->num_waiting);
+	atm_inc(&cntr->num_waiting);
 
 	if (timeout >= 0) {
 		start_ms = fi_gettime_ms();
 		end_ms = start_ms + timeout;
 	}
 
-	last_read = ofi_atomic_get32(&cntr->value);
+	last_read = atm_load_rlx(&cntr->value);
 	remaining_ms = timeout;
 
 	while (!ret && last_read < (int)threshold) {
 		if (cntr->domain->progress_mode == FI_PROGRESS_MANUAL) {
-			mutex_release(&cntr->mut);
+			mutex_unlock(&cntr->mut);
 			ret = zhpe_cntr_progress(cntr);
-			mutex_acquire(&cntr->mut);
+			mutex_lock(&cntr->mut);
 		} else {
 			ret = fi_wait_cond(&cntr->cond, &cntr->mut, remaining_ms);
 		}
@@ -330,18 +324,18 @@ static int zhpe_cntr_wait(struct fid_cntr *fid_cntr, uint64_t threshold,
 			}
 		}
 
-		last_read = ofi_atomic_get32(&cntr->value);
+		last_read = atm_load_rlx(&cntr->value);
 	}
 
-	ofi_atomic_set32(&cntr->last_read_val, last_read);
-	ofi_atomic_dec32(&cntr->num_waiting);
-	mutex_release(&cntr->mut);
+	atm_store_rlx(&cntr->last_read_val, last_read);
+	atm_dec(&cntr->num_waiting);
+	mutex_unlock(&cntr->mut);
 
 	zhpe_cntr_check_trigger_list(cntr);
 	return (cntr->err_flag) ? -FI_EAVAIL : ret;
 
 out:
-	mutex_release(&cntr->mut);
+	mutex_unlock(&cntr->mut);
 	return ret;
 }
 
@@ -397,7 +391,7 @@ static int zhpe_cntr_close(struct fid *fid)
 	struct zhpe_cntr *cntr;
 
 	cntr = container_of(fid, struct zhpe_cntr, cntr_fid.fid);
-	if (ofi_atomic_get32(&cntr->ref))
+	if (atm_load_rlx(&cntr->ref))
 		return -FI_EBUSY;
 
 	if (cntr->signal && cntr->attr.wait_obj == FI_WAIT_FD)
@@ -408,7 +402,7 @@ static int zhpe_cntr_close(struct fid *fid)
 	fastlock_destroy(&cntr->trigger_lock);
 
 	cond_destroy(&cntr->cond);
-	ofi_atomic_dec32(&cntr->domain->ref);
+	atm_dec(&cntr->domain->ref);
 	free(cntr);
 	return 0;
 }
@@ -421,7 +415,7 @@ static uint64_t zhpe_cntr_readerr(struct fid_cntr *cntr)
 		zhpe_cntr_progress(_cntr);
 	if (_cntr->err_flag)
 		_cntr->err_flag = 0;
-	return ofi_atomic_get32(&_cntr->err_cnt);
+	return atm_load_rlx(&_cntr->err_cnt);
 }
 
 static struct fi_ops_cntr zhpe_cntr_ops = {
@@ -538,13 +532,6 @@ int zhpe_cntr_open(struct fid_domain *domain, struct fi_cntr_attr *attr,
 	mutex_init(&_cntr->mut, NULL);
 	fastlock_init(&_cntr->list_lock);
 
-	ofi_atomic_initialize32(&_cntr->ref, 0);
-	ofi_atomic_initialize32(&_cntr->err_cnt, 0);
-
-	ofi_atomic_initialize32(&_cntr->value, 0);
-	ofi_atomic_initialize32(&_cntr->last_read_val, 0);
-	ofi_atomic_initialize32(&_cntr->num_waiting, 0);
-
 	dlist_init(&_cntr->tx_list);
 	dlist_init(&_cntr->rx_list);
 
@@ -556,7 +543,7 @@ int zhpe_cntr_open(struct fid_domain *domain, struct fi_cntr_attr *attr,
 	_cntr->cntr_fid.fid.ops = &zhpe_cntr_fi_ops;
 	_cntr->cntr_fid.ops = &zhpe_cntr_ops;
 
-	ofi_atomic_inc32(&dom->ref);
+	atm_dec(&dom->ref);
 	_cntr->domain = dom;
 	*cntr = &_cntr->cntr_fid;
 	return 0;

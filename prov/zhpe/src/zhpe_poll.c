@@ -53,19 +53,24 @@ static int zhpe_poll_add(struct fid_poll *pollset, struct fid *event_fid,
 	dlist_insert_after(&list_item->lentry, &poll->fid_list);
 
 	switch (list_item->fid->fclass) {
+
 	case FI_CLASS_CQ:
 		cq = container_of(list_item->fid, struct zhpe_cq, cq_fid.fid);
-		ofi_atomic_inc32(&cq->ref);
+		atm_inc(&cq->ref);
 		break;
+
 	case FI_CLASS_CNTR:
 		cntr = container_of(list_item->fid, struct zhpe_cntr,
 				    cntr_fid.fid);
-		ofi_atomic_inc32(&cntr->ref);
+		atm_inc(&cntr->ref);
 		break;
+
 	default:
 		ZHPE_LOG_ERROR("Invalid fid class\n");
 		return -FI_EINVAL;
+
 	}
+
 	return 0;
 }
 
@@ -85,13 +90,13 @@ static int zhpe_poll_del(struct fid_poll *pollset, struct fid *event_fid,
 			case FI_CLASS_CQ:
 				cq = container_of(list_item->fid,
 						  struct zhpe_cq, cq_fid.fid);
-				ofi_atomic_dec32(&cq->ref);
+				atm_dec(&cq->ref);
 				break;
 			case FI_CLASS_CNTR:
 				cntr = container_of(list_item->fid,
 						    struct zhpe_cntr,
 						    cntr_fid.fid);
-				ofi_atomic_dec32(&cntr->ref);
+				atm_dec(&cntr->ref);
 				break;
 			default:
 				ZHPE_LOG_ERROR("Invalid fid class\n");
@@ -136,15 +141,15 @@ static int zhpe_poll_poll(struct fid_poll *pollset, void **context, int count)
 			cntr = container_of(list_item->fid, struct zhpe_cntr,
 					    cntr_fid.fid);
 			zhpe_cntr_progress(cntr);
-			mutex_acquire(&cntr->mut);
-			if (ofi_atomic_get32(&cntr->value) !=
-			    ofi_atomic_get32(&cntr->last_read_val)) {
-				ofi_atomic_set32(&cntr->last_read_val,
-					   ofi_atomic_get32(&cntr->value));
+			mutex_lock(&cntr->mut);
+			if (atm_load_rlx(&cntr->value) !=
+			    atm_load_rlx(&cntr->last_read_val)) {
+				atm_store_rlx(&cntr->last_read_val,
+					      atm_load_rlx(&cntr->value));
 				*context++ = cntr->cntr_fid.fid.context;
 				ret_count++;
 			}
-			mutex_release(&cntr->mut);
+			mutex_unlock(&cntr->mut);
 			break;
 
 		case FI_CLASS_EQ:
@@ -182,7 +187,7 @@ static int zhpe_poll_close(fid_t fid)
 		zhpe_poll_del(&poll->poll_fid, list_item->fid, 0);
 	}
 
-	ofi_atomic_dec32(&poll->domain->ref);
+	atm_dec(&poll->domain->ref);
 	free(poll);
 	return 0;
 }
@@ -229,7 +234,7 @@ int zhpe_poll_open(struct fid_domain *domain, struct fi_poll_attr *attr,
 	poll->poll_fid.fid.ops = &zhpe_poll_fi_ops;
 	poll->poll_fid.ops = &zhpe_poll_ops;
 	poll->domain = dom;
-	ofi_atomic_inc32(&dom->ref);
+	atm_inc(&dom->ref);
 
 	*pollset = &poll->poll_fid;
 	return 0;

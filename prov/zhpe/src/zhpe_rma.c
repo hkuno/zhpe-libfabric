@@ -99,14 +99,13 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 
 	case FI_CLASS_EP:
 		zhpe_ep = container_of(ep, struct zhpe_ep, ep);
-		tx_ctx = zhpe_ep->attr->tx_ctx->use_shared ?
-			zhpe_ep->attr->tx_ctx->stx_ctx : zhpe_ep->attr->tx_ctx;
+		tx_ctx = zhpe_ep->attr->tx_ctx;
 		ep_attr = zhpe_ep->attr;
 		op_flags = zhpe_ep->tx_attr.op_flags;
 		break;
 
 	case FI_CLASS_TX_CTX:
-		tx_ctx = container_of(ep, struct zhpe_tx_ctx, fid.ctx);
+		tx_ctx = container_of(ep, struct zhpe_tx_ctx, ctx);
 		ep_attr = tx_ctx->ep_attr;
 		op_flags = tx_ctx->attr.op_flags;
 		break;
@@ -180,9 +179,9 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 	pe_entry->pe_root.handler = zhpe_pe_tx_handle_rma;
 	pe_entry->pe_root.conn = conn;
 	pe_entry->pe_root.context = msg->context;
-	pe_entry->pe_root.status = 0;
-	pe_entry->pe_root.completions = 0;
-	pe_entry->pe_root.flags |= ZHPE_PE_NO_RINDEX;
+	pe_entry->pe_root.compstat.status = 0;
+	pe_entry->pe_root.compstat.completions = 0;
+	pe_entry->pe_root.compstat.flags |= ZHPE_PE_KEY_WAIT;
 	pe_entry->cq_data = msg->data;
 	pe_entry->rx_id = zhpe_get_rx_id(tx_ctx, msg->addr);
 
@@ -216,24 +215,24 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 						   FI_INJECT_COMPLETE);
 		}
 	} else if (pe_entry->lstate.missing) {
-		ret = zhpe_mr_reg_int_iov(ep_attr->domain, &pe_entry->lstate,
-					  pe_entry->rem);
+		ret = zhpe_mr_reg_int_iov(ep_attr->domain, &pe_entry->lstate);
 		if (ret < 0)
 			goto done;
 	}
 
 	pe_entry->flags = flags;
-	pe_entry->pe_root.flags |= ZHPE_PE_KEY_WAIT;
 	if (pe_entry->rstate.missing) {
 		ohdr.rx_id = pe_entry->rx_id;
 		ohdr.pe_entry_id = htons(tindex);
 		zhpe_pe_rkey_request(conn, ohdr, &pe_entry->rstate,
-			&pe_entry->pe_root.completions);
-	} else
-		zhpe_pe_tx_rma(pe_entry);
+				     &pe_entry->pe_root.compstat.completions);
+	} else {
+		pe_entry->pe_root.compstat.completions = 1;
+		zhpe_pe_tx_handle_rma(&pe_entry->pe_root, NULL);
+	}
  done:
 	if (ret < 0 && tindex != -1)
-		zhpe_tx_release(conn, pe_entry);
+		zhpe_tx_release(pe_entry);
 
 	return ret;
 }

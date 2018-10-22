@@ -316,7 +316,7 @@ static int zhpe_fabric_close(fid_t fid)
 {
 	struct zhpe_fabric *fab;
 	fab = container_of(fid, struct zhpe_fabric, fab_fid.fid);
-	if (ofi_atomic_get32(&fab->ref))
+	if (atm_load_rlx(&fab->ref))
 		return -FI_EBUSY;
 
 	zhpe_fab_remove_from_list(fab);
@@ -339,8 +339,6 @@ static void zhpe_read_default_params()
 		fi_param_get_int(&zhpe_prov, "pe_waittime", &zhpe_pe_waittime);
 		fi_param_get_int(&zhpe_prov, "max_conn_retry",
 				 &zhpe_conn_retry);
-		fi_param_get_int(&zhpe_prov, "def_conn_map_sz",
-				 &zhpe_cm_def_map_sz);
 		fi_param_get_int(&zhpe_prov, "def_av_sz", &zhpe_av_def_sz);
 		fi_param_get_int(&zhpe_prov, "def_cq_sz", &zhpe_cq_def_sz);
 		fi_param_get_int(&zhpe_prov, "def_eq_sz", &zhpe_eq_def_sz);
@@ -389,7 +387,6 @@ static int zhpe_fabric(struct fi_fabric_attr *attr,
 	fab->fab_fid.fid.ops = &zhpe_fab_fi_ops;
 	fab->fab_fid.ops = &zhpe_fab_ops;
 	*fabric = &fab->fab_fid;
-	ofi_atomic_initialize32(&fab->ref, 0);
 	zhpe_fab_add_to_list(fab);
 	return 0;
 }
@@ -624,13 +621,12 @@ struct fi_provider zhpe_prov = {
 ZHPE_INI
 {
 	fi_param_define(&zhpe_prov, "pe_waittime", FI_PARAM_INT,
-			"How many milliseconds to spin while waiting for progress");
+			"How many milliseconds to spin while waiting"
+			" for progress");
 
 	fi_param_define(&zhpe_prov, "max_conn_retry", FI_PARAM_INT,
-			"Number of connection retries before reporting as failure");
-
-	fi_param_define(&zhpe_prov, "def_conn_map_sz", FI_PARAM_INT,
-			"Default connection map size");
+			"Number of connection retries before reporting"
+			" as failure");
 
 	fi_param_define(&zhpe_prov, "def_av_sz", FI_PARAM_INT,
 			"Default address vector size");
@@ -642,8 +638,10 @@ ZHPE_INI
 			"Default event queue size");
 
 	fi_param_define(&zhpe_prov, "pe_affinity", FI_PARAM_STRING,
-			"If specified, bind the progress thread to the indicated range(s) of Linux virtual processor ID(s). "
-			"This option is currently not supported on OS X. Usage: id_start[-id_end[:stride]][,]");
+			"If specified, bind the progress thread to the"
+			" indicated range(s) of Linux virtual processor ID(s)."
+			" This option is currently not supported on OS X."
+			" Usage: id_start[-id_end[:stride]][,]");
 
 	fi_param_define(&zhpe_prov, "ep_max_eager_sz", FI_PARAM_SIZE_T,
 			"Maximum size of eager message");

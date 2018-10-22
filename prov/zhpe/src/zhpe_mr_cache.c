@@ -88,7 +88,7 @@ static struct zhpe_mr_ops zmr_ops_cached = {
 		.control	= fi_no_control,
 		.ops_open	= fi_no_ops_open,
 	},
-	.free			= zhpe_zmr_free_cached,
+	.freeme			= zhpe_zmr_free_cached,
 	.put			= zhpe_zmr_put_cached,
 };
 
@@ -151,7 +151,7 @@ static int zhpe_mr_cache_add_region(struct ofi_mr_cache *cache,
 	zmc->entry = entry;
 
 	ret = zhpe_zmr_reg(domain, buf, len, qaccess,
-			   __sync_fetch_and_add(&domain->mr_zhpe_key, 1),
+			   atm_inc(&domain->mr_zhpe_key),
 			   &zmc->zmr, &zmr_ops_cached);
 	if (ret < 0) {
 		free(zmc);

@@ -48,7 +48,7 @@ void zhpe_cq_add_tx_ctx(struct zhpe_cq *cq, struct zhpe_tx_ctx *tx_ctx)
 			goto out;
 	}
 	dlist_insert_tail(&tx_ctx->cq_lentry, &cq->tx_list);
-	ofi_atomic_inc32(&cq->ref);
+	atm_inc(&cq->ref);
 out:
 	fastlock_release(&cq->list_lock);
 }
@@ -57,7 +57,7 @@ void zhpe_cq_remove_tx_ctx(struct zhpe_cq *cq, struct zhpe_tx_ctx *tx_ctx)
 {
 	fastlock_acquire(&cq->list_lock);
 	dlist_remove(&tx_ctx->cq_lentry);
-	ofi_atomic_dec32(&cq->ref);
+	atm_dec(&cq->ref);
 	fastlock_release(&cq->list_lock);
 }
 
@@ -72,7 +72,7 @@ void zhpe_cq_add_rx_ctx(struct zhpe_cq *cq, struct zhpe_rx_ctx *rx_ctx)
 			goto out;
 	}
 	dlist_insert_tail(&rx_ctx->cq_lentry, &cq->rx_list);
-	ofi_atomic_inc32(&cq->ref);
+	atm_inc(&cq->ref);
 out:
 	fastlock_release(&cq->list_lock);
 }
@@ -81,7 +81,7 @@ void zhpe_cq_remove_rx_ctx(struct zhpe_cq *cq, struct zhpe_rx_ctx *rx_ctx)
 {
 	fastlock_acquire(&cq->list_lock);
 	dlist_remove(&rx_ctx->cq_lentry);
-	ofi_atomic_dec32(&cq->ref);
+	atm_dec(&cq->ref);
 	fastlock_release(&cq->list_lock);
 }
 
@@ -99,11 +99,7 @@ int zhpe_cq_progress(struct zhpe_cq *cq)
 		if (!tx_ctx->enabled)
 			continue;
 
-		if (tx_ctx->use_shared)
-			zhpe_pe_progress_tx_ctx(cq->domain->pe,
-						tx_ctx->stx_ctx);
-		else
-			zhpe_pe_progress_tx_ctx(cq->domain->pe, tx_ctx);
+		zhpe_pe_progress_tx_ctx(cq->domain->pe, tx_ctx);
 	}
 
 	dlist_foreach_container(&cq->rx_list, struct zhpe_rx_ctx, rx_ctx,
@@ -111,11 +107,7 @@ int zhpe_cq_progress(struct zhpe_cq *cq)
 		if (!rx_ctx->enabled)
 			continue;
 
-		if (rx_ctx->use_shared)
-			zhpe_pe_progress_rx_ctx(cq->domain->pe,
-						rx_ctx->srx_ctx);
-		else
-			zhpe_pe_progress_rx_ctx(cq->domain->pe, rx_ctx);
+		zhpe_pe_progress_rx_ctx(cq->domain->pe, rx_ctx);
 	}
 	fastlock_release(&cq->list_lock);
 
@@ -334,7 +326,7 @@ static ssize_t zhpe_cq_sreadfrom(struct fid_cq *cq, void *buf, size_t count,
 	else
 		threshold = count;
 
-	start_ms = (timeout >= 0) ? fi_gettime_ms() : 0;
+	start_ms = (timeout > 0) ? fi_gettime_ms() : 0;
 
 	if (zhpe_cq->domain->progress_mode == FI_PROGRESS_MANUAL) {
 		while (1) {
@@ -350,14 +342,15 @@ static ssize_t zhpe_cq_sreadfrom(struct fid_cq *cq, void *buf, size_t count,
 			if (ret)
 				return ret;
 
-			if (timeout >= 0) {
+			if (timeout > 0) {
 				timeout -= (int) (fi_gettime_ms() - start_ms);
 				if (timeout <= 0)
 					return -FI_EAGAIN;
-			}
+			} else if (!timeout)
+				return -FI_EAGAIN;
 
-			if (ofi_atomic_get32(&zhpe_cq->signaled)) {
-				ofi_atomic_set32(&zhpe_cq->signaled, 0);
+			if (atm_load_rlx(&zhpe_cq->signaled)) {
+				atm_store_rlx(&zhpe_cq->signaled, 0);
 				return -FI_ECANCELED;
 			}
 		};
@@ -377,14 +370,16 @@ static ssize_t zhpe_cq_sreadfrom(struct fid_cq *cq, void *buf, size_t count,
 			if (ret && ret != -FI_EAGAIN)
 				return ret;
 
-			if (timeout >= 0) {
+			if (timeout > 0) {
 				timeout -= (int) (fi_gettime_ms() - start_ms);
 				if (timeout <= 0)
 					return -FI_EAGAIN;
-			}
+			} else if (!timeout)
+				return -FI_EAGAIN;
 
-			if (ofi_atomic_get32(&zhpe_cq->signaled)) {
-				ofi_atomic_set32(&zhpe_cq->signaled, 0);
+
+			if (atm_load_rlx(&zhpe_cq->signaled)) {
+				atm_store_rlx(&zhpe_cq->signaled, 0);
 				return -FI_ECANCELED;
 			}
 			ret = ofi_rbfdwait(&zhpe_cq->cq_rbfd, timeout);
@@ -467,7 +462,7 @@ static int zhpe_cq_close(struct fid *fid)
 	struct zhpe_cq *cq;
 
 	cq = container_of(fid, struct zhpe_cq, cq_fid.fid);
-	if (ofi_atomic_get32(&cq->ref))
+	if (atm_load_rlx(&cq->ref))
 		return -FI_EBUSY;
 
 	if (cq->signal && cq->attr.wait_obj == FI_WAIT_MUTEX_COND)
@@ -479,7 +474,7 @@ static int zhpe_cq_close(struct fid *fid)
 
 	fastlock_destroy(&cq->lock);
 	fastlock_destroy(&cq->list_lock);
-	ofi_atomic_dec32(&cq->domain->ref);
+	atm_dec(&cq->domain->ref);
 
 	free(cq);
 	return 0;
@@ -490,7 +485,7 @@ static int zhpe_cq_signal(struct fid_cq *cq)
 	struct zhpe_cq *zhpe_cq;
 	zhpe_cq = container_of(cq, struct zhpe_cq, cq_fid);
 
-	ofi_atomic_set32(&zhpe_cq->signaled, 1);
+	atm_store_rlx(&zhpe_cq->signaled, 1);
 	fastlock_acquire(&zhpe_cq->lock);
 	ofi_rbfdsignal(&zhpe_cq->cq_rbfd);
 	fastlock_release(&zhpe_cq->lock);
@@ -613,12 +608,10 @@ int zhpe_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr,
 	if (ret)
 		return ret;
 
-	zhpe_cq = calloc(1, sizeof(*zhpe_cq));
+	zhpe_cq = calloc_cachealigned(1, sizeof(*zhpe_cq));
 	if (!zhpe_cq)
 		return -FI_ENOMEM;
 
-	ofi_atomic_initialize32(&zhpe_cq->ref, 0);
-	ofi_atomic_initialize32(&zhpe_cq->signaled, 0);
 	zhpe_cq->cq_fid.fid.fclass = FI_CLASS_CQ;
 	zhpe_cq->cq_fid.fid.context = context;
 	zhpe_cq->cq_fid.fid.ops = &zhpe_cq_fi_ops;
@@ -701,7 +694,7 @@ int zhpe_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr,
 	}
 
 	*cq = &zhpe_cq->cq_fid;
-	ofi_atomic_inc32(&zhpe_dom->ref);
+	atm_inc(&zhpe_dom->ref);
 	fastlock_init(&zhpe_cq->list_lock);
 
 	return 0;
