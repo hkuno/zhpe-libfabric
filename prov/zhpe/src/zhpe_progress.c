@@ -257,8 +257,6 @@ static void rx_handle_send_rma_complete(struct zhpe_rx_entry *rx_entry)
 	struct zhpe_rx_ctx	*rx_ctx = rx_entry->rx_free->rx_ctx;
 	struct zhpe_pe_entry	*pe_entry = rx_entry->pe_entry;
 
-	rx_ctx->rx_io_count--;
-
 	switch (rx_entry->rx_state) {
 
 	case ZHPE_RX_STATE_RND_DIRECT:
@@ -356,7 +354,6 @@ static inline int rx_send_start_buf(struct zhpe_rx_entry *rx_entry,
 		set_rx_state(rx_entry, state);
 		rx_entry->slab = true;
 		zhpe_iov_state_init(&pe_entry->lstate, pe_entry->liov);
-		rx_entry->rx_free->rx_ctx->rx_io_count++;
 		pe_entry->lstate.cnt = 1;
 		pe_entry->pe_root.handler(&pe_entry->pe_root, NULL);
 	}
@@ -378,7 +375,6 @@ rx_send_start_rnd(struct zhpe_rx_entry *rx_entry, struct zhpe_iov_state *lstate,
 			goto done;
 	}
 	pe_entry = rx_entry->pe_entry;
-	rx_entry->rx_free->rx_ctx->rx_io_count++;
 	pe_entry->lstate = *lstate;
 	pe_entry->lstate.missing = 0;
 	pe_entry->pe_root.handler(&pe_entry->pe_root, NULL);
@@ -1396,13 +1392,14 @@ static bool zhpe_pe_progress_rx_ctx_unlocked(struct zhpe_rx_ctx *rx_ctx)
 
 void zhpe_pe_progress_rx_ctx(struct zhpe_pe *pe, struct zhpe_rx_ctx *rx_ctx)
 {
-	struct zhpe_tx		*ztx;
+	struct zhpe_tx		*ztx = atm_load_rlx(&rx_ctx->ep_attr->ztx);
 
-	if (pe->progress_rx(rx_ctx) || rx_ctx->rx_io_count) {
-		ztx = atm_load_rlx(&rx_ctx->ep_attr->ztx);
-		if (OFI_LIKELY(!!ztx))
-			pe->progress_queue(ztx);
+	if (OFI_LIKELY(!!ztx)) {
+			if (ztx->progress != rx_ctx->tx_progress_last)
+				pe->progress_queue(ztx);
+			rx_ctx->tx_progress_last = ztx->progress + 1;
 	}
+	pe->progress_rx(rx_ctx);
 }
 
 static inline bool zhpe_pe_progress_tx_queue(struct zhpe_tx *ztx)
@@ -1477,6 +1474,7 @@ static bool zhpe_pe_progress_queue_unlocked(struct zhpe_tx *ztx)
 
 	ret = zhpe_pe_progress_tx_queue(ztx);
 	zhpe_pe_progress_rx_queue(ztx);
+	ztx->progress++;
 
 	return ret;
 }
@@ -1677,7 +1675,8 @@ static void *zhpe_pe_progress_thread(void *data)
 		outstanding = false;
 		if (locked || zhpeu_work_queued(&pe->work_head)) {
 			outstanding |=
-				zhpeu_work_process(&pe->work_head, true, true);
+				zhpeu_work_process(&pe->work_head,
+						   !locked, true);
 			locked = false;
 		}
 
@@ -1707,6 +1706,8 @@ static void *zhpe_pe_progress_thread(void *data)
 		locked = true;
 		wait_beg = 0;
 	}
+	if (locked)
+		mutex_unlock(&pe->work_head.thr_wait.mutex);
 
  	ZHPE_LOG_DBG("Progress thread terminated\n");
 

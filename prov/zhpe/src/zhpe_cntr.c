@@ -543,7 +543,7 @@ int zhpe_cntr_open(struct fid_domain *domain, struct fi_cntr_attr *attr,
 	_cntr->cntr_fid.fid.ops = &zhpe_cntr_fi_ops;
 	_cntr->cntr_fid.ops = &zhpe_cntr_ops;
 
-	atm_dec(&dom->ref);
+	atm_inc(&dom->ref);
 	_cntr->domain = dom;
 	*cntr = &_cntr->cntr_fid;
 	return 0;

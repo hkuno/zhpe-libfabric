@@ -647,6 +647,7 @@ static int zhpe_ep_close(struct fid *fid)
 	}
 
 	ofi_idm_reset(&zhpe_ep->attr->av_idm);
+	zhpe_pe_remove_queue(zhpe_ep->attr->ztx);
 	zhpe_conn_list_destroy(zhpe_ep->attr);
 	zhpe_tx_put(zhpe_ep->attr->ztx);
 	mutex_destroy(&zhpe_ep->attr->conn_mutex);

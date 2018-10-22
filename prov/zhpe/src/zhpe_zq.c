@@ -69,7 +69,6 @@ void zhpe_tx_free(struct zhpe_tx *ztx)
 		free(pe_retry);
 	}
 
-	zhpe_pe_remove_queue(ztx);
 	zhpe_mr_put(ztx->zmr);
 	zhpeq_free(ztx->zq);
 	free(ztx->pentries);

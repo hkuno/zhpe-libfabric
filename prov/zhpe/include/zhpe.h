@@ -434,6 +434,7 @@ struct zhpe_tx {
 	pthread_mutex_t		mutex;
 	uint32_t		mask;
 	int32_t			use_count;
+	uint32_t		progress;
 	struct zhpeu_atm_list_ptr pe_retry_free_list;
 	struct zhpeu_atm_snatch_head pe_retry_list;
 	struct zhpeu_atm_snatch_head rx_poll_list CACHE_ALIGNED;
@@ -1007,11 +1008,10 @@ struct zhpe_rx_ctx {
 	struct dlist_entry	rx_work_list;
 
 	struct zhpe_rx_entry_free rx_user_free CACHE_ALIGNED;
-
-	struct zhpe_rx_entry_free rx_prog_free CACHE_ALIGNED;
 	struct zhpeu_atm_snatch_head rx_match_list;
 	struct zhpeu_atm_snatch_head rx_iodone_list;
-	uint32_t		rx_io_count;
+	uint32_t		tx_progress_last;
+	struct zhpe_rx_entry_free rx_prog_free CACHE_ALIGNED;
 };
 
 struct zhpe_tx_ctx {
