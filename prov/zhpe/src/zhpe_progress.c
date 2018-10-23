@@ -367,12 +367,19 @@ rx_send_start_rnd(struct zhpe_rx_entry *rx_entry, struct zhpe_iov_state *lstate,
 {
 	int			rc;
 	struct zhpe_pe_entry	*pe_entry;
+	struct zhpe_rx_ctx	*rx_ctx;
 
 	if (check_missing && OFI_UNLIKELY(lstate->missing) &&
 	    rx_entry->total_len <= zhpe_ep_max_eager_sz) {
 		rc = rx_send_start_buf(rx_entry, ZHPE_RX_STATE_RND_BUF);
 		if (rc >= 0)
 			goto done;
+		rx_ctx = rx_entry->rx_free->rx_ctx;
+		rc = zhpe_mr_reg_int_iov(rx_ctx->domain, lstate);
+		if (rc < 0) {
+			zhpe_pe_rx_complete(rx_ctx, rx_entry, rc);
+			goto done;
+		}
 	}
 	pe_entry = rx_entry->pe_entry;
 	pe_entry->lstate = *lstate;
