@@ -222,7 +222,7 @@ static void zhpe_pe_rx_discard_recv(struct zhpe_rx_entry *rx_entry,
 		zhpe_rx_release_entry(rx_ctx, rx_entry);
 		fastlock_release(&rx_ctx->lock);
 		if (zhdr.flags & ZHPE_MSG_ANY_COMPLETE)
-			zhpe_send_status(conn, zhdr, 0, 0);
+			zhpe_send_status_rem(conn, zhdr, 0, 0);
 	}
 }
 
@@ -283,8 +283,8 @@ void zhpe_pe_rx_complete(struct zhpe_rx_ctx *rx_ctx,
 		ZHPEQ_TIMING_UPDATE(&zhpeq_timing_rx_recv_done,
 				    NULL, &sent_stamp, 0);
 		if (rx_cur->zhdr.flags & ZHPE_MSG_ANY_COMPLETE)
-			zhpe_send_status(rx_cur->pe_root.conn,
-					 rx_cur->zhdr,status, rx_cur->rem);
+			zhpe_send_status_rem(rx_cur->pe_root.conn,
+					     rx_cur->zhdr,status, rx_cur->rem);
 	}
 	/* Free resources after completion to reduce latency (I hope). */
 	fastlock_acquire(&rx_ctx->lock);
@@ -561,7 +561,8 @@ static int zhpe_pe_rx_handle_status(struct zhpe_conn *conn,
 	zpay = zhpe_pay_ptr(conn, zhdr, 0, alignof(*zpay));
 	status = ntohl(zpay->status.status);
 	zhpe_pe_root_update_status(&pe_entry->pe_root, status);
-	pe_entry->rem = be64toh(zpay->status.rem);
+	if (zpay->status.rem_valid)
+		pe_entry->rem = be64toh(zpay->status.rem);
 
 	return pe_entry->pe_root.handler(&pe_entry->pe_root, NULL);
 }
@@ -680,7 +681,7 @@ static int zhpe_pe_rx_handle_atomic(struct zhpe_conn *conn,
 	}
  done:
 	if (zhdr->flags & ZHPE_MSG_DELIVERY_COMPLETE)
-		zhpe_send_status(conn, *zhdr, status, rem);
+		zhpe_send_status_rem(conn, *zhdr, status, rem);
 
 	return 0;
 }
@@ -736,7 +737,7 @@ static int zhpe_pe_rx_handle_key_request(struct zhpe_conn *conn,
 				ret = -FI_ENOKEY;
 		}
 		if (ret < 0)
-			zhpe_send_status(conn, *zhdr, ret, 0);
+			zhpe_send_status(conn, *zhdr, ret);
 	}
 
 	return 0;
@@ -976,8 +977,9 @@ static void zhpe_pe_rx_get(struct zhpe_rx_entry *rx_entry)
 		state = rx_entry->rx_state;
 		fastlock_release(&rx_ctx->lock);
 		if (zhdr.flags & ZHPE_MSG_TRANSMIT_COMPLETE)
-			zhpe_send_status(conn, zhdr, rx_entry->pe_root.status,
-					 rx_entry->rem);
+			zhpe_send_status_rem(conn, zhdr,
+					     rx_entry->pe_root.status,
+					     rx_entry->rem);
 		if (state == ZHPE_RX_STATE_EAGER_DONE)
 			break;
 		__attribute__ ((fallthrough));
@@ -1274,18 +1276,16 @@ void zhpe_pe_tx_rma(struct zhpe_pe_entry *pe_entry)
 		if (rc == -FI_EAGAIN) {
 			rc = zhpe_pe_retry(pe_entry->pe_root.conn,
 					   zhpe_pe_retry_tx_rma, pe_entry);
-			if (rc > 0)
+			if (rc >= 0)
 				goto done;
 		}
 		zhpe_pe_root_update_status(&pe_entry->pe_root, rc);
 	}
 
  complete:
-	if (pe_entry->pe_root.completions)
-		goto done;
-
-	if (pe_entry->flags &
-	    (FI_REMOTE_READ | FI_REMOTE_WRITE | FI_REMOTE_CQ_DATA)) {
+	if (pe_entry->pe_root.status >= 0 &&
+	    (pe_entry->flags &
+	     (FI_REMOTE_READ | FI_REMOTE_WRITE | FI_REMOTE_CQ_DATA))) {
 		rc = zhpe_pe_writedata(pe_entry);
 		if (rc >= 0)
 			goto done;
@@ -1311,6 +1311,7 @@ void zhpe_pe_rkey_request(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
 	for (i = ffs(missing) - 1, j = 0; i >= 0;
 	     (missing &= ~(1U << i), i = ffs(missing) - 1)) {
 		zhpe_ziov_to_zkey(&ziov[i], &zkey);
+		zkey.key = htobe64(zkey.key);
 		memcpy(&key_req.zkeys[j++], &zkey, sizeof(key_req.zkeys[0]));
 		(*completions)++;
 	}

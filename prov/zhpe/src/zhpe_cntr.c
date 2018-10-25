@@ -317,8 +317,12 @@ static int zhpe_cntr_wait(struct fid_cntr *fid_cntr, uint64_t threshold,
 			ret = zhpe_cntr_progress(cntr);
 			mutex_acquire(&cntr->mut);
 		} else {
-			ret = fi_wait_cond(&cntr->cond, &cntr->mut, remaining_ms);
+			ret = fi_wait_cond(&cntr->cond, &cntr->mut,
+					   remaining_ms);
 		}
+
+		if (cntr->err_flag)
+			break;
 
 		uint64_t curr_ms = fi_gettime_ms();
 		if (timeout >= 0) {

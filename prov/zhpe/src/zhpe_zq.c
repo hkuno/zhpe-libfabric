@@ -378,7 +378,6 @@ void zhpe_conn_z_free(struct zhpe_conn *conn)
 		/* Is lock initialized? */
 		if (conn->kexp_tree) {
 			fastlock_acquire(&conn->ep_attr->domain->lock);
-			fastlock_acquire(&conn->mr_lock);
 			while ((rbt = rbtBegin(conn->kexp_tree)))  {
 				rbtKeyValue(conn->kexp_tree, rbt, &keyp,
 					    (void **)&kexp);
@@ -392,17 +391,14 @@ void zhpe_conn_z_free(struct zhpe_conn *conn)
 				dlist_pop_front(&conn->rkey_deferred_list,
 						struct zhpe_rkey_data, rkey,
 						lentry);
-				free(rkey);
+				zhpe_rkey_put(rkey);
 			}
 			while ((rbt = rbtBegin(conn->rkey_tree)))  {
 				rbtKeyValue(conn->rkey_tree, rbt, &keyp,
 					    (void **)&rkey);
 				rbtErase(conn->rkey_tree, rbt);
-				fastlock_release(&conn->mr_lock);
 				zhpe_rkey_put(rkey);
-				fastlock_acquire(&conn->mr_lock);
 			}
-			fastlock_release(&conn->mr_lock);
 			fastlock_destroy(&conn->mr_lock);
 			rbtDelete(conn->kexp_tree);
 		}
@@ -973,13 +969,27 @@ int zhpe_iov_to_get_imm(struct zhpe_pe_root *pe_root,
 			   zhpe_iov_op_get_imm, rem);
 }
 
-void zhpe_send_status(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
-		      int32_t status, uint64_t rem)
+void zhpe_send_status_rem(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
+			  int32_t status, uint64_t rem)
 {
 	struct zhpe_msg_status	msg_status;
 
 	msg_status.rem = htobe64(rem);
 	msg_status.status = htonl(status);
+	msg_status.rem_valid = true;
+	ohdr.op_type = ZHPE_OP_STATUS;
+
+	zhpe_prov_op(conn, ohdr, ZHPE_PE_RETRY,
+		     &msg_status, sizeof(msg_status));
+}
+
+void zhpe_send_status(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
+		      int32_t status)
+{
+	struct zhpe_msg_status	msg_status;
+
+	msg_status.status = htonl(status);
+	msg_status.rem_valid = false;
 	ohdr.op_type = ZHPE_OP_STATUS;
 
 	zhpe_prov_op(conn, ohdr, ZHPE_PE_RETRY,

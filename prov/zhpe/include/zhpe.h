@@ -584,7 +584,7 @@ struct zhpe_msg_hdr {
 
 struct zhpe_key {
 	uint64_t		key;
-	bool			internal;
+	uint8_t			internal;
 } __attribute__((aligned(8), packed));
 
 int zhpe_compare_zkeys(void *k1p, void *k2p);
@@ -1265,6 +1265,7 @@ struct zhpe_msg_key_data {
 struct zhpe_msg_status {
 	uint64_t		rem;
 	int32_t			status;
+	uint8_t			rem_valid;
 	char			end[0];
 };
 
@@ -1579,8 +1580,11 @@ int zhpe_listen(const struct fi_info *info,
 
 int zhpe_conn_z_setup(struct zhpe_conn *conn, int conn_fd, int action);
 void zhpe_conn_z_free(struct zhpe_conn *conn);
+void zhpe_send_status_rem(struct zhpe_conn *conn,
+			  struct zhpe_msg_hdr ohdr, int32_t status,
+			  uint64_t rem);
 void zhpe_send_status(struct zhpe_conn *conn,
-		      struct zhpe_msg_hdr ohdr, int32_t status, uint64_t rem);
+		      struct zhpe_msg_hdr ohdr, int32_t status);
 void zhpe_send_key_revoke(struct zhpe_conn *conn, const struct zhpe_key *zkey);
 void zhpe_pe_complete_key_response(struct zhpe_conn *conn,
 				   struct zhpe_msg_hdr ohdr, int rc);
