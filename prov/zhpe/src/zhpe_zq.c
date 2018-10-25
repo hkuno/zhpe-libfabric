@@ -886,8 +886,7 @@ int zhpe_iov_op(struct zhpe_pe_root *pe_root,
 	bytes = 0;
 	while (!zhpe_iov_state_empty(lstate) &&
 	       !zhpe_iov_state_empty(rstate) &&
-	       (!max_ops || ops < max_ops) &&
-	       (!max_bytes || bytes < max_bytes)) {
+	       ops < max_ops && bytes < max_bytes) {
 
 		llen = zhpe_ziov_state_len(lstate);
 		rlen = zhpe_ziov_state_len(rstate);
@@ -905,7 +904,7 @@ int zhpe_iov_op(struct zhpe_pe_root *pe_root,
 	max_ops = ops;
 	if (!ops)
 		goto done;
-	if (!max_bytes || bytes < max_bytes)
+	if (bytes < max_bytes)
 		max_bytes = bytes;
 	for (;;) {
 		rc = zhpeq_reserve(zq, max_ops);
@@ -986,13 +985,27 @@ int zhpe_iov_to_get_imm(struct zhpe_pe_root *pe_root,
 			   zhpe_iov_op_get_imm, rem);
 }
 
-void zhpe_send_status(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
-		      int32_t status, uint64_t rem)
+void zhpe_send_status_rem(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
+			  int32_t status, uint64_t rem)
 {
 	struct zhpe_msg_status	msg_status;
 
 	msg_status.rem = htobe64(rem);
 	msg_status.status = htonl(status);
+	msg_status.rem_valid = true;
+	ohdr.op_type = ZHPE_OP_STATUS;
+
+	zhpe_prov_op(conn, ohdr, ZHPE_PE_RETRY,
+		     &msg_status, sizeof(msg_status));
+}
+
+void zhpe_send_status(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
+		      int32_t status)
+{
+	struct zhpe_msg_status	msg_status;
+
+	msg_status.status = htonl(status);
+	msg_status.rem_valid = false;
 	ohdr.op_type = ZHPE_OP_STATUS;
 
 	zhpe_prov_op(conn, ohdr, ZHPE_PE_RETRY,
