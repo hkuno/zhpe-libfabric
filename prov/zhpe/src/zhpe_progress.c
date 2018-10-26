@@ -48,6 +48,7 @@ static void zhpe_pe_tx_rma(struct zhpe_pe_entry *pe_entry,
 			   void (*completion)(struct zhpe_pe_entry *pe_entry));
 static void zhpe_pe_tx_handle_rx_rma(struct zhpe_pe_root *pe_root,
 				     struct zhpeq_cq_entry *zq_cqe);
+static int zhpe_pe_writedata(struct zhpe_pe_entry *pe_entry);
 
 static inline void rx_update_status(struct zhpe_rx_entry *rx_entry,
 				    int status)
@@ -1044,9 +1045,18 @@ static void zhpe_pe_rx_handle_send(struct zhpe_conn *conn,
 
 void zhpe_pe_tx_rma_completion(struct zhpe_pe_entry *pe_entry)
 {
+	int			rc;
+
+	if (pe_entry->pe_root.compstat.status >= 0 &&
+	    (pe_entry->flags &
+	     (FI_REMOTE_READ | FI_REMOTE_WRITE | FI_REMOTE_CQ_DATA))) {
+		    rc = zhpe_pe_writedata(pe_entry);
+		    if (rc >= 0)
+			    return;
+		tx_update_status(pe_entry, rc);
+	}
 	zhpe_pe_tx_report_complete(pe_entry,
-				   FI_TRANSMIT_COMPLETE |
-				   FI_DELIVERY_COMPLETE);
+				   FI_TRANSMIT_COMPLETE | FI_DELIVERY_COMPLETE);
 	zhpe_tx_release(pe_entry);
 }
 
@@ -1144,7 +1154,7 @@ zhpe_pe_tx_rma(struct zhpe_pe_entry *pe_entry,
 
 	assert(pe_entry->pe_root.compstat.completions == 0);
 	if (OFI_UNLIKELY(pe_entry->pe_root.compstat.status < 0))
-		goto error;
+		goto complete;
 
 	if (OFI_UNLIKELY(pe_entry->pe_root.compstat.flags & ZHPE_PE_KEY_WAIT)) {
 		pe_entry->pe_root.compstat.flags &= ~ZHPE_PE_KEY_WAIT;
@@ -1153,7 +1163,7 @@ zhpe_pe_tx_rma(struct zhpe_pe_entry *pe_entry,
 				       !(pe_entry->flags & FI_WRITE));
 		tx_update_status(pe_entry, rc);
 		if (rc < 0)
-			goto error;
+			goto complete;
 	}
 	if (!pe_entry->rem)
 		goto complete;
@@ -1185,16 +1195,9 @@ zhpe_pe_tx_rma(struct zhpe_pe_entry *pe_entry,
 				goto done;
 		}
 		tx_update_status(pe_entry, rc);
-		goto error;
 	}
 
  complete:
-	if (pe_entry->flags &
-	    (FI_REMOTE_READ | FI_REMOTE_WRITE | FI_REMOTE_CQ_DATA)) {
-		rc = zhpe_pe_writedata(pe_entry);
-		tx_update_status(pe_entry, rc);
-	}
- error:
 	completion(pe_entry);
  done:
 	return;
@@ -1255,6 +1258,7 @@ void zhpe_pe_tx_handle_atomic(struct zhpe_pe_root *pe_root,
 			rc = zhpe_pe_writedata(pe_entry);
 			if (rc >= 0)
 				goto done;
+			tx_update_status(pe_entry, rc);
 		}
 		zhpe_pe_tx_report_complete(pe_entry,
 					   FI_TRANSMIT_COMPLETE |
