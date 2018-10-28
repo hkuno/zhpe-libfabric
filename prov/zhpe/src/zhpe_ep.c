@@ -1127,6 +1127,8 @@ static void zhpe_set_domain_attr(uint32_t api_version, void *src_addr,
 		*attr = zhpe_domain_attr;
 		if (FI_VERSION_LT(api_version, FI_VERSION(1, 5)))
 			attr->mr_mode = FI_MR_BASIC;
+		else
+			attr->mr_mode |= FI_MR_LOCAL;
 		goto out;
 	}
 
@@ -1141,6 +1143,13 @@ static void zhpe_set_domain_attr(uint32_t api_version, void *src_addr,
 	*attr = *hint_attr;
 	if (FI_VERSION_LT(api_version, FI_VERSION(1, 5)))
 		attr->mr_mode = FI_MR_BASIC;
+	else if (attr->mr_mode != FI_MR_BASIC)
+		attr->mr_mode &= (OFI_MR_BASIC_MAP | FI_MR_LOCAL);
+
+	if (!attr->caps)
+		attr->caps = zhpe_domain_attr.caps;
+
+	attr->mode &= zhpe_domain_attr.mode;
 
 	if (attr->threading == FI_THREAD_UNSPEC)
 		attr->threading = zhpe_domain_attr.threading;
@@ -1278,7 +1287,7 @@ struct fi_info *zhpe_fi_info(uint32_t version,
 				     info->fabric_attr);
 
 	} else {
-		info->mode = ZHPE_MODE;
+		info->mode = mode;
 		zhpe_set_domain_attr(version, info->src_addr, NULL, info);
 		zhpe_set_fabric_attr(info->src_addr, NULL, info->fabric_attr);
 		*info->ep_attr = *ep_attr;
@@ -1295,8 +1304,9 @@ struct fi_info *zhpe_fi_info(uint32_t version,
 		info->rx_attr->caps = info->caps;
 
 	info->mode |= info->tx_attr->mode | info->rx_attr->mode;
-	if (!info->mode)
-		info->mode = mode;
+	if (FI_VERSION_LT(version, FI_VERSION(1, 5)))
+		mode |= FI_LOCAL_MR;
+	info->mode &= mode;
 	if (!info->tx_attr->mode)
 		info->tx_attr->mode = info->mode;
 	if (!info->rx_attr->mode)
