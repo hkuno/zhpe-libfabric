@@ -2,7 +2,7 @@
 
 if HAVE_ZHPE
 
-AM_CPPFLAGS += -I$(top_srcdir)/prov/zhpe/include -I$(top_srcdir)/prov/zhpe
+zhpe_CPPFLAGS += -I$(top_srcdir)/prov/zhpe/include -I$(top_srcdir)/prov/zhpe
 
 _zhpe_files = \
 	prov/zhpe/src/zhpe_av.c \

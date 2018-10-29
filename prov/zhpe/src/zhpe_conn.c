@@ -42,136 +42,66 @@
 #define ZHPE_LOG_DBG(...) _ZHPE_LOG_DBG(FI_LOG_EP_CTRL, __VA_ARGS__)
 #define ZHPE_LOG_ERROR(...) _ZHPE_LOG_ERROR(FI_LOG_EP_CTRL, __VA_ARGS__)
 
-int zhpe_conn_map_init(struct zhpe_ep *ep, int init_size)
+
+void zhpe_conn_list_destroy(struct zhpe_ep_attr *ep_attr)
 {
-	struct zhpe_conn_map *map = &ep->attr->cmap;
-	pthread_mutexattr_t	mattr;
+	struct zhpe_conn	*conn;
 
-	map->table = calloc(init_size, sizeof(*map->table));
-	if (!map->table)
-		return -FI_ENOMEM;
-
-	mutexattr_init(&mattr);
-	mutexattr_settype(&mattr, PTHREAD_MUTEX_RECURSIVE);
-	mutex_init(&map->mutex, &mattr);
-	mutexattr_destroy(&mattr);
-	cond_init(&map->cond, NULL);
-	map->used = 0;
-	map->size = init_size;
-
-	return 0;
-}
-
-#if 0
-static int zhpe_conn_map_increase(struct zhpe_conn_map *map, int new_size)
-{
-	void *_table;
-
-	_table = realloc(map->table, new_size * sizeof(*map->table));
-	if (!_table) {
-		ZHPE_LOG_ERROR("*** realloc failed, use FI_SOCKETS_DEF_CONN_MAP_SZ for"
-			"specifying conn-map-size\n");
-		return -FI_ENOMEM;
+	/* Called only during ep teardown. No locking. */
+	while (!dlist_empty(&ep_attr->conn_list)) {
+		dlist_pop_front(&ep_attr->conn_list, struct zhpe_conn,
+				conn, ep_lentry);
+		zhpe_conn_z_free(conn);
+		free(conn);
 	}
-
-	map->size = new_size;
-	map->table = _table;
-	return 0;
-}
-#endif
-
-void zhpe_conn_map_destroy(struct zhpe_ep_attr *ep_attr)
-{
-	int			i;
-	struct zhpe_conn_map	*cmap = &ep_attr->cmap;
-
-	for (i = 0; i < cmap->used; i++) {
-		if (cmap->table[i].state != ZHPE_CONN_STATE_FREE)
-			zhpe_conn_release_entry(ep_attr, &cmap->table[i]);
-	}
-
-	free(cmap->table);
-	cmap->table = NULL;
-	cmap->used = cmap->size = 0;
-	mutex_destroy(&cmap->mutex);
-	cond_destroy(&cmap->cond);
 }
 
 void zhpe_conn_release_entry(struct zhpe_ep_attr *ep_attr,
 			     struct zhpe_conn *conn)
+
 {
-	/* ep_attr->cmap.mutex should be held, */
+	mutex_lock(&ep_attr->conn_mutex);
+	assert(conn->state != ZHPE_CONN_STATE_READY);
+	dlist_remove_init(&conn->ep_lentry);
+	cond_broadcast(&ep_attr->conn_cond);
+	mutex_unlock(&ep_attr->conn_mutex);
 	zhpe_conn_z_free(conn);
-	conn->state = ZHPE_CONN_STATE_FREE;
-	if (conn->fi_addr != FI_ADDR_NOTAVAIL) {
-		if (ofi_idm_lookup(&ep_attr->av_idm, conn->av_index) == conn)
-			ofi_idm_clear(&ep_attr->av_idm, conn->av_index);
-	}
-	cond_broadcast(&ep_attr->cmap.cond);
+	free(conn);
 }
 
-static int zhpe_conn_get_next_index(struct zhpe_conn_map *map)
+struct zhpe_conn *zhpe_conn_insert(struct zhpe_ep_attr *ep_attr,
+				   const union sockaddr_in46 *addr,
+				   bool local)
 {
-	int i;
-	for (i = 0; i < map->size; i++) {
-		if (!map->table[i].state == ZHPE_CONN_STATE_FREE)
-			return i;
-	}
-	return -1;
+	struct zhpe_conn	*conn;
+
+	conn = calloc_cachealigned(1, sizeof(*conn));
+	if (!conn)
+		goto done;
+
+	conn->ep_attr = ep_attr;
+	conn->fi_addr = FI_ADDR_NOTAVAIL;
+	conn->zq_index = FI_ADDR_NOTAVAIL;
+	conn->state = ZHPE_CONN_STATE_INIT;
+	sockaddr_cpy(&conn->addr, addr);
+	conn->local = local;
+	dlist_insert_tail(&conn->ep_lentry, &ep_attr->conn_list);
+ done:
+	return conn;;
 }
 
-struct zhpe_conn *zhpe_conn_map_insert(struct zhpe_ep_attr *ep_attr,
-				       const union sockaddr_in46 *addr,
-				       bool local)
-{
-	int index;
-	struct zhpe_conn_map *map = &ep_attr->cmap;
-
-	if (map->size == map->used) {
-		index = zhpe_conn_get_next_index(map);
-		if (index < 0) {
-			/* FIXME:This doesn't work because it will change the
-			 * address of conns that are in use. Need chunky
-			 * table. Maybe the IDM stuff?
-			 */
-			return NULL;
-#if 0
-			if (zhpe_conn_map_increase(map, map->size * 2))
-				return NULL;
-			index = map->used;
-			map->used++;
-#endif
-		}
-	} else {
-		index = map->used;
-		map->used++;
-	}
-	memset(&map->table[index], 0, sizeof(map->table[index]));
-	map->table[index].fi_addr = FI_ADDR_NOTAVAIL;
-	map->table[index].state = ZHPE_CONN_STATE_INIT;
-	sockaddr_cpy(&map->table[index].addr, addr);
-	map->table[index].ep_attr = ep_attr;
-	map->table[index].zq_index = FI_ADDR_NOTAVAIL;
-	map->table[index].local = local;
-
-	return &map->table[index];
-}
-
-struct zhpe_conn *zhpe_conn_map_lookup(struct zhpe_ep_attr *ep_attr,
-				       const union sockaddr_in46 *addr,
-				       bool local)
+struct zhpe_conn *zhpe_conn_lookup(struct zhpe_ep_attr *ep_attr,
+				   const union sockaddr_in46 *addr,
+				   bool local)
 {
 	struct zhpe_conn	*ret;
-	int			i;
 
-	for (i = 0; i < ep_attr->cmap.used; i++) {
-		ret = &ep_attr->cmap.table[i];
-		if (ret->state == ZHPE_CONN_STATE_FREE ||
-		    ret->state == ZHPE_CONN_STATE_RACED)
+	dlist_foreach_container(&ep_attr->conn_list, struct zhpe_conn,
+				ret, ep_lentry) {
+		if (ret->state == ZHPE_CONN_STATE_RACED)
 			continue;
 
-		if (local && ret->local &&
-		    ret->addr.sin_port == addr->sin_port)
+		if (local && ret->local && !sockaddr_portcmp(&ret->addr, addr))
 			return ret;
 		if (!sockaddr_cmp(&ret->addr, addr))
 			return ret;
@@ -290,7 +220,6 @@ static void *_zhpe_conn_listen(void *arg)
 	int			rc;
 	struct zhpe_ep_attr	*ep_attr = (struct zhpe_ep_attr *)arg;
 	struct zhpe_conn_listener *listener = &ep_attr->listener;
-	struct zhpe_conn_map	*map = &ep_attr->cmap;
 	int			conn_fd = -1;
 	union sockaddr_in46	local46;
 	union sockaddr_in46	remote46;
@@ -374,12 +303,12 @@ static void *_zhpe_conn_listen(void *arg)
 		rem_local = !!rc;
 
 		action = ZHPE_CONN_ACTION_NEW;
-		mutex_acquire(&map->mutex);
 		/* We can only go forward with a conn we create;
 		 * if we are racing, we need to break the tie and,
 		 * if we win, mark the current conn as RACED.
 		 */
-		conn = zhpe_conn_map_lookup(ep_attr, &remote46, rem_local);
+		mutex_lock(&ep_attr->conn_mutex);
+		conn = zhpe_conn_lookup(ep_attr, &remote46, rem_local);
 		if (conn) {
 			assert(conn->state == ZHPE_CONN_STATE_INIT);
 			if (rem_local)
@@ -392,27 +321,23 @@ static void *_zhpe_conn_listen(void *arg)
 				action = ZHPE_CONN_ACTION_DROP;
 			if (action == ZHPE_CONN_ACTION_NEW) {
 				conn->state = ZHPE_CONN_STATE_RACED;
-				cond_broadcast(&ep_attr->cmap.cond);
+				cond_broadcast(&ep_attr->conn_cond);
 			}
 		}
 		if (action == ZHPE_CONN_ACTION_NEW) {
-			conn = zhpe_conn_map_insert(ep_attr, &remote46,
-						    rem_local);
+			conn = zhpe_conn_insert(ep_attr, &remote46, rem_local);
 			if (!conn)
 				action = ZHPE_CONN_ACTION_DROP;
 		}
-		mutex_release(&map->mutex);
+		mutex_unlock(&ep_attr->conn_mutex);
 		rc = zhpe_send_blob(conn_fd, &action, sizeof(action));
 		if (rc < 0 || action != ZHPE_CONN_ACTION_NEW)
 			continue;
 		rc = zhpe_conn_z_setup(conn, conn_fd, action);
 		if (rc >= 0)
 			zhpe_pe_signal(ep_attr->domain->pe);
-		else {
-			mutex_acquire(&map->mutex);
+		else
 			zhpe_conn_release_entry(ep_attr, conn);
-			mutex_release(&map->mutex);
-		}
 	}
 
 err:
@@ -544,7 +469,6 @@ int zhpe_ep_connect(struct zhpe_ep_attr *ep_attr, struct zhpe_conn *conn)
 #if ENABLE_DEBUG
 	char			ntop[INET6_ADDRSTRLEN];
 #endif
-
 	conn_fd = ofi_socket(conn->addr.sa_family, SOCK_STREAM, IPPROTO_TCP);
 	if (conn_fd == -1) {
 		ZHPE_LOG_ERROR("failed to create conn_fd, errno: %d\n", errno);

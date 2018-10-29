@@ -52,6 +52,8 @@ int zhpe_mr_cache_enable = ZHPE_MR_CACHE_ENABLE;
 int zhpe_mr_cache_merge_regions = ZHPE_MR_CACHE_MERGE_REGIONS;
 size_t zhpe_mr_cache_max_cnt = ZHPE_MR_CACHE_MAX_CNT;
 size_t zhpe_mr_cache_max_size = ZHPE_MR_CACHE_MAX_SIZE;
+char *zhpe_stats_dir = NULL;
+char *zhpe_stats_unique = NULL;
 
 const struct fi_fabric_attr zhpe_fabric_attr = {
 	.fabric = NULL,
@@ -60,8 +62,8 @@ const struct fi_fabric_attr zhpe_fabric_attr = {
 	.prov_version = FI_VERSION(ZHPE_MAJOR_VERSION, ZHPE_MINOR_VERSION),
 };
 
-static struct dlist_entry zhpe_fab_list;
-static struct dlist_entry zhpe_dom_list;
+static DEFINE_LIST(zhpe_fab_list);
+static DEFINE_LIST(zhpe_dom_list);
 static fastlock_t zhpe_list_lock;
 static int read_default_params;
 
@@ -314,7 +316,7 @@ static int zhpe_fabric_close(fid_t fid)
 {
 	struct zhpe_fabric *fab;
 	fab = container_of(fid, struct zhpe_fabric, fab_fid.fid);
-	if (ofi_atomic_get32(&fab->ref))
+	if (atm_load_rlx(&fab->ref))
 		return -FI_EBUSY;
 
 	zhpe_fab_remove_from_list(fab);
@@ -337,8 +339,6 @@ static void zhpe_read_default_params()
 		fi_param_get_int(&zhpe_prov, "pe_waittime", &zhpe_pe_waittime);
 		fi_param_get_int(&zhpe_prov, "max_conn_retry",
 				 &zhpe_conn_retry);
-		fi_param_get_int(&zhpe_prov, "def_conn_map_sz",
-				 &zhpe_cm_def_map_sz);
 		fi_param_get_int(&zhpe_prov, "def_av_sz", &zhpe_av_def_sz);
 		fi_param_get_int(&zhpe_prov, "def_cq_sz", &zhpe_cq_def_sz);
 		fi_param_get_int(&zhpe_prov, "def_eq_sz", &zhpe_eq_def_sz);
@@ -355,6 +355,14 @@ static void zhpe_read_default_params()
 				    &zhpe_mr_cache_max_cnt);
 		fi_param_get_size_t(&zhpe_prov, "mr_cache_max_size",
 				    &zhpe_mr_cache_max_size);
+		if (fi_param_get_str(&zhpe_prov, "stats_dir",
+				     &zhpe_stats_dir) != FI_SUCCESS)
+			zhpe_stats_dir = NULL;
+		if (fi_param_get_str(&zhpe_prov, "stats_unique",
+				     &zhpe_stats_unique) != FI_SUCCESS)
+			zhpe_stats_unique = NULL;
+
+		zhpe_stats_init();
 
 		read_default_params = 1;
 	}
@@ -379,7 +387,6 @@ static int zhpe_fabric(struct fi_fabric_attr *attr,
 	fab->fab_fid.fid.ops = &zhpe_fab_fi_ops;
 	fab->fab_fid.ops = &zhpe_fab_ops;
 	*fabric = &fab->fab_fid;
-	ofi_atomic_initialize32(&fab->ref, 0);
 	zhpe_fab_add_to_list(fab);
 	return 0;
 }
@@ -614,13 +621,12 @@ struct fi_provider zhpe_prov = {
 ZHPE_INI
 {
 	fi_param_define(&zhpe_prov, "pe_waittime", FI_PARAM_INT,
-			"How many milliseconds to spin while waiting for progress");
+			"How many milliseconds to spin while waiting"
+			" for progress");
 
 	fi_param_define(&zhpe_prov, "max_conn_retry", FI_PARAM_INT,
-			"Number of connection retries before reporting as failure");
-
-	fi_param_define(&zhpe_prov, "def_conn_map_sz", FI_PARAM_INT,
-			"Default connection map size");
+			"Number of connection retries before reporting"
+			" as failure");
 
 	fi_param_define(&zhpe_prov, "def_av_sz", FI_PARAM_INT,
 			"Default address vector size");
@@ -632,8 +638,10 @@ ZHPE_INI
 			"Default event queue size");
 
 	fi_param_define(&zhpe_prov, "pe_affinity", FI_PARAM_STRING,
-			"If specified, bind the progress thread to the indicated range(s) of Linux virtual processor ID(s). "
-			"This option is currently not supported on OS X. Usage: id_start[-id_end[:stride]][,]");
+			"If specified, bind the progress thread to the"
+			" indicated range(s) of Linux virtual processor ID(s)."
+			" This option is currently not supported on OS X."
+			" Usage: id_start[-id_end[:stride]][,]");
 
 	fi_param_define(&zhpe_prov, "ep_max_eager_sz", FI_PARAM_SIZE_T,
 			"Maximum size of eager message");
@@ -650,9 +658,16 @@ ZHPE_INI
 	fi_param_define(&zhpe_prov, "mr_cache_max_size", FI_PARAM_SIZE_T,
 			"Maximum total size of cached registrations");
 
+#ifdef HAVE_ZHPE_SIM
+	fi_param_define(&zhpe_prov, "stats_dir", FI_PARAM_STRING,
+			"Enables simulator statistics collection into the"
+			" specified directory.");
+
+	fi_param_define(&zhpe_prov, "stats_unique", FI_PARAM_STRING,
+			"Uniquifier for filenames in stats directory.");
+#endif
+
 	fastlock_init(&zhpe_list_lock);
-	dlist_init(&zhpe_fab_list);
-	dlist_init(&zhpe_dom_list);
 
 	return &zhpe_prov;
 }

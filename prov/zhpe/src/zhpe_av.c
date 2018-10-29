@@ -43,22 +43,47 @@
 	  count * sizeof(struct zhpe_av_addr)))
 #define ZHPE_IS_SHARED_AV(av_name) ((av_name) ? 1 : 0)
 
-int zhpe_av_get_addr_index(struct zhpe_av *av, const union sockaddr_in46 *addr)
+int zhpe_av_get_addr(struct zhpe_av *av, size_t av_index,
+		     union sockaddr_in46 *sa)
 {
+	int			ret = -FI_ENOENT;
+	struct zhpe_av_addr	*av_addr;
+
+	fastlock_acquire(&av->list_lock);
+	if (av_index >= av->table_hdr->size)
+		goto done;
+	av_addr = &av->table[av_index];
+	if (!sockaddr_len(&av_addr->addr))
+		goto done;
+	sockaddr_cpy(sa, &av_addr->addr);
+	ret = 0;
+
+ done:
+	fastlock_release(&av->list_lock);
+
+	return ret;
+}
+
+int zhpe_av_get_addr_index(struct zhpe_av *av, const void *addr,
+			   uint64_t *av_index)
+{
+	int			ret = -FI_ENOENT;
 	size_t			i;
 	struct zhpe_av_addr	*av_addr;
 
+	fastlock_acquire(&av->list_lock);
 	for (i = 0; i < av->table_hdr->size; i++) {
 		av_addr = &av->table[i];
-		if (!av_addr->addr.sa_family)
-			continue;
-
-		if (!sockaddr_cmp(addr, &av_addr->addr))
-			return i;
+		if (!sockaddr_cmp(addr, &av_addr->addr)) {
+			*av_index = i;
+			ret = 0;
+			goto done;
+		}
 	}
-	ZHPE_LOG_DBG("failed to get index in AV\n");
+ done:
+	fastlock_release(&av->list_lock);
 
-	return -1;
+	return ret;
 }
 
 int zhpe_av_compare_addr(struct zhpe_av *av,
@@ -405,7 +430,6 @@ static int zhpe_av_remove(struct fid_av *av, fi_addr_t *fi_addr, size_t count,
 	dlist_foreach(&_av->ep_list, item) {
 		fid_entry = container_of(item, struct fid_list_entry, entry);
 		zhpe_ep = container_of(fid_entry->fid, struct zhpe_ep, ep.fid);
-		mutex_acquire(&zhpe_ep->attr->cmap.mutex);
 		for (i = 0; i < count; i++) {
 			idx = fi_addr[i] & zhpe_ep->attr->av->mask;
 			conn = ofi_idm_lookup(&zhpe_ep->attr->av_idm, idx);
@@ -414,8 +438,6 @@ static int zhpe_av_remove(struct fid_av *av, fi_addr_t *fi_addr, size_t count,
 				conn->fi_addr = FI_ADDR_NOTAVAIL;
 			}
 		}
-		mutex_release(&zhpe_ep->attr->cmap.mutex);
-		cond_broadcast(&zhpe_ep->attr->cmap.cond);
 	}
 	for (i = 0; i < count; i++) {
 		av_addr = &_av->table[fi_addr[i]];
@@ -463,7 +485,7 @@ static int zhpe_av_close(struct fid *fid)
 	struct zhpe_av *av;
 	int ret = 0;
 	av = container_of(fid, struct zhpe_av, av_fid.fid);
-	if (ofi_atomic_get32(&av->ref))
+	if (atm_load_rlx(&av->ref))
 		return -FI_EBUSY;
 
 	if (!av->shared)
@@ -474,7 +496,7 @@ static int zhpe_av_close(struct fid *fid)
 			ZHPE_LOG_ERROR("unmap failed: %s\n", strerror(errno));
 	}
 
-	ofi_atomic_dec32(&av->domain->ref);
+	atm_dec(&av->domain->ref);
 	fastlock_destroy(&av->list_lock);
 	free(av);
 	return 0;
@@ -607,8 +629,7 @@ int zhpe_av_open(struct fid_domain *domain, struct fi_av_attr *attr,
 		goto err2;
 	}
 
-	ofi_atomic_initialize32(&_av->ref, 0);
-	ofi_atomic_inc32(&dom->ref);
+	atm_inc(&dom->ref);
 	_av->domain = dom;
 	switch (dom->info.addr_format) {
 
