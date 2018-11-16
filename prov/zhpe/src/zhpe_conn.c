@@ -310,7 +310,6 @@ static void *_zhpe_conn_listen(void *arg)
 		mutex_lock(&ep_attr->conn_mutex);
 		conn = zhpe_conn_lookup(ep_attr, &remote46, rem_local);
 		if (conn) {
-			assert(conn->state == ZHPE_CONN_STATE_INIT);
 			if (rem_local)
 				rc = sockaddr_portcmp(&local46, &remote46);
 			else
@@ -320,6 +319,7 @@ static void *_zhpe_conn_listen(void *arg)
 			else if (rc < 0)
 				action = ZHPE_CONN_ACTION_DROP;
 			if (action == ZHPE_CONN_ACTION_NEW) {
+				assert(conn->state == ZHPE_CONN_STATE_INIT);
 				conn->state = ZHPE_CONN_STATE_RACED;
 				cond_broadcast(&ep_attr->conn_cond);
 			}
