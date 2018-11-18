@@ -807,7 +807,7 @@ void zhpe_pe_retry_tx_ring1(struct zhpe_pe_retry *pe_retry)
 	pe_entry = pe_retry->data;
 	pe_root = &pe_entry->pe_root;
 	conn = pe_root->conn;
-	rhdr = (void *)((char *)(pe_entry + 1) + conn->hdr_off);
+	rhdr = (void *)(pe_entry + 1);
 	zhpe_tx_reserve_vars(rc, pe_root->handler, conn, pe_root->context,
 			     tindex, pe_entry, zhdr, lzaddr, requeue,
 			     (pe_root->compstat.flags & ZHPE_PE_PROV));

@@ -325,12 +325,85 @@ static int zhpe_fabric_close(fid_t fid)
 	return 0;
 }
 
+static int zhpe_fabric_ext_lookup(const char *url, void **sa, size_t *sa_len)
+{
+	int			ret = -FI_EINVAL;
+	const char		fam_pfx[] = "zhpe:///fam";
+	const size_t		fam_pfx_len = strlen(fam_pfx);
+	const char		*p = url;
+	struct sockaddr_zhpe	*sz;
+	char			*e;
+	ulong			v;
+
+	if (!sa)
+		goto done;
+	*sa = NULL;
+	if (!url || !sa_len || !zhpeq_is_asic())
+		goto done;
+	if (strncmp(url, fam_pfx, fam_pfx_len)) {
+		ret = -FI_ENOENT;
+		goto done;
+	}
+	p += fam_pfx_len;
+	if (!*p)
+		goto done;
+	errno = 0;
+	v = strtoul(p, &e, 0);
+	if (errno) {
+		ret = -errno;
+		goto done;
+	}
+	if (!*e)
+		goto done;
+	*sa_len = 2 * sizeof(*sz);
+	sz = calloc(1, *sa_len);
+	if (!sz) {
+		ret = -errno;
+		goto done;
+	}
+	v += 0x40;
+	sz->sz_uuid[0] = v >> 20;
+	sz->sz_uuid[1] = v >> 12;
+	sz->sz_uuid[2] = v >> 4;
+	sz->sz_uuid[3] = v << 4;
+	/* Assume 32 GB for now. */
+	sz->sz_queue = ZHPE_SA_TYPE_FAM | 32;
+
+	ret = 0;
+ done:
+	return ret;
+}
+
+static struct fi_zhpe_ext_ops zhpe_fabric_ext_ops = {
+	.lookup			= zhpe_fabric_ext_lookup,
+};
+
+static int zhpe_fabric_ops_open(struct fid *fid, const char *ops_name,
+				uint64_t flags, void **ops, void *context)
+{
+	int			ret = 0;
+
+	if (!fid || fid->fclass != FI_CLASS_FABRIC ||
+	    !ops_name || flags || context) {
+		ret = -FI_EINVAL;
+		goto done;
+	}
+	if (!strcmp(ops_name, FI_ZHPE_OPS_V1))
+		*ops = &zhpe_fabric_ext_ops;
+	else {
+		ret = -FI_EINVAL;
+		goto done;
+	}
+ done:
+	return ret;
+}
+
 static struct fi_ops zhpe_fab_fi_ops = {
 	.size = sizeof(struct fi_ops),
 	.close = zhpe_fabric_close,
 	.bind = fi_no_bind,
 	.control = fi_no_control,
-	.ops_open = fi_no_ops_open,
+	.ops_open = zhpe_fabric_ops_open,
 };
 
 static void zhpe_read_default_params()

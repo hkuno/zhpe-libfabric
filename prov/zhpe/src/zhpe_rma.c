@@ -64,6 +64,10 @@ zhpe_check_user_rma(const struct fi_rma_iov *urma, size_t urma_cnt,
 		zhpe_ziov_to_zkey(&riov[j], &zkey);
 		rkey = zhpe_conn_rkey_get(conn, &zkey);
 		if (!rkey) {
+			if (conn->fam) {
+				ret = -FI_ENOKEY;
+				goto done;
+			}
 			rstate->missing |= (1U << j);
 			rstate->cnt = ++j;
 			continue;

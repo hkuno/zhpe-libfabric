@@ -65,8 +65,6 @@
 #include <sys/time.h>
 #include <sys/types.h>
 
-#include <zhpeq.h>
-
 #include <rdma/fabric.h>
 #include <rdma/fi_atomic.h>
 #include <rdma/fi_cm.h>
@@ -94,7 +92,9 @@
 #include <ofi_rbuf.h>
 #include <ofi_util.h>
 
+#include <zhpeq.h>
 #include <zhpeq_util.h>
+#include <fi_ext_zhpe.h>
 
 enum {
 	ZHPE_STATS_STOPPED,
@@ -519,9 +519,9 @@ struct zhpe_conn {
 	RbtHandle		kexp_tree;
 	uint16_t		kexp_seq;
 
-	uint8_t			hdr_off;
 	uint8_t			state;
 	bool			local;
+	bool			fam;
 };
 
 struct zhpe_domain {
@@ -1359,7 +1359,8 @@ int zhpe_set_fd_nonblock(int fd);
 int zhpe_listen(const struct fi_info *info,
 		union sockaddr_in46 *ep_addr, int backlog);
 
-int zhpe_conn_z_setup(struct zhpe_conn *conn, int conn_fd, int action);
+int zhpe_conn_z_setup(struct zhpe_conn *conn, int conn_fd);
+int zhpe_conn_fam_setup(struct zhpe_conn *conn);
 void zhpe_conn_z_free(struct zhpe_conn *conn);
 void zhpe_send_status_rem(struct zhpe_conn *conn,
 			  struct zhpe_msg_hdr ohdr, int32_t status,
@@ -1650,17 +1651,17 @@ zhpe_rx_remote_avail(struct zhpe_rx_remote *rx_ringr)
 
 static inline size_t zhpe_ring_off(struct zhpe_conn *conn, uint32_t index)
 {
-	return ZHPE_RING_ENTRY_LEN * index + conn->hdr_off;
+	return ZHPE_RING_ENTRY_LEN * index;
 }
 
 static inline void *
 zhpe_pay_ptr(struct zhpe_conn *conn, struct zhpe_msg_hdr *zhdr,
 	     size_t off, size_t alignment)
 {
-	off += fi_get_aligned_sz(conn->hdr_off + sizeof(*zhdr), sizeof(int));
+	off += fi_get_aligned_sz(sizeof(*zhdr), sizeof(int));
 	off = fi_get_aligned_sz(off, alignment);
 
-	return (char *)zhdr + off - conn->hdr_off;
+	return (char *)zhdr + off;
 }
 
 #define zhpe_tx_reserve_vars(_ret, _handler, _conn, _context,		\
@@ -1689,8 +1690,7 @@ do {									\
 				     ZHPE_RING_ENTRY_LEN);		\
 		if (!(_pe_entry))					\
 			goto _err;					\
-		(_zhdr) = (void *)((char *)((_pe_entry) + 1) +		\
-				   (_conn)->hdr_off);			\
+		(_zhdr) = (void *)((_pe_entry) + 1);			\
 		(_pe_entry)->pe_root.compstat.flags = ZHPE_PE_RETRY;	\
 	} else								\
 		goto _err;						\
@@ -2435,22 +2435,31 @@ zhpe_zkey_rbtFind(RbtHandle h, const struct zhpe_key *zkey)
 	return rbtFind(h, (void *)zkey);
 }
 
-static inline RbtStatus
+static inline void
 zhpe_kexp_rbtInsert(RbtHandle h, struct zhpe_kexp_data *kexp)
 {
-	return rbtInsert(h, &kexp->zkey, kexp);
+	RbtStatus		rc;
+
+	rc = rbtInsert(h, &kexp->zkey, kexp);
+	assert(rc == RBT_STATUS_OK);
 }
 
-static inline RbtStatus
+static inline void
 zhpe_rkey_rbtInsert(RbtHandle h, struct zhpe_rkey_data *rkey)
 {
-	return rbtInsert(h, &rkey->zkey, rkey);
+	RbtStatus		rc;
+
+	rc = rbtInsert(h, &rkey->zkey, rkey);
+	assert(rc == RBT_STATUS_OK);
 }
 
-static inline RbtStatus
+static inline void
 zhpe_zmr_rbtInsert(RbtHandle h, struct zhpe_mr *zmr)
 {
-	return rbtInsert(h, &zmr->zkey, zmr);
+	RbtStatus		rc;
+
+	rc = rbtInsert(h, &zmr->zkey, zmr);
+	assert(rc == RBT_STATUS_OK);
 }
 
 static inline void *zhpe_rbtKeyValue(RbtHandle h, RbtIterator i)

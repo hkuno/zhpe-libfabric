@@ -379,7 +379,7 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 	hdr.pe_entry_id = htons(tindex);
 
 	/* FIXME: zhpe_ep_max_eager_sz  */
-	inline_size -= conn->hdr_off + sizeof(*zhdr);
+	inline_size -= sizeof(*zhdr);
 
 	ret = zhpe_check_user_iov(iov, desc, iov_count, ZHPEQ_MR_SEND,
 				  &pe_entry->lstate, ZHPE_EP_MAX_IOV_LIMIT,

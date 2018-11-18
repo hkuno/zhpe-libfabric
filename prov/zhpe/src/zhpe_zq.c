@@ -207,7 +207,7 @@ static void do_rx_free(struct zhpe_conn *conn)
 	conn->rx_remote.cmn.scoreboard = NULL;
 }
 
-static int do_rx_setup(struct zhpe_conn *conn, int conn_fd, int action)
+static int do_rx_setup(struct zhpe_conn *conn, int conn_fd)
 {
 	int			ret;
 	struct zhpe_ep_attr	*ep_attr = conn->ep_attr;
@@ -233,7 +233,7 @@ static int do_rx_setup(struct zhpe_conn *conn, int conn_fd, int action)
 	/* rx ring will be the same as the tx size. */
 	qlenr = roundup_power_of_two(ep->tx_attr.size) * 2;
 	mem_msg1.rx_ring_size = htonl(qlenr);
-	if (OFI_LIKELY(action != ZHPE_CONN_ACTION_SELF)) {
+	if (conn_fd != -1) {
 		ret = zhpe_send_blob(conn_fd, &mem_msg1, sizeof(mem_msg1));
 		if (ret < 0)
 			goto done;
@@ -283,7 +283,7 @@ static int do_rx_setup(struct zhpe_conn *conn, int conn_fd, int action)
 	}
 
 	mem_msg2.key = htobe64(fi_mr_key(mr));
-	if (OFI_LIKELY(action != ZHPE_CONN_ACTION_SELF)) {
+	if (conn_fd != -1) {
 		ret = zhpe_send_blob(conn_fd, &mem_msg2, sizeof(mem_msg2));
 		if (ret < 0)
 			goto done;
@@ -336,10 +336,12 @@ int zhpe_compare_zkeys(void *vk1, void *vk2)
 	return memcmp(&k1->internal, &k2->internal, sizeof(k1->internal));
 }
 
-int zhpe_conn_z_setup(struct zhpe_conn *conn, int conn_fd, int action)
+int zhpe_conn_z_setup(struct zhpe_conn *conn, int conn_fd)
 {
 	int			ret = 0;
 	struct zhpe_ep_attr	*ep_attr = conn->ep_attr;
+	union sockaddr_in46	sa;
+	size_t			sa_len = sizeof(sa);
 
 	mutex_lock(&ep_attr->conn_mutex);
 	if (!ep_attr->ztx)
@@ -354,8 +356,6 @@ int zhpe_conn_z_setup(struct zhpe_conn *conn, int conn_fd, int action)
 	zhpe_pe_add_queue(ep_attr->ztx);
 	/* Init remote mr tree. */
 	dlist_init(&conn->rkey_deferred_list);
-	conn->rkey_seq = 0;
-	conn->kexp_seq = 0;
 	ret = -FI_ENOMEM;
 	conn->rkey_tree = rbtNew(zhpe_compare_zkeys);
 	if (!conn->rkey_tree)
@@ -364,22 +364,90 @@ int zhpe_conn_z_setup(struct zhpe_conn *conn, int conn_fd, int action)
 	if (!conn->kexp_tree)
 		goto done;
 	/* Get address index. */
-	ret = zhpeq_backend_open(conn->ztx->zq,
-				 (action != ZHPE_CONN_ACTION_SELF ?
-				  conn_fd : -1));
+	ret = zhpeq_backend_exchange(conn->ztx->zq, conn_fd, &sa, &sa_len);
+	if (ret < 0) {
+		ZHPE_LOG_ERROR("%s,%u:zhpeq_backend_exchange() error %d\n",
+			       __FUNCTION__, __LINE__, ret);
+		goto done;
+	}
+	ret = zhpeq_backend_open(conn->ztx->zq, &sa);
 	if (ret < 0) {
 		ZHPE_LOG_ERROR("%s,%u:zhpeq_backend_open() error %d\n",
 			       __FUNCTION__, __LINE__, ret);
 		goto done;
 	}
 	conn->zq_index = ret;
-	/* FIXME: ENQA */
-	conn->hdr_off = 0;
 
 	/* Exchange information and setup rx rings */
-	ret = do_rx_setup(conn, conn_fd, action);
+	ret = do_rx_setup(conn, conn_fd);
 	if (ret < 0)
 		goto done;
+	/* FIXME: Rethink for multiple contexts. */
+	conn->tx_ctx = ep_attr->tx_ctx;
+	conn->rx_ctx = ep_attr->rx_ctx;
+	mutex_lock(&ep_attr->conn_mutex);
+	conn->state = ZHPE_CONN_STATE_READY;
+	zhpeu_atm_snatch_insert(&conn->ztx->rx_poll_list,
+				&conn->rx_poll_next);
+	mutex_unlock(&ep_attr->conn_mutex);
+	cond_broadcast(&ep_attr->conn_cond);
+	ret = 0;
+
+ done:
+	return ret;
+}
+int zhpe_conn_fam_setup(struct zhpe_conn *conn)
+{
+	int			ret = 0;
+	struct zhpe_ep_attr	*ep_attr = conn->ep_attr;
+	struct zhpe_rkey_data	*new;
+
+	mutex_lock(&ep_attr->conn_mutex);
+	if (!ep_attr->ztx)
+		ret = do_tx_setup(ep_attr, &ep_attr->ztx);
+	if (ret >= 0) {
+		conn->ztx = ep_attr->ztx;
+		atm_inc(&ep_attr->ztx->use_count);
+	}
+	mutex_unlock(&ep_attr->conn_mutex);
+	if (ret < 0)
+		goto done;
+	zhpe_pe_add_queue(ep_attr->ztx);
+	/* Init remote mr tree. */
+	dlist_init(&conn->rkey_deferred_list);
+	ret = -FI_ENOMEM;
+	conn->rkey_tree = rbtNew(zhpe_compare_zkeys);
+	if (!conn->rkey_tree)
+		goto done;
+	new = malloc(sizeof(*new));
+	if (!new) {
+		ret = -FI_ENOMEM;
+		goto done;
+	}
+	atm_inc(&conn->ztx->use_count);
+	new->ztx = conn->ztx;
+	new->zkey.key = 0;
+	new->zkey.internal = false;
+	new->kdata = NULL;
+	new->ohdr = (struct zhpe_msg_hdr){ 0 };
+	new->use_count = 1;
+	zhpe_rkey_rbtInsert(conn->rkey_tree, new);
+	/* Get address index. */
+	ret = zhpeq_backend_open(conn->ztx->zq, &conn->addr);
+	if (ret < 0) {
+		ZHPE_LOG_ERROR("%s,%u:zhpeq_backend_open() error %d\n",
+			       __FUNCTION__, __LINE__, ret);
+		goto done;
+	}
+	conn->zq_index = ret;
+	/* Set up rkey entry for FAM.*/
+	ret = zhpeq_zmmu_fam_import(ep_attr->domain->zdom, conn->zq_index,
+				    false,  &new->kdata);
+	if (ret < 0) {
+		ZHPE_LOG_ERROR("%s,%u:zhpeq_zmmu_fam_import() error %d\n",
+			       __FUNCTION__, __LINE__, ret);
+		goto done;
+	}
 	/* FIXME: Rethink for multiple contexts. */
 	conn->tx_ctx = ep_attr->tx_ctx;
 	conn->rx_ctx = ep_attr->rx_ctx;

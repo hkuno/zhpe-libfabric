@@ -85,6 +85,9 @@ struct zhpe_conn *zhpe_conn_insert(struct zhpe_ep_attr *ep_attr,
 	conn->state = ZHPE_CONN_STATE_INIT;
 	sockaddr_cpy(&conn->addr, addr);
 	conn->local = local;
+	conn->fam = (addr->sa_family == AF_ZHPE &&
+		     ((addr->zhpe.sz_queue & ZHPE_SA_TYPE_MASK) ==
+		      ZHPE_SA_TYPE_FAM));
 	dlist_insert_tail(&conn->ep_lentry, &ep_attr->conn_list);
  done:
 	return conn;;
@@ -333,7 +336,7 @@ static void *_zhpe_conn_listen(void *arg)
 		rc = zhpe_send_blob(conn_fd, &action, sizeof(action));
 		if (rc < 0 || action != ZHPE_CONN_ACTION_NEW)
 			continue;
-		rc = zhpe_conn_z_setup(conn, conn_fd, action);
+		rc = zhpe_conn_z_setup(conn, conn_fd);
 		if (rc >= 0)
 			zhpe_pe_signal(ep_attr->domain->pe);
 		else
@@ -469,6 +472,12 @@ int zhpe_ep_connect(struct zhpe_ep_attr *ep_attr, struct zhpe_conn *conn)
 #if ENABLE_DEBUG
 	char			ntop[INET6_ADDRSTRLEN];
 #endif
+
+	if (conn->fam) {
+		ret = zhpe_conn_fam_setup(conn);
+		goto done;
+	}
+
 	conn_fd = ofi_socket(conn->addr.sa_family, SOCK_STREAM, IPPROTO_TCP);
 	if (conn_fd == -1) {
 		ZHPE_LOG_ERROR("failed to create conn_fd, errno: %d\n", errno);
@@ -504,7 +513,9 @@ int zhpe_ep_connect(struct zhpe_ep_attr *ep_attr, struct zhpe_conn *conn)
 		goto done;
 	}
 
-	ret = zhpe_conn_z_setup(conn, conn_fd, action);
+	ret = zhpe_conn_z_setup(conn,
+				(action != ZHPE_CONN_ACTION_SELF ?
+				 conn_fd : -1));
  done:
 	if (conn_fd != -1)
 		close(conn_fd);
