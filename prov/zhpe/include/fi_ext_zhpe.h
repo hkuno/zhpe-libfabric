@@ -44,7 +44,7 @@ extern "C" {
 #define FI_ZHPE_FAM_RKEY	(0)
 
 /* zhpe provider specific ops */
-struct fi_zhpe_ext_ops {
+struct fi_zhpe_ext_ops_v1 {
 	int (*lookup)(const char *url, void **sa, size_t *sa_len);
 };
 

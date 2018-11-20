@@ -353,7 +353,7 @@ static int zhpe_fabric_ext_lookup(const char *url, void **sa, size_t *sa_len)
 		ret = -errno;
 		goto done;
 	}
-	if (!*e)
+	if (*e)
 		goto done;
 	*sa_len = 2 * sizeof(*sz);
 	sz = calloc(1, *sa_len);
@@ -361,6 +361,8 @@ static int zhpe_fabric_ext_lookup(const char *url, void **sa, size_t *sa_len)
 		ret = -errno;
 		goto done;
 	}
+	*sa = sz;
+	sz->sz_family = AF_ZHPE;
 	v += 0x40;
 	sz->sz_uuid[0] = v >> 20;
 	sz->sz_uuid[1] = v >> 12;
@@ -374,7 +376,7 @@ static int zhpe_fabric_ext_lookup(const char *url, void **sa, size_t *sa_len)
 	return ret;
 }
 
-static struct fi_zhpe_ext_ops zhpe_fabric_ext_ops = {
+static struct fi_zhpe_ext_ops_v1 zhpe_fabric_ext_ops_v1 = {
 	.lookup			= zhpe_fabric_ext_lookup,
 };
 
@@ -389,7 +391,7 @@ static int zhpe_fabric_ops_open(struct fid *fid, const char *ops_name,
 		goto done;
 	}
 	if (!strcmp(ops_name, FI_ZHPE_OPS_V1))
-		*ops = &zhpe_fabric_ext_ops;
+		*ops = &zhpe_fabric_ext_ops_v1;
 	else {
 		ret = -FI_EINVAL;
 		goto done;

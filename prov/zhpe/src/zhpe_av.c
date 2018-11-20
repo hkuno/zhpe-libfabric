@@ -209,35 +209,25 @@ static int zhpe_check_table_in(struct zhpe_av *_av, const void *vaddr,
 	char			sa_ip[INET6_ADDRSTRLEN];
 	struct zhpe_av_addr	*av_addr;
 	int			index;
-	const union sockaddr_in46 *addr;
-	size_t			addr_len;
-	int			family;
+	const char		*caddr;
+	size_t			caddr_len;
 
 	if ((_av->attr.flags & FI_EVENT) && !_av->eq)
 		return -FI_ENOEQ;
 
-	if (_av->domain->info.addr_format == FI_SOCKADDR_IN6) {
-		family = AF_INET6;
-		addr_len = sizeof(addr->addr6);
-	} else {
-		family = AF_INET;
-		addr_len = sizeof(addr->addr4);
-	}
-
 	if (_av->attr.flags & FI_READ) {
-		for (i = 0; i < count; i++) {
-			addr = (void *)((char *)vaddr + addr_len * i);
+		for (i = 0, caddr = vaddr; i < count; i++, caddr += caddr_len) {
+			caddr_len = sockaddr_len(caddr);
+			if (!caddr_len) {
+				if (fi_addr)
+					fi_addr[i] = FI_ADDR_NOTAVAIL;
+				zhpe_av_report_error(_av, context, i,
+						     FI_EINVAL);
+				continue;
+			}
 			for (j = 0; j < _av->table_hdr->size; j++) {
-				if (addr->sa_family == family) {
-					if (fi_addr)
-						fi_addr[i] = FI_ADDR_NOTAVAIL;
-					zhpe_av_report_error(_av, context, i,
-								FI_EINVAL);
-					continue;
-				}
-
 				av_addr = &_av->table[j];
-				if (!sockaddr_cmp(&av_addr->addr, addr)) {
+				if (!sockaddr_cmp(&av_addr->addr, caddr)) {
 					ZHPE_LOG_DBG("Found addr in shared"
 						     " av\n");
 					if (fi_addr)
@@ -247,12 +237,13 @@ static int zhpe_check_table_in(struct zhpe_av *_av, const void *vaddr,
 			}
 		}
 		zhpe_av_report_success(_av, context, ret, flags);
+
 		return (_av->attr.flags & FI_EVENT) ? 0 : ret;
 	}
 
-	for (i = 0, ret = 0; i < count; i++) {
-		addr = (void *)((char *)vaddr + addr_len * i);
-		if (addr->sa_family != family) {
+	for (i = 0, caddr = vaddr; i < count; i++, caddr += caddr_len) {
+		caddr_len = sockaddr_len(caddr);
+		if (!caddr_len) {
 			if (fi_addr)
 				fi_addr[i] = FI_ADDR_NOTAVAIL;
 			zhpe_av_report_error(_av, context, i, FI_EINVAL);
@@ -275,18 +266,19 @@ static int zhpe_check_table_in(struct zhpe_av *_av, const void *vaddr,
 		}
 
 		av_addr = &_av->table[index];
-		sockaddr_ntop(addr, sa_ip, sizeof(sa_ip));
+		sockaddr_ntop(caddr, sa_ip, sizeof(sa_ip));
 		ZHPE_LOG_DBG("AV-INSERT: dst_addr family: %d, IP %s,"
-			     " port: %d\n", addr->sa_family, sa_ip,
-			     ntohs(addr->sin_port));
+			     " port: %u\n", sockaddr_family(caddr), sa_ip,
+			     sockaddr_porth(caddr));
 
-		sockaddr_cpy(&av_addr->addr, addr);
+		sockaddr_cpy(&av_addr->addr, caddr);
 		if (fi_addr)
 			fi_addr[i] = (fi_addr_t)index;
 
 		ret++;
 	}
 	zhpe_av_report_success(_av, context, ret, flags);
+
 	return (_av->attr.flags & FI_EVENT) ? 0 : ret;
 }
 
@@ -295,6 +287,7 @@ static int zhpe_av_insert(struct fid_av *av, const void *addr, size_t count,
 {
 	struct zhpe_av *_av;
 	_av = container_of(av, struct zhpe_av, av_fid);
+
 	return zhpe_check_table_in(_av, addr,
 				   fi_addr, count, flags, context);
 }

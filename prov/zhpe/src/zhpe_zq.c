@@ -453,8 +453,6 @@ int zhpe_conn_fam_setup(struct zhpe_conn *conn)
 	conn->rx_ctx = ep_attr->rx_ctx;
 	mutex_lock(&ep_attr->conn_mutex);
 	conn->state = ZHPE_CONN_STATE_READY;
-	zhpeu_atm_snatch_insert(&conn->ztx->rx_poll_list,
-				&conn->rx_poll_next);
 	mutex_unlock(&ep_attr->conn_mutex);
 	cond_broadcast(&ep_attr->conn_cond);
 	ret = 0;
