@@ -2442,6 +2442,7 @@ zhpe_kexp_rbtInsert(RbtHandle h, struct zhpe_kexp_data *kexp)
 
 	rc = rbtInsert(h, &kexp->zkey, kexp);
 	assert(rc == RBT_STATUS_OK);
+	(void)rc;
 }
 
 static inline void
@@ -2451,6 +2452,7 @@ zhpe_rkey_rbtInsert(RbtHandle h, struct zhpe_rkey_data *rkey)
 
 	rc = rbtInsert(h, &rkey->zkey, rkey);
 	assert(rc == RBT_STATUS_OK);
+	(void)rc;
 }
 
 static inline void
@@ -2460,6 +2462,7 @@ zhpe_zmr_rbtInsert(RbtHandle h, struct zhpe_mr *zmr)
 
 	rc = rbtInsert(h, &zmr->zkey, zmr);
 	assert(rc == RBT_STATUS_OK);
+	(void)rc;
 }
 
 static inline void *zhpe_rbtKeyValue(RbtHandle h, RbtIterator i)
