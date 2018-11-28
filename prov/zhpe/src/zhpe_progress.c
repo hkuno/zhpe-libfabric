@@ -1049,10 +1049,11 @@ void zhpe_pe_tx_rma_completion(struct zhpe_pe_entry *pe_entry)
 
 	if (pe_entry->pe_root.compstat.status >= 0 &&
 	    (pe_entry->flags &
-	     (FI_REMOTE_READ | FI_REMOTE_WRITE | FI_REMOTE_CQ_DATA))) {
-		    rc = zhpe_pe_writedata(pe_entry);
-		    if (rc >= 0)
-			    return;
+	     (FI_REMOTE_READ | FI_REMOTE_WRITE | FI_REMOTE_CQ_DATA)) &&
+	    !pe_entry->pe_root.conn->fam) {
+		rc = zhpe_pe_writedata(pe_entry);
+		if (rc >= 0)
+			return;
 		tx_update_status(pe_entry, rc);
 	}
 	zhpe_pe_tx_report_complete(pe_entry,
