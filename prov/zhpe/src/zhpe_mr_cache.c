@@ -264,12 +264,12 @@ zhpe_monitor_get_event(struct ofi_mem_monitor *monitor)
 
 void zhpe_mr_cache_destroy(struct zhpe_domain *domain)
 {
-	if (domain->cache_inited) {
-		fastlock_destroy(&domain->cache_lock);
-		ofi_mr_cache_cleanup(&domain->cache);
-		domain->cache_inited = false;
-	}
 	if (domain->monitor_fd != -1) {
+		if (domain->cache_inited) {
+			fastlock_destroy(&domain->cache_lock);
+			ofi_mr_cache_cleanup(&domain->cache);
+			domain->cache_inited = false;
+		}
 		close(domain->monitor_fd);
 		domain->monitor_fd = -1;
 		ofi_monitor_cleanup(&domain->monitor);

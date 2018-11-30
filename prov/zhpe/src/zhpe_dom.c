@@ -564,6 +564,7 @@ int zhpe_domain(struct fid_fabric *fabric, struct fi_info *info,
 	}
 
 	fastlock_init(&zhpe_domain->lock);
+	zhpe_domain->monitor_fd = -1;
 
 	if (info)
 		zhpe_domain->info = *info;
