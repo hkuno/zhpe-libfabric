@@ -284,6 +284,8 @@ int zhpe_zmr_reg(struct zhpe_domain *domain, const void *buf,
 	zmr->zkey.internal = !!(qaccess & ZHPE_MR_KEY_INT);
 
 	ret = zhpeq_mr_reg(domain->zdom, buf, len, qaccess, &zmr->kdata);
+	ZHPE_LOG_DBG("dom %p buf %p len 0x%lx qa 0x%x key 0x%lx/%d ret %d\n",
+		     domain, buf, len, qaccess, key, zmr->zkey.internal, ret);
 	if (ret < 0)
 		goto done;
 
