@@ -627,7 +627,7 @@ int zhpe_domain(struct fid_fabric *fabric, struct fi_info *info,
  err4:
 	zhpe_mr_cache_destroy(zhpe_domain);
  err3:
-	rbtDelete(&zhpe_domain->mr_tree);
+	rbtDelete(zhpe_domain->mr_tree);
  err2:
 	zhpe_pe_finalize(zhpe_domain->pe);
  err1:
