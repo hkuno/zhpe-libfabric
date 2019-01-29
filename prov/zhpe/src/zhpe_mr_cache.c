@@ -280,20 +280,17 @@ int zhpe_mr_cache_init(struct zhpe_domain *domain)
 {
 	int			ret = 0;
 	const char		*dev_name = "/dev/ummunotify";
+	int			rc;
 
 	if (!zhpe_mr_cache_enable)
 		goto done;
 #ifdef HAVE_LINUX_UMMUNOTIFY_H
 	domain->monitor_fd = open(dev_name, O_RDONLY | O_NONBLOCK);
 	if (domain->monitor_fd == -1) {
-		if (errno == ENOENT) {
-			ZHPE_LOG_DBG("%s not present, mr_cache disabled\n",
-				     dev_name);
-			goto done;
-		}
-		ret = -errno;
-		ZHPE_LOG_ERROR("Failed to open %s, error %d:%s\n",
-			       dev_name, ret, strerror(-ret));
+		rc = errno;
+		ZHPE_LOG_ERROR("Failed to open %s, error %d:%s,"
+			       " mr_cache disabled\n",
+			       dev_name, rc, strerror(rc));
 		goto done;
 	}
 	/* FIXME: need to change over to using util_xxx structs?
