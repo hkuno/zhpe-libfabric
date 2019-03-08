@@ -74,6 +74,9 @@ static const struct fi_rx_attr zhpe_msg_rx_attr = {
 
 static int zhpe_msg_verify_rx_attr(const struct fi_rx_attr *attr)
 {
+	int			ret;
+	struct zhpeq_attr	zattr;
+
 	if (!attr)
 		return 0;
 
@@ -86,7 +89,11 @@ static int zhpe_msg_verify_rx_attr(const struct fi_rx_attr *attr)
 	if ((attr->comp_order | ZHPE_EP_COMP_ORDER) != ZHPE_EP_COMP_ORDER)
 		return -FI_ENODATA;
 
-	if (roundup_power_of_two(attr->size) > zhpe_msg_rx_attr.size)
+	ret = zhpeq_query_attr(&zattr);
+	if (ret < 0)
+		return ret;
+
+	if (attr->size > zattr.z.max_rx_qlen)
 		return -FI_ENODATA;
 
 	if (attr->iov_limit > zhpe_msg_rx_attr.iov_limit)
@@ -97,6 +104,9 @@ static int zhpe_msg_verify_rx_attr(const struct fi_rx_attr *attr)
 
 static int zhpe_msg_verify_tx_attr(const struct fi_tx_attr *attr)
 {
+	int			ret;
+	struct zhpeq_attr	zattr;
+
 	if (!attr)
 		return 0;
 
@@ -109,7 +119,11 @@ static int zhpe_msg_verify_tx_attr(const struct fi_tx_attr *attr)
 	if (attr->inject_size > zhpe_msg_tx_attr.inject_size)
 		return -FI_ENODATA;
 
-	if (roundup_power_of_two(attr->size) > zhpe_msg_tx_attr.size)
+	ret = zhpeq_query_attr(&zattr);
+	if (ret < 0)
+		return ret;
+
+	if (attr->size > zattr.z.max_tx_qlen)
 		return -FI_ENODATA;
 
 	if (attr->iov_limit > zhpe_msg_tx_attr.iov_limit)

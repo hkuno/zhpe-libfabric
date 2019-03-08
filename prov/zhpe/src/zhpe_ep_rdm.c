@@ -73,6 +73,9 @@ const struct fi_rx_attr zhpe_rdm_rx_attr = {
 
 static int zhpe_rdm_verify_rx_attr(const struct fi_rx_attr *attr)
 {
+	int			ret;
+	struct zhpeq_attr	zattr;
+
 	if (!attr)
 		return 0;
 
@@ -96,7 +99,11 @@ static int zhpe_rdm_verify_rx_attr(const struct fi_rx_attr *attr)
 		return -FI_ENODATA;
 	}
 
-	if (roundup_power_of_two(attr->size) > zhpe_rdm_rx_attr.size) {
+	ret = zhpeq_query_attr(&zattr);
+	if (ret < 0)
+		return ret;
+
+	if (attr->size > zattr.z.max_rx_qlen) {
 		ZHPE_LOG_DBG("Rx size too large\n");
 		return -FI_ENODATA;
 	}
@@ -111,6 +118,9 @@ static int zhpe_rdm_verify_rx_attr(const struct fi_rx_attr *attr)
 
 static int zhpe_rdm_verify_tx_attr(const struct fi_tx_attr *attr)
 {
+	int			ret;
+	struct zhpeq_attr	zattr;
+
 	if (!attr)
 		return 0;
 
@@ -129,7 +139,11 @@ static int zhpe_rdm_verify_tx_attr(const struct fi_tx_attr *attr)
 		return -FI_ENODATA;
 	}
 
-	if (roundup_power_of_two(attr->size) > zhpe_rdm_tx_attr.size) {
+	ret = zhpeq_query_attr(&zattr);
+	if (ret < 0)
+		return ret;
+
+	if (attr->size > zattr.z.max_tx_qlen) {
 		ZHPE_LOG_DBG("Tx size too large\n");
 		return -FI_ENODATA;
 	}
