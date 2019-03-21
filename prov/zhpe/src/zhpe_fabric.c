@@ -437,7 +437,11 @@ static void zhpe_read_default_params()
 				     &zhpe_stats_unique) != FI_SUCCESS)
 			zhpe_stats_unique = NULL;
 
-		zhpe_stats_init();
+		zhpe_stats_init(zhpe_stats_dir, zhpe_stats_unique);
+		zhpe_stats_test(0);
+		zhpe_stats_open(&zhpe_stats_send);
+		zhpe_stats_open(&zhpe_stats_recv);
+		zhpe_stats_open(&zhpe_stats_rma);
 
 		read_default_params = 1;
 	}
@@ -733,7 +737,7 @@ ZHPE_INI
 	fi_param_define(&zhpe_prov, "mr_cache_max_size", FI_PARAM_SIZE_T,
 			"Maximum total size of cached registrations");
 
-#ifdef HAVE_ZHPE_SIM
+#ifdef HAVE_ZHPE_STATS
 	fi_param_define(&zhpe_prov, "stats_dir", FI_PARAM_STRING,
 			"Enables simulator statistics collection into the"
 			" specified directory.");

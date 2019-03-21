@@ -250,7 +250,7 @@ void zhpe_pe_rx_complete(struct zhpe_rx_ctx *rx_ctx,
 		zhpe_rx_release_entry(rx_user);
 	}
  done:
-	zhpe_stats_stop(&zhpe_stats_recv, true);
+	zhpe_stats_stop(&zhpe_stats_recv);
 }
 
 static void rx_handle_send_rma_complete(struct zhpe_rx_entry *rx_entry)

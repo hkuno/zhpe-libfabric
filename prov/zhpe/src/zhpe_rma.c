@@ -99,6 +99,8 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 	struct zhpe_ep_attr	*ep_attr;
 	struct zhpe_msg_hdr	ohdr;
 
+	zhpe_stats_start(&zhpe_stats_rma);
+
 	switch (ep->fid.fclass) {
 
 	case FI_CLASS_EP:
@@ -237,6 +239,7 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
  done:
 	if (ret < 0 && tindex != -1)
 		zhpe_tx_release(pe_entry);
+	zhpe_stats_stop(&zhpe_stats_rma);
 
 	return ret;
 }

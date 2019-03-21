@@ -96,47 +96,13 @@
 #include <zhpeq_util.h>
 #include <fi_ext_zhpe.h>
 
-enum {
-	ZHPE_STATS_STOPPED,
-	ZHPE_STATS_RUNNING,
-	ZHPE_STATS_PAUSED,
-};
+#include <zhpe_stats.h>
 
-struct zhpe_stats {
-	struct dlist_entry	lentry;
-	void			*buf;
-	uint64_t		buf_len;
-	int			fd;
-	uint16_t		uid;
-	uint8_t			state;
-};
-
-
-#define DEFINE_ZHPE_STATS(_name, _uid)				\
-	struct zhpe_stats _name = { .uid = _uid, .fd = -1 }
-
-extern struct zhpe_stats	zhpe_stats_test;
-extern struct zhpe_stats	zhpe_stats_send;
-extern struct zhpe_stats	zhpe_stats_recv;
-
-#ifdef HAVE_ZHPE_SIM
-
-#include <hpe_sim_api_linux64.h>
-
-void zhpe_stats_init(void);
-void zhpe_stats_start(struct zhpe_stats *stats);
-void zhpe_stats_stop(struct zhpe_stats *stats, bool do_write);
-void zhpe_stats_pause(struct zhpe_stats *stats);
-void zhpe_stats_close(struct zhpe_stats *stats);
-
+#ifdef LIKWID_PERFMON
+#include <likwid.h>
 #else
-
-static inline void zhpe_stats_init(void) {}
-static inline void zhpe_stats_start(struct zhpe_stats *stats) {}
-static inline void zhpe_stats_stop(struct zhpe_stats *stats, bool do_write) {}
-static inline void zhpe_stats_pause(struct zhpe_stats *stats) {}
-static inline void zhpe_stats_close(struct zhpe_stats *stats) {}
-
+#define LIKWID_MARKER_START(_x)
+#define LIKWID_MARKER_STOP(_x)
 #endif
 
 /* Type checking container_of */
@@ -2474,5 +2440,9 @@ static inline void *zhpe_rbtKeyValue(RbtHandle h, RbtIterator i)
 
 	return kval;
 }
+
+EXTERN_ZHPE_STATS(zhpe_stats_send);
+EXTERN_ZHPE_STATS(zhpe_stats_recv);
+EXTERN_ZHPE_STATS(zhpe_stats_rma);
 
 #endif /* _ZHPE_H_ */

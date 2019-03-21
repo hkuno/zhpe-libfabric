@@ -279,6 +279,13 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 	void			*context;
 	uint64_t		base;
 	void			*nulldesc;
+#ifdef LIKWID_PERFMON
+	static uint		likwid_op;
+	char			likwid_tag[20];
+
+	snprintf(likwid_tag, sizeof(likwid_tag), "send:%u", likwid_op++);
+	LIKWID_MARKER_START(likwid_tag);
+#endif
 
 	zhpe_stats_start(&zhpe_stats_send);
 
@@ -449,7 +456,8 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
  done:
 	if (ret < 0 && tindex != -1)
 		zhpe_tx_release(pe_entry);
-	zhpe_stats_stop(&zhpe_stats_send, (ret >= 0));
+	zhpe_stats_stop(&zhpe_stats_send);
+	LIKWID_MARKER_STOP(likwid_tag);
 
 	return ret;
 }
