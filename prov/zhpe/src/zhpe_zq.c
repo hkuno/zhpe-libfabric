@@ -1509,6 +1509,6 @@ void gdb_hook(void)
 
 #endif
 
-DEFINE_ZHPE_STATS(zhpe_stats_send, 0x001);
-DEFINE_ZHPE_STATS(zhpe_stats_recv, 0x002);
-DEFINE_ZHPE_STATS(zhpe_stats_rma,  0x003);
+DEFINE_ZHPE_STATS_FABRIC(zhpe_stats_send, 0x001);
+DEFINE_ZHPE_STATS_FABRIC(zhpe_stats_recv, 0x002);
+DEFINE_ZHPE_STATS_FABRIC(zhpe_stats_rma,  0x003);
