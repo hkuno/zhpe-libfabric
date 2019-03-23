@@ -1352,7 +1352,6 @@ static inline bool _zhpe_pe_progress_rx_ctx(struct zhpe_rx_ctx *rx_ctx)
 	struct zhpeu_atm_list_next *rxh_next;
 
 
-	zhpe_stats_start(&zhpe_stats_recv);
 	/* Process pending handlers. */
 	zhpeu_atm_snatch_list(&rx_ctx->rx_iodone_list, &rxh_list);
 	for (rxh_cur = rxh_list.head; rxh_cur; rxh_cur = rxh_next) {
@@ -1361,7 +1360,9 @@ static inline bool _zhpe_pe_progress_rx_ctx(struct zhpe_rx_ctx *rx_ctx)
 		rxh_next = atm_load_rlx(&rxh_cur->next);
 		if (rxh_next == ZHPEU_ATM_LIST_END)
 			rxh_next = NULL;
+		zhpe_stats_start(&zhpe_stats_recv);
 		rx_handle_send_rma_complete(rx_entry);
+		zhpe_stats_pause(&zhpe_stats_recv);
 	}
 	zhpeu_atm_snatch_list(&rx_ctx->rx_match_list, &rxh_list);
 	for (rxh_cur = rxh_list.head; rxh_cur; rxh_cur = rxh_next) {
@@ -1370,13 +1371,14 @@ static inline bool _zhpe_pe_progress_rx_ctx(struct zhpe_rx_ctx *rx_ctx)
 		rxh_next = atm_load_rlx(&rxh_cur->next);
 		if (rxh_next == ZHPEU_ATM_LIST_END)
 			rxh_next = NULL;
+		zhpe_stats_start(&zhpe_stats_recv);
 		rx_handle_send_match(rx_entry);
+		zhpe_stats_pause(&zhpe_stats_recv);
 	}
 
 	ret = (!dlist_empty(&rx_ctx->rx_posted_list) ||
 	       !dlist_empty(&rx_ctx->rx_buffered_list) ||
 	       !dlist_empty(&rx_ctx->rx_work_list));
-	zhpe_stats_pause(&zhpe_stats_recv);
 
 	return ret;
 }
