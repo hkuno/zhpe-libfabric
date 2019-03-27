@@ -31,18 +31,6 @@ AC_DEFUN([FI_ZHPE_CONFIGURE],
     AC_CHECK_HEADER(
       [linux/ummunotify.h],
       [zhpe_CPPFLAGS="$zhpe_CPPFLAGS -DHAVE_LINUX_UMMUNOTIFY_H"])
-    # Allow likwid to be specified
-    AC_ARG_WITH(
-      [zhpe-likwid],
-      [AS_HELP_STRING(
-        [--with-zhpe-likwid=@<:@Path to likwid install@:>@],
-        [Provide path to option likwid installation])],
-      [
-	zhpe_CPPFLAGS="$zhpe_CPPFLAGS -I$with_zhpe_likwid/include"
-	zhpe_CPPFLAGS="$zhpe_CPPFLAGS -DLIKWID_PERFMON"
-	zhpe_LDFLAGS="$zhpe_LDFLAGS -L$with_zhpe_likwid/lib"
-	zhpe_LIBS="$zhpe_LIBS -llikwid"
-      ])
   ])
   AS_IF([test $zhpe_happy -eq 1], [$1], [$2])
 ])
