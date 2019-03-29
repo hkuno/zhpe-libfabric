@@ -52,8 +52,6 @@ int zhpe_mr_cache_enable = ZHPE_MR_CACHE_ENABLE;
 int zhpe_mr_cache_merge_regions = ZHPE_MR_CACHE_MERGE_REGIONS;
 size_t zhpe_mr_cache_max_cnt = ZHPE_MR_CACHE_MAX_CNT;
 size_t zhpe_mr_cache_max_size = ZHPE_MR_CACHE_MAX_SIZE;
-char *zhpe_stats_dir = NULL;
-char *zhpe_stats_unique = NULL;
 
 const struct fi_fabric_attr zhpe_fabric_attr = {
 	.fabric = NULL,
@@ -430,18 +428,6 @@ static void zhpe_read_default_params()
 				    &zhpe_mr_cache_max_cnt);
 		fi_param_get_size_t(&zhpe_prov, "mr_cache_max_size",
 				    &zhpe_mr_cache_max_size);
-		if (fi_param_get_str(&zhpe_prov, "stats_dir",
-				     &zhpe_stats_dir) != FI_SUCCESS)
-			zhpe_stats_dir = NULL;
-		if (fi_param_get_str(&zhpe_prov, "stats_unique",
-				     &zhpe_stats_unique) != FI_SUCCESS)
-			zhpe_stats_unique = NULL;
-
-		zhpe_stats_init(zhpe_stats_dir, zhpe_stats_unique);
-		zhpe_stats_test(0);
-		zhpe_stats_open(&zhpe_stats_send);
-		zhpe_stats_open(&zhpe_stats_recv);
-		zhpe_stats_open(&zhpe_stats_rma);
 
 		read_default_params = 1;
 	}
