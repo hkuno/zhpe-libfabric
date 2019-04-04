@@ -99,7 +99,7 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 	struct zhpe_ep_attr	*ep_attr;
 	struct zhpe_msg_hdr	ohdr;
 
-	zhpe_stats_start(&zhpe_stats_rma);
+	zhpe_stats_start(zhpe_stats_subid(RMA, 0));
 
 	switch (ep->fid.fclass) {
 
@@ -117,6 +117,7 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 		break;
 
 	default:
+		zhpe_stats_stop(zhpe_stats_subid(RMA, 0));
 		ZHPE_LOG_ERROR("Invalid EP type\n");
 		goto done;
 	}
@@ -173,7 +174,9 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 			goto done;
 	}
 
+	zhpe_stats_start(zhpe_stats_subid(RMA, 10));
 	ret = zhpe_ep_get_conn(ep_attr, msg->addr, &conn);
+	zhpe_stats_stop(zhpe_stats_subid(RMA, 20));
 	if (ret < 0)
 		goto done;
 
@@ -191,19 +194,23 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 	pe_entry->cq_data = msg->data;
 	pe_entry->rx_id = zhpe_get_rx_id(tx_ctx, msg->addr);
 
+	zhpe_stats_start(zhpe_stats_subid(RMA, 30));
 	ret = zhpe_check_user_iov(msg->msg_iov, msg->desc, msg->iov_count,
 				  ((flags & FI_READ) ?
 				   ZHPEQ_MR_GET : ZHPEQ_MR_PUT),
 				  &pe_entry->lstate, ZHPE_EP_MAX_IOV_LIMIT,
 				  &pe_entry->rem);
+	zhpe_stats_stop(zhpe_stats_subid(RMA, 30));
 	if (ret < 0)
 		goto done;
 
+	zhpe_stats_start(zhpe_stats_subid(RMA, 40));
 	ret = zhpe_check_user_rma(msg->rma_iov, msg->rma_iov_count,
 				  ((flags & FI_READ) ?
 				   ZHPEQ_MR_GET_REMOTE : ZHPEQ_MR_PUT_REMOTE),
 				  &pe_entry->rstate, ZHPE_EP_MAX_IOV_LIMIT,
 				  &rma_len, conn);
+	zhpe_stats_stop(zhpe_stats_subid(RMA, 40));
 	if (ret < 0)
 		goto done;
 	if (pe_entry->rem != rma_len) {
@@ -212,6 +219,7 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 	}
 
 	if (pe_entry->rem <= ZHPEQ_IMM_MAX) {
+		zhpe_stats_start(zhpe_stats_subid(RMA, 50));
 		flags |= FI_INJECT;
 		if (flags & FI_WRITE) {
 			copy_iov_to_mem(pe_entry->inline_data,
@@ -220,26 +228,33 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 			zhpe_pe_tx_report_complete(pe_entry,
 						   FI_INJECT_COMPLETE);
 		}
+		zhpe_stats_stop(zhpe_stats_subid(RMA, 50));
 	} else if (pe_entry->lstate.missing) {
+		zhpe_stats_start(zhpe_stats_subid(RMA, 60));
 		ret = zhpe_mr_reg_int_iov(ep_attr->domain, &pe_entry->lstate);
+		zhpe_stats_stop(zhpe_stats_subid(RMA, 60));
 		if (ret < 0)
 			goto done;
 	}
 
 	pe_entry->flags = flags;
 	if (pe_entry->rstate.missing) {
+		zhpe_stats_start(zhpe_stats_subid(RMA, 70));
 		ohdr.rx_id = pe_entry->rx_id;
 		ohdr.pe_entry_id = htons(tindex);
 		zhpe_pe_rkey_request(conn, ohdr, &pe_entry->rstate,
 				     &pe_entry->pe_root.compstat.completions);
+		zhpe_stats_stop(zhpe_stats_subid(RMA, 70));
 	} else {
+		zhpe_stats_start(zhpe_stats_subid(RMA, 80));
 		pe_entry->pe_root.compstat.completions = 1;
 		zhpe_pe_tx_handle_rma(&pe_entry->pe_root, NULL);
+		zhpe_stats_stop(zhpe_stats_subid(RMA, 80));
 	}
  done:
 	if (ret < 0 && tindex != -1)
 		zhpe_tx_release(pe_entry);
-	zhpe_stats_stop(&zhpe_stats_rma);
+	zhpe_stats_stop(zhpe_stats_subid(RMA, 0));
 
 	return ret;
 }

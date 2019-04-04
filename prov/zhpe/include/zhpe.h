@@ -98,10 +98,6 @@
 
 #include <zhpe_stats.h>
 
-EXTERN_ZHPE_STATS(zhpe_stats_send);
-EXTERN_ZHPE_STATS(zhpe_stats_recv);
-EXTERN_ZHPE_STATS(zhpe_stats_rma);
-
 /* Type checking container_of */
 #ifdef container_of
 #undef container_of
@@ -2202,8 +2198,9 @@ static inline int zhpe_pe_tx_ring(struct zhpe_pe_entry *pe_entry,
 	ret = zhpe_zq_commit_spin(ztx->zq, zindex, 1);
 	if (ret < 0)
 		goto done;
-	zhpe_stats_pause(&zhpe_stats_send);
+	zhpe_stats_pause_all();
 	zhpeq_signal(ztx->zq);
+	zhpe_stats_restart_all();
 	zhpe_pe_signal(conn->ep_attr->domain->pe);
  done:
 	if (OFI_LIKELY(ret >= 0))

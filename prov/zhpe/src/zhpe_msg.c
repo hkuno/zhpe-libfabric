@@ -97,6 +97,8 @@ static inline ssize_t do_recvmsg(struct fid_ep *ep, const void *vmsg,
 	struct zhpe_conn	*conn;
 	uint64_t		flags2;
 
+	zhpe_stats_start(zhpe_stats_subid(RECV, 0));
+
 	switch (ep->fid.fclass) {
 	case FI_CLASS_EP:
 		zhpe_ep = container_of(ep, struct zhpe_ep, ep);
@@ -110,6 +112,7 @@ static inline ssize_t do_recvmsg(struct fid_ep *ep, const void *vmsg,
 		op_flags = rx_ctx->attr.op_flags;
 		break;
 	default:
+		zhpe_stats_stop(zhpe_stats_subid(RECV, 0));
 		ZHPE_LOG_ERROR("Invalid ep type\n");
 		return ret;
 	}
@@ -180,7 +183,9 @@ static inline ssize_t do_recvmsg(struct fid_ep *ep, const void *vmsg,
 	fiaddr = ((rx_ctx->attr.caps & FI_DIRECTED_RECV) ?
 		  fiaddr : FI_ADDR_UNSPEC);
 	if (fiaddr != FI_ADDR_UNSPEC) {
+		zhpe_stats_start(zhpe_stats_subid(RECV, 10));
 		ret = zhpe_ep_get_conn(ep_attr, fiaddr, &conn);
+		zhpe_stats_stop(zhpe_stats_subid(RECV, 10));
 		if (ret < 0)
 			goto done;
 	}
@@ -203,16 +208,20 @@ static inline ssize_t do_recvmsg(struct fid_ep *ep, const void *vmsg,
 	rx_entry->ignore = ignore;
 	rx_entry->context = context;
 
+	zhpe_stats_start(zhpe_stats_subid(RECV, 20));
 	ret = zhpe_check_user_iov(iov, desc, iov_count, ZHPEQ_MR_RECV,
 				  &rx_entry->lstate, ZHPE_EP_MAX_IOV_LIMIT,
 				  &rx_entry->total_len);
+	zhpe_stats_stop(zhpe_stats_subid(RECV, 20));
 	if (ret < 0)
 		goto done;
 
 	if (rx_entry->lstate.missing &&
 	    (rx_entry->total_len > zhpe_ep_max_eager_sz ||
 	     OFI_UNLIKELY(flags & FI_MULTI_RECV))) {
+		zhpe_stats_start(zhpe_stats_subid(RECV, 30));
 		ret = zhpe_mr_reg_int_iov(rx_ctx->domain, &rx_entry->lstate);
+		zhpe_stats_stop(zhpe_stats_subid(RECV, 30));
 		if (ret < 0)
 			goto done;
 	}
@@ -223,16 +232,19 @@ static inline ssize_t do_recvmsg(struct fid_ep *ep, const void *vmsg,
 		goto done;
 	}
 
+	zhpe_stats_start(zhpe_stats_subid(RECV, 40));
 	if (OFI_UNLIKELY(flags & FI_MULTI_RECV))
 		zhpe_pe_rx_post_recv_multi(rx_ctx, rx_entry);
 	else
 		zhpe_pe_rx_post_recv(rx_ctx, rx_entry);
+	zhpe_stats_stop(zhpe_stats_subid(RECV, 40));
 	ZHPE_LOG_DBG("New rx_entry: %p (ctx: %p)\n", rx_entry, rx_ctx);
  done:
 	if (ret < 0 && rx_entry)
 		zhpe_rx_release_entry(rx_entry);
 	if (lock)
 		mutex_unlock(&rx_ctx->mutex);
+	zhpe_stats_pause(zhpe_stats_subid(RECV, 0));
 
 	return ret;
 }
@@ -279,7 +291,7 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 	uint64_t		base;
 	void			*nulldesc;
 
-	zhpe_stats_start(&zhpe_stats_send);
+	zhpe_stats_start(zhpe_stats_subid(SEND, 0));
 
 	switch (ep->fid.fclass) {
 	case FI_CLASS_EP:
@@ -294,6 +306,7 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 		op_flags = tx_ctx->attr.op_flags;
 		break;
 	default:
+		zhpe_stats_stop(zhpe_stats_subid(SEND, 0));
 		ZHPE_LOG_ERROR("Invalid EP type\n");
 		goto done;
 	}
@@ -361,7 +374,9 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 		context = msg->context;
 	}
 
+	zhpe_stats_start(zhpe_stats_subid(SEND, 10));
 	ret = zhpe_ep_get_conn(ep_attr, fiaddr, &conn);
+	zhpe_stats_stop(zhpe_stats_subid(SEND, 10));
 	if (ret < 0)
 		goto done;
 
@@ -389,14 +404,18 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 	/* Build TX command. */
 	if (pe_entry->rem > inline_size) {
 		if (pe_entry->lstate.missing) {
+			zhpe_stats_start(zhpe_stats_subid(SEND, 20));
 			ret = zhpe_mr_reg_int_iov(ep_attr->domain,
 						  &pe_entry->lstate);
+			zhpe_stats_stop(zhpe_stats_subid(SEND, 20));
 			if (ret < 0)
 				goto done;
 		}
 		for (i = 0; i < pe_entry->lstate.cnt; i++) {
+			zhpe_stats_start(zhpe_stats_subid(SEND, 30));
 			ret = zhpe_conn_key_export(conn, hdr,
 						   pe_entry->liov[i].iov_desc);
+			zhpe_stats_stop(zhpe_stats_subid(SEND, 30));
 			if (ret < 0)
 				goto done;
 		}
@@ -444,11 +463,13 @@ static ssize_t do_sendmsg(struct fid_ep *ep, const void *vmsg, uint64_t flags,
 	hdr.op_type = ZHPE_OP_SEND;
 	*zhdr = hdr;
 	pe_entry->flags = flags;
+	zhpe_stats_start(zhpe_stats_subid(SEND, 40));
 	ret = zhpe_pe_tx_ring(pe_entry, zhdr, lzaddr, cmd_len);
+	zhpe_stats_stop(zhpe_stats_subid(SEND, 40));
  done:
 	if (ret < 0 && tindex != -1)
 		zhpe_tx_release(pe_entry);
-	zhpe_stats_stop(&zhpe_stats_send);
+	zhpe_stats_stop(zhpe_stats_subid(SEND, 0));
 
 	return ret;
 }
