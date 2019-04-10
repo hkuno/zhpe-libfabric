@@ -1492,36 +1492,6 @@ err1:
 	return ret;
 }
 
-struct lc_rec {
-	fi_addr_t		fi_addr;
-	size_t			av_index;
-	union sockaddr_in46	addr;
-} lc_rec[16];
-
-uint32_t lc_rec_idx;
-
-__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
-void DEFAULT_SYMVER_PRE(zhpe_stats_dump)(void)
-{
-	uint32_t		i;
-	struct lc_rec		*p;
-	char			*s;
-
-	printf("idx %u\n", lc_rec_idx);
-	if (lc_rec_idx < sizeof(lc_rec))
-	        i = 0;
-	else
-		i = lc_rec_idx - sizeof(lc_rec);
-	for (; i < lc_rec_idx; i++) {
-		p = &lc_rec[i & (sizeof(lc_rec) - 1)];
-		s = sockaddr_str(&p->addr);
-		printf("%s:%5u:0x%016lx 0x%016lx %s\n",
-		       __func__, i, p->fi_addr, p->av_index, (s ?: ""));
-		free(s);
-	}
-}
-CURRENT_SYMVER(zhpe_stats_dump_, zhpe_stats_dump);
-
 static int zhpe_ep_lookup_conn(struct zhpe_ep_attr *ep_attr, fi_addr_t fi_addr,
 			       struct zhpe_conn **pconn)
 {
@@ -1556,12 +1526,6 @@ static int zhpe_ep_lookup_conn(struct zhpe_ep_attr *ep_attr, fi_addr_t fi_addr,
 				break;
 			rem_local = !!ret;
 			first = false;
-			mutex_lock(&ep_attr->conn_mutex);
-			lc_rec[lc_rec_idx].fi_addr = fi_addr;
-			lc_rec[lc_rec_idx].av_index = av_index;
-			lc_rec[lc_rec_idx].addr = addr;
-			lc_rec_idx++;
-			mutex_unlock(&ep_attr->conn_mutex);
 		}
 
 		/* Need locking until we do away with the listener thread */
