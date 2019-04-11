@@ -244,7 +244,7 @@ static inline ssize_t do_recvmsg(struct fid_ep *ep, const void *vmsg,
 		zhpe_rx_release_entry(rx_entry);
 	if (lock)
 		mutex_unlock(&rx_ctx->mutex);
-	zhpe_stats_pause(zhpe_stats_subid(RECV, 0));
+	zhpe_stats_stop(zhpe_stats_subid(RECV, 0));
 
 	return ret;
 }

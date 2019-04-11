@@ -1582,7 +1582,7 @@ int zhpe_ep_get_conn(struct zhpe_ep_attr *attr,
 			break;
 		ret = zhpe_ep_connect(attr, *pconn);
 		if (ret >= 0)
-			break;
+			continue;
 		if (*pconn)
 			zhpe_conn_release_entry(attr, *pconn);
 		if (ret != -FI_EAGAIN)
