@@ -510,6 +510,8 @@ struct zhpe_domain {
 	struct ofi_mr_cache	cache;
 	fastlock_t		cache_lock;
 	struct ofi_mem_monitor	monitor;
+	uint64_t		monitor_events;
+	uint64_t		*monitor_eventsp;
 	int			monitor_fd;
 	bool			cache_inited;
 };
