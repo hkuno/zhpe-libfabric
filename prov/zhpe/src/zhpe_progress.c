@@ -1305,8 +1305,7 @@ static inline void zhpe_pe_progress_rx_queue(struct zhpe_tx *ztx)
 
 			case ZHPE_OP_KEY_EXPORT:
 			case ZHPE_OP_KEY_RESPONSE:
-				zhpe_stats_start(
-					zhpe_stats_subid(RECV, 1020));
+				zhpe_stats_start(zhpe_stats_subid(RECV, 1020));
 				zhpe_pe_rx_handle_key_import(conn, zhdr);
 				zhpe_stats_stop(zhpe_stats_subid(RECV, 1020));
 				break;
