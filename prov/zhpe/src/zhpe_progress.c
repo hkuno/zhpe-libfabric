@@ -1319,9 +1319,9 @@ static inline void zhpe_pe_progress_rx_queue(struct zhpe_tx *ztx)
 				break;
 
 			case ZHPE_OP_SEND:
-				zhpe_stats_start(zhpe_stats_subid(RECV, 0));
+				zhpe_stats_start(zhpe_stats_subid(RECV, 1000));
 				zhpe_pe_rx_handle_send(conn, zhdr);
-				zhpe_stats_stop(zhpe_stats_subid(RECV, 0));
+				zhpe_stats_stop(zhpe_stats_subid(RECV, 1000));
 				break;
 
 			case ZHPE_OP_STATUS:
