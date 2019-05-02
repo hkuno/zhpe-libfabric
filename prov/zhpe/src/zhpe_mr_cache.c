@@ -235,13 +235,21 @@ zhpe_monitor_get_event(struct ofi_mem_monitor *monitor)
 		container_of(monitor, struct zhpe_domain, monitor);
 	ssize_t			rc;
 	struct ummunotify_event	evt;
+	uint64_t		events;
+
+	events = atm_load_rlx(domain->monitor_eventsp);
+	if (events == domain->monitor_events)
+		goto done;
 
 	for (;;) {
 		rc = read(domain->monitor_fd, &evt, sizeof(evt));
 		if (rc == -1) {
 			rc = -errno;
-			if (rc == -EAGAIN)
+			if (rc == -EAGAIN) {
+				/* We've caught up */
+				domain->monitor_events = events;
 				break;
+			}
 			ZHPE_LOG_ERROR("Failed to read event, error %ld:%s\n",
 				       rc, strerror(-rc));
 			break;
@@ -256,7 +264,7 @@ zhpe_monitor_get_event(struct ofi_mem_monitor *monitor)
 			break;
 		}
 	}
-
+ done:
 	return ret;
 }
 
@@ -264,14 +272,18 @@ zhpe_monitor_get_event(struct ofi_mem_monitor *monitor)
 
 void zhpe_mr_cache_destroy(struct zhpe_domain *domain)
 {
-	if (domain->cache_inited) {
-		fastlock_destroy(&domain->cache_lock);
-		ofi_mr_cache_cleanup(&domain->cache);
-		domain->cache_inited = false;
-	}
 	if (domain->monitor_fd != -1) {
+		if (domain->cache_inited) {
+			fastlock_destroy(&domain->cache_lock);
+			ofi_mr_cache_cleanup(&domain->cache);
+			domain->cache_inited = false;
+		}
 		close(domain->monitor_fd);
 		domain->monitor_fd = -1;
+		if (domain->monitor_eventsp)
+			munmap(domain->monitor_eventsp,
+			       sizeof(*domain->monitor_eventsp));
+		domain->monitor_eventsp = NULL;
 		ofi_monitor_cleanup(&domain->monitor);
 	}
 }
@@ -280,22 +292,31 @@ int zhpe_mr_cache_init(struct zhpe_domain *domain)
 {
 	int			ret = 0;
 	const char		*dev_name = "/dev/ummunotify";
+	int			rc;
 
 	if (!zhpe_mr_cache_enable)
 		goto done;
 #ifdef HAVE_LINUX_UMMUNOTIFY_H
 	domain->monitor_fd = open(dev_name, O_RDONLY | O_NONBLOCK);
 	if (domain->monitor_fd == -1) {
-		if (errno == ENOENT) {
-			ZHPE_LOG_DBG("%s not present, mr_cache disabled\n",
-				     dev_name);
-			goto done;
-		}
-		ret = -errno;
-		ZHPE_LOG_ERROR("Failed to open %s, error %d:%s\n",
-			       dev_name, ret, strerror(-ret));
+		rc = errno;
+		ZHPE_LOG_ERROR("Failed to open %s, error %d:%s,"
+			       " mr_cache disabled\n",
+			       dev_name, rc, strerror(rc));
 		goto done;
 	}
+	domain->monitor_eventsp = mmap(NULL, sizeof(*domain->monitor_eventsp),
+				       PROT_READ, MAP_SHARED,
+				       domain->monitor_fd, 0);
+	if (domain->monitor_eventsp == MAP_FAILED) {
+		domain->monitor_eventsp = NULL;
+		rc = errno;
+		ZHPE_LOG_ERROR("Failed to mmap %s, error %d:%s,"
+			       " mr_cache disabled\n",
+			       dev_name, rc, strerror(rc));
+		goto done;
+	}
+	domain->monitor_events = 0;
 	/* FIXME: need to change over to using util_xxx structs?
 	 * The ofi_mr_cache uses the util_domain only for ref counting
 	 * and the prov point for debugging output. Too much work for full

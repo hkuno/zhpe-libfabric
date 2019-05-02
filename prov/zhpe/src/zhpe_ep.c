@@ -1261,8 +1261,6 @@ struct fi_info *zhpe_fi_info(uint32_t version,
 		CHECK_SET_EQUAL(tx_attr, comp_order, FI_ORDER_NONE);
 		CHECK_SET_EQUAL(tx_attr, inject_size, 0);
 		CHECK_SET_EQUAL(tx_attr, size, 0);
-		info->tx_attr->size  =
-			roundup_power_of_two(info->tx_attr->size);
 		CHECK_SET_EQUAL(tx_attr, iov_limit, 0);
 		CHECK_SET_EQUAL(tx_attr, rma_iov_limit, 0);
 
@@ -1274,8 +1272,6 @@ struct fi_info *zhpe_fi_info(uint32_t version,
 		CHECK_SET_EQUAL(rx_attr, comp_order, FI_ORDER_NONE);
 		CHECK_SET_EQUAL(rx_attr, total_buffered_recv, 0);
 		CHECK_SET_EQUAL(rx_attr, size, 0);
-		info->rx_attr->size  =
-			roundup_power_of_two(info->rx_attr->size);
 		CHECK_SET_EQUAL(rx_attr, iov_limit, 0);
 
 		if (hints->handle)
@@ -1586,7 +1582,7 @@ int zhpe_ep_get_conn(struct zhpe_ep_attr *attr,
 			break;
 		ret = zhpe_ep_connect(attr, *pconn);
 		if (ret >= 0)
-			break;
+			continue;
 		if (*pconn)
 			zhpe_conn_release_entry(attr, *pconn);
 		if (ret != -FI_EAGAIN)

@@ -158,7 +158,7 @@ void util_buf_pool_destroy(struct util_buf_pool *pool)
 	while (!slist_empty(&pool->region_list)) {
 		entry = slist_remove_head(&pool->region_list);
 		buf_region = container_of(entry, struct util_buf_region, entry);
-#if ENABLE_DEBUG
+#if /* ENABLE_DEBUG  */ 0
 		assert(buf_region->num_used == 0);
 #endif
 		if (pool->free_hndlr)
