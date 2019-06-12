@@ -774,6 +774,8 @@ static int sock_pe_process_rx_read(struct sock_pe *pe,
 	return 0;
 }
 
+#include <zhpeq_util.h>
+
 static int sock_pe_process_rx_write(struct sock_pe *pe,
 					struct sock_rx_ctx *rx_ctx,
 					struct sock_pe_entry *pe_entry)
@@ -817,12 +819,25 @@ static int sock_pe_process_rx_write(struct sock_pe *pe,
 
 	rem = pe_entry->msg_hdr.msg_len - len;
 	for (i = 0; rem > 0 && i < pe_entry->msg_hdr.dest_iov_len; i++) {
-		if (sock_pe_recv_field(pe_entry,
-				       (void *) (uintptr_t) pe_entry->pe.rx.rx_iov[i].iov.addr,
-				       pe_entry->pe.rx.rx_iov[i].iov.len, len))
+		/*
+		 * HACK: zhpe command writes are cache-aligned and fit it
+		 * in a cache-line. Intercept anything that looks like that.
+		 */
+		void *iov_addr =
+			(void *)(uintptr_t)pe_entry->pe.rx.rx_iov[i].iov.addr;
+		size_t iov_len =  pe_entry->pe.rx.rx_iov[i].iov.len;
+		uint64_t buf[8];
+		if (pe_entry->msg_hdr.dest_iov_len == 1 &&
+		    !((uintptr_t)iov_addr & 63) &&
+		    iov_len >= 8 && iov_len <= 64) {
+			if (sock_pe_recv_field(pe_entry, buf, iov_len, len))
+				return 0;
+			memcpy((char *)iov_addr + 8, buf + 1, iov_len - 8);
+			atm_store((uint64_t *)iov_addr, buf[0]);
+		} else if (sock_pe_recv_field(pe_entry, iov_addr, iov_len, len))
 			return 0;
-		len += pe_entry->pe.rx.rx_iov[i].iov.len;
-		rem -= pe_entry->pe.rx.rx_iov[i].iov.len;
+		len += iov_len;
+		rem -= iov_len;
 	}
 	pe_entry->buf = pe_entry->pe.rx.rx_iov[0].iov.addr;
 	pe_entry->data_len = 0;
