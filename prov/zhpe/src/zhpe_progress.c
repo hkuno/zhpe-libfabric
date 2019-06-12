@@ -880,6 +880,7 @@ static inline int zhpe_pe_rem_setup(struct zhpe_conn *conn,
 			break;
 		}
 	}
+	rstate->missing = missing;
 
 	return ret;
 }

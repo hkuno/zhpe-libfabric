@@ -1571,8 +1571,11 @@ static inline void zhpe_rstate_release(struct zhpe_iov_state *rstate)
 	struct zhpe_iov		*ziov = rstate->viov;
 	int			i;
 
-	for (i = 0; i < rstate->cnt; i++)
+	for (i = 0; i < rstate->cnt; i++) {
+		if (rstate->missing & (1U << i))
+			continue;
 		zhpe_rkey_put(ziov[i].iov_rkey);
+	}
 }
 
 static inline void
