@@ -189,7 +189,7 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 	pe_entry->pe_root.conn = conn;
 	pe_entry->pe_root.context = msg->context;
 	pe_entry->pe_root.compstat.status = 0;
-	pe_entry->pe_root.compstat.completions = 0;
+	pe_entry->pe_root.compstat.completions = 1;
 	pe_entry->pe_root.compstat.flags |= ZHPE_PE_KEY_WAIT;
 	pe_entry->cq_data = msg->data;
 	pe_entry->rx_id = zhpe_get_rx_id(tx_ctx, msg->addr);
@@ -247,7 +247,6 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 		zhpe_stats_stop(zhpe_stats_subid(RMA, 60));
 	} else {
 		zhpe_stats_start(zhpe_stats_subid(RMA, 70));
-		pe_entry->pe_root.compstat.completions = 1;
 		zhpe_pe_tx_handle_rma(&pe_entry->pe_root, NULL);
 		zhpe_stats_stop(zhpe_stats_subid(RMA, 70));
 	}
