@@ -222,10 +222,8 @@ int zhpe_zmr_put_uncached(struct zhpe_mr *zmr)
 		free(kexp);
 	}
 	atm_dec(&domain->ref);
-	if (zmr->kdata)
-		zhpeq_mr_free(zmr->domain->zdom, zmr->kdata);
-	zmr_ops = container_of(zmr->mr_fid.fid.ops, struct zhpe_mr_ops,
-			       fi_ops);
+	zhpeq_qkdata_free(zmr->kdata);
+	zmr_ops = container_of(zmr->mr_fid.fid.ops, struct zhpe_mr_ops, fi_ops);
 	zmr_ops->freeme(zmr);
 
 	return 0;
@@ -298,7 +296,7 @@ int zhpe_zmr_reg(struct zhpe_domain *domain, const void *buf,
 	fastlock_release(&domain->lock);
 	atm_inc(&domain->ref);
 	if (OFI_UNLIKELY(ret < 0)) {
-		zhpeq_mr_free(domain->zdom, zmr->kdata);
+		zhpeq_qkdata_free(zmr->kdata);
 		zmr->kdata = NULL;
 		goto done;
 	}

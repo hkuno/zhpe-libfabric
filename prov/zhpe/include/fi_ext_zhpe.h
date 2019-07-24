@@ -43,9 +43,29 @@ extern "C" {
 
 #define FI_ZHPE_FAM_RKEY	(0)
 
+enum fi_zhpe_mmap_cache_mode {
+	FI_ZHPE_MMAP_CACHE_WB	= 0,
+	FI_ZHPE_MMAP_CACHE_WC	= 1,
+	FI_ZHPE_MMAP_CACHE_WT	= 2,
+	FI_ZHPE_MMAP_CACHE_UC	= 3,
+};
+
+struct fi_zhpe_mmap_desc {
+	/* Public portion of descriptor */
+	void			*addr;
+	size_t			length;
+};
+
 /* zhpe provider specific ops */
 struct fi_zhpe_ext_ops_v1 {
 	int (*lookup)(const char *url, void **sa, size_t *sa_len);
+	int (*mmap)(void *addr, size_t length, int prot, int flags,
+		    off_t offset, struct fid_ep *ep, fi_addr_t fi_addr,
+		    uint64_t key, enum fi_zhpe_mmap_cache_mode cache_mode,
+		    struct fi_zhpe_mmap_desc **mmap_desc);
+	int (*munmap)(struct fi_zhpe_mmap_desc *mmap_desc);
+	int (*commit)(struct fi_zhpe_mmap_desc *mmap_desc,
+		      const void *addr, size_t length, bool fence);
 };
 
 #ifdef  __cplusplus

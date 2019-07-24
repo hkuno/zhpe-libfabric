@@ -275,10 +275,9 @@ static int do_rx_setup(struct zhpe_conn *conn, int conn_fd)
 
 	/* Exchange key information. */
 	blob_len = sizeof(blob);
-	ret = zhpeq_zmmu_export(zhpeq_dom(conn->ztx->zq),
-				rx_ringl->cmn.zmr->kdata, blob, &blob_len);
+	ret = zhpeq_qkdata_export(rx_ringl->cmn.zmr->kdata, blob, &blob_len);
 	if (ret < 0) {
-		ZHPE_LOG_ERROR("zhpeq_zmmu_export() error %d\n", ret);
+		ZHPE_LOG_ERROR("zhpeq_qkdata_export() error %d\n", ret);
 		goto done;
 	}
 
@@ -367,13 +366,13 @@ int zhpe_conn_z_setup(struct zhpe_conn *conn, int conn_fd)
 	ret = zhpeq_backend_exchange(conn->ztx->zq, conn_fd, &sa, &sa_len);
 	if (ret < 0) {
 		ZHPE_LOG_ERROR("%s,%u:zhpeq_backend_exchange() error %d\n",
-			       __FUNCTION__, __LINE__, ret);
+			       __func__, __LINE__, ret);
 		goto done;
 	}
 	ret = zhpeq_backend_open(conn->ztx->zq, &sa);
 	if (ret < 0) {
 		ZHPE_LOG_ERROR("%s,%u:zhpeq_backend_open() error %d\n",
-			       __FUNCTION__, __LINE__, ret);
+			       __func__, __LINE__, ret);
 		goto done;
 	}
 	conn->zq_index = ret;
@@ -436,16 +435,22 @@ int zhpe_conn_fam_setup(struct zhpe_conn *conn)
 	ret = zhpeq_backend_open(conn->ztx->zq, &conn->addr);
 	if (ret < 0) {
 		ZHPE_LOG_ERROR("%s,%u:zhpeq_backend_open() error %d\n",
-			       __FUNCTION__, __LINE__, ret);
+			       __func__, __LINE__, ret);
 		goto done;
 	}
 	conn->zq_index = ret;
 	/* Set up rkey entry for FAM.*/
-	ret = zhpeq_zmmu_fam_import(ep_attr->domain->zdom, conn->zq_index,
-				    false,  &new->kdata);
+	ret = zhpeq_fam_qkdata(ep_attr->domain->zdom, conn->zq_index,
+			       &new->kdata);
 	if (ret < 0) {
-		ZHPE_LOG_ERROR("%s,%u:zhpeq_zmmu_fam_import() error %d\n",
-			       __FUNCTION__, __LINE__, ret);
+		ZHPE_LOG_ERROR("%s,%u:zhpeq_fam_qkdata() error %d\n",
+			       __func__, __LINE__, ret);
+		goto done;
+	}
+	ret = zhpeq_zmmu_reg(new->kdata);
+	if (ret < 0) {
+		ZHPE_LOG_ERROR("%s,%u:zhpeq_req() error %d\n",
+			       __func__, __LINE__, ret);
 		goto done;
 	}
 	/* FIXME: Rethink for multiple contexts. */
@@ -463,7 +468,7 @@ int zhpe_conn_fam_setup(struct zhpe_conn *conn)
 
 void zhpe_rkey_free(struct zhpe_rkey_data *rkey)
 {
-	zhpeq_zmmu_free(zhpeq_dom(rkey->ztx->zq), rkey->kdata);
+	zhpeq_qkdata_free(rkey->kdata);
 	zhpe_tx_put(rkey->ztx);
 	free(rkey);
 }
@@ -1145,8 +1150,7 @@ int zhpe_conn_key_export(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
 		goto done;
 
 	blob_len = sizeof(msg_data.blob);
-	ret = zhpeq_zmmu_export(zhpeq_dom(conn->ztx->zq),
-				zmr->kdata, msg_data.blob, &blob_len);
+	ret = zhpeq_qkdata_export(zmr->kdata, msg_data.blob, &blob_len);
 	if (ret < 0)
 		goto done;
 
@@ -1277,8 +1281,11 @@ int zhpe_conn_rkey_import(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
 	struct zhpe_rkey_data	*new = NULL;
 	struct zhpeq_key_data	*kdata = NULL;
 
-	ret = zhpeq_zmmu_import(zhpeq_dom(conn->ztx->zq), conn->zq_index,
-				blob, blob_len, false, &kdata);
+	ret = zhpeq_qkdata_import(zhpeq_dom(conn->ztx->zq), conn->zq_index,
+				  blob, blob_len, &kdata);
+	if (ret < 0)
+		goto done;
+	ret = zhpeq_zmmu_reg(kdata);
 	if (ret < 0)
 		goto done;
 

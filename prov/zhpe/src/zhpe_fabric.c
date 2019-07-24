@@ -323,7 +323,7 @@ static int zhpe_fabric_close(fid_t fid)
 	return 0;
 }
 
-static int zhpe_fabric_ext_lookup(const char *url, void **sa, size_t *sa_len)
+static int zhpe_ext_lookup(const char *url, void **sa, size_t *sa_len)
 {
 	int			ret = -FI_EINVAL;
 	const char		fam_pfx[] = "zhpe:///fam";
@@ -374,8 +374,199 @@ static int zhpe_fabric_ext_lookup(const char *url, void **sa, size_t *sa_len)
 	return ret;
 }
 
-static struct fi_zhpe_ext_ops_v1 zhpe_fabric_ext_ops_v1 = {
-	.lookup			= zhpe_fabric_ext_lookup,
+static int mmap_get_rkey(struct fid_ep *ep, fi_addr_t fi_addr, uint64_t key,
+			 struct zhpe_rkey_data **rkey)
+{
+	int			ret = -FI_EINVAL;
+	int64_t			tindex = -1;
+	struct zhpe_key		zkey = { .key = key };
+	struct zhpe_ep		*zhpe_ep;
+	struct zhpe_ep_attr	*ep_attr;
+	struct zhpe_tx_ctx	*tx_ctx;
+	struct zhpe_conn	*conn;
+	struct zhpe_pe_entry	*pe_entry;
+	struct zhpe_pe_compstat *cstat;
+	struct zhpe_pe_compstat cval;
+	struct zhpe_msg_hdr	ohdr;
+
+	*rkey = NULL;
+
+	switch (ep->fid.fclass) {
+
+	case FI_CLASS_EP:
+		zhpe_ep = container_of(ep, struct zhpe_ep, ep);
+		tx_ctx = zhpe_ep->attr->tx_ctx;
+		ep_attr = zhpe_ep->attr;
+		break;
+
+	case FI_CLASS_TX_CTX:
+		tx_ctx = container_of(ep, struct zhpe_tx_ctx, ctx);
+		ep_attr = tx_ctx->ep_attr;
+		break;
+
+	default:
+		goto done;
+	}
+
+	ret = zhpe_ep_get_conn(ep_attr, fi_addr, &conn);
+	if (ret < 0)
+		goto done;
+	*rkey = zhpe_conn_rkey_get(conn, &zkey);
+	if (*rkey)
+		goto done;
+
+	ret = zhpe_tx_reserve(conn->ztx, 0);
+	if (ret < 0)
+		goto done;
+	tindex = ret;
+	pe_entry = &conn->ztx->pentries[tindex];
+	pe_entry->pe_root.handler = NULL;
+	pe_entry->pe_root.conn = conn;
+	pe_entry->pe_root.context = NULL;
+	cstat = &pe_entry->pe_root.compstat;
+	cstat->status = 0;
+	cstat->completions = 0;
+	cstat->flags = 0;
+	pe_entry->rstate.cnt = 1;
+	pe_entry->rstate.missing = 1;
+	pe_entry->riov[0].iov_key = key;
+	pe_entry->riov[0].iov_len = 0;
+
+	ohdr.rx_id = zhpe_get_rx_id(tx_ctx, fi_addr);
+	ohdr.pe_entry_id = htons(tindex);
+	zhpe_pe_rkey_request(conn, ohdr, &pe_entry->rstate,
+			     &cstat->completions);
+	for (;;) {
+		cval = atm_load_rlx(cstat);
+		if (!cval.completions)
+			break;
+		if (ep_attr->domain->progress_mode == FI_PROGRESS_AUTO) {
+			sched_yield();
+			continue;
+		}
+		zhpe_pe_progress_tx_ctx(ep_attr->domain->pe, tx_ctx);
+	}
+	ret = cval.status;
+	if (ret < 0)
+		goto done;
+	*rkey = zhpe_conn_rkey_get(conn, &zkey);
+	if (!*rkey)
+		ret = -FI_ENOKEY;
+
+ done:
+	if (ret < 0) {
+		if (tindex != -1)
+			zhpe_tx_release(pe_entry);
+	}
+
+	return ret;
+}
+
+struct fi_zhpe_mmap_desc_int {
+	struct fi_zhpe_mmap_desc pub;
+	struct zhpeq_mmap_desc  *zmdesc;
+};
+
+static int zhpe_ext_mmap(void *addr, size_t length, int prot, int flags,
+			 off_t offset, struct fid_ep *ep, fi_addr_t fi_addr,
+			 uint64_t key, enum fi_zhpe_mmap_cache_mode cache_mode,
+			 struct fi_zhpe_mmap_desc **mmap_desc)
+{
+	int			ret = -FI_EINVAL;
+	uint32_t		zq_cache_mode = 0;
+	struct fi_zhpe_mmap_desc_int *mdesc = NULL;
+	struct zhpe_rkey_data	*rkey = NULL;
+
+	if (!mmap_desc)
+		goto done;
+	*mmap_desc = NULL;
+	if (!ep)
+		goto done;
+
+	switch (cache_mode) {
+
+	case FI_ZHPE_MMAP_CACHE_WB:
+		zq_cache_mode |= ZHPEQ_MR_REQ_CPU_WB;
+		break;
+
+	case FI_ZHPE_MMAP_CACHE_WC:
+		zq_cache_mode |= ZHPEQ_MR_REQ_CPU_WC;
+		break;
+
+	case FI_ZHPE_MMAP_CACHE_WT:
+		zq_cache_mode |= ZHPEQ_MR_REQ_CPU_WT;
+		break;
+
+	case FI_ZHPE_MMAP_CACHE_UC:
+		zq_cache_mode |= ZHPEQ_MR_REQ_CPU_UC;
+		break;
+
+	default:
+		goto done;
+	}
+
+	ret  = mmap_get_rkey(ep, fi_addr, key, &rkey);
+	if (ret < 0)
+		goto done;
+	mdesc = calloc(1, sizeof(*mdesc));
+	if (!mdesc) {
+		ret = -FI_ENOMEM;
+		goto done;
+	}
+	mdesc->pub.length = length;
+
+	ret = zhpeq_mmap(rkey->kdata, zq_cache_mode,
+			 addr, length, prot, flags, offset, &mdesc->pub.addr,
+			 &mdesc->zmdesc);
+
+ done:
+	if (ret >= 0) {
+		*mmap_desc = &mdesc->pub;
+		ret = 0;
+	} else
+		free(mdesc);
+	zhpe_rkey_put(rkey);
+
+	return ret;
+}
+
+static int zhpe_ext_munmap(struct fi_zhpe_mmap_desc *mmap_desc)
+{
+	int			ret = -FI_EINVAL;
+	struct fi_zhpe_mmap_desc_int *mdesc =
+		container_of(mmap_desc, struct fi_zhpe_mmap_desc_int, pub);
+
+	if (!mmap_desc)
+		goto done;
+	ret = zhpeq_mmap_unmap(mdesc->zmdesc,
+			       mdesc->pub.addr, mdesc->pub.length);
+
+ done:
+	return ret;
+}
+
+static int zhpe_ext_commit(struct fi_zhpe_mmap_desc *mmap_desc,
+			   const void *addr, size_t length, bool fence)
+{
+	int			ret = -FI_EINVAL;
+	struct fi_zhpe_mmap_desc_int *mdesc =
+		container_of(mmap_desc, struct fi_zhpe_mmap_desc_int, pub);
+
+	if (!mmap_desc)
+		goto done;
+	ret = zhpeq_mmap_commit(mdesc->zmdesc,
+				(addr ? addr : mdesc->pub.addr),
+				(length ? length : mdesc->pub.length), fence);
+
+ done:
+	return ret;
+}
+
+static struct fi_zhpe_ext_ops_v1 zhpe_ext_ops_v1 = {
+	.lookup			= zhpe_ext_lookup,
+	.mmap			= zhpe_ext_mmap,
+	.munmap			= zhpe_ext_munmap,
+	.commit			= zhpe_ext_commit,
 };
 
 static int zhpe_fabric_ops_open(struct fid *fid, const char *ops_name,
@@ -389,7 +580,7 @@ static int zhpe_fabric_ops_open(struct fid *fid, const char *ops_name,
 		goto done;
 	}
 	if (!strcmp(ops_name, FI_ZHPE_OPS_V1))
-		*ops = &zhpe_fabric_ext_ops_v1;
+		*ops = &zhpe_ext_ops_v1;
 	else {
 		ret = -FI_EINVAL;
 		goto done;

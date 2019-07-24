@@ -720,9 +720,10 @@ void zhpe_pe_complete_key_response(struct zhpe_conn *conn,
 	struct zhpe_pe_entry	*pe_entry;
 
 	pe_entry = &conn->ztx->pentries[ntohs(ohdr.pe_entry_id)];
-	tx_update_status(pe_entry, rc);
+	tx_update_compstat(pe_entry, rc);
 
-	pe_entry->pe_root.handler(&pe_entry->pe_root, NULL);
+	if (pe_entry->pe_root.handler)
+		pe_entry->pe_root.handler(&pe_entry->pe_root, NULL);
 }
 
 static void zhpe_pe_rx_handle_key_import(struct zhpe_conn *conn,
