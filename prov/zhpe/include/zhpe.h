@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2014 Intel Corporation, Inc.  All rights reserved.
  * Copyright (c) 2016 Cisco Systems, Inc. All rights reserved.
- * Copyright (c) 2017-2018 Hewlett Packard Enterprise Development LP.  All rights reserved.
+ * Copyright (c) 2017-2019 Hewlett Packard Enterprise Development LP.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -98,16 +98,6 @@
 
 #include <zhpe_stats.h>
 
-/* Type checking container_of */
-#ifdef container_of
-#undef container_of
-#endif
-#define container_of(ptr, type, member)				\
-({								\
-	typeof( ((type *)0)->member ) *_ptr = (ptr);		\
-	(type *)((char *)_ptr - offsetof(type,member));		\
-})
-
 #define _ZHPE_LOG_DBG(subsys, ...) FI_DBG(&zhpe_prov, subsys, __VA_ARGS__)
 #define _ZHPE_LOG_INFO(subsys, ...) FI_INFO(&zhpe_prov, subsys, __VA_ARGS__)
 #define _ZHPE_LOG_ERROR(subsys, ...) FI_WARN(&zhpe_prov, subsys, __VA_ARGS__)
@@ -152,9 +142,6 @@ extern int zhpe_eq_def_sz;
 extern char *zhpe_pe_affinity_str;
 extern size_t zhpe_ep_max_eager_sz;
 extern int zhpe_mr_cache_enable;
-extern int zhpe_mr_cache_merge_regions;
-extern size_t zhpe_mr_cache_max_cnt;
-extern size_t zhpe_mr_cache_max_size;
 extern const struct fi_domain_attr zhpe_domain_attr;
 extern const struct fi_fabric_attr zhpe_fabric_attr;
 extern struct fi_ops_msg zhpe_ep_msg_ops_locked;
@@ -163,8 +150,6 @@ extern struct fi_ops_msg zhpe_ep_msg_ops_unlocked;
 extern struct fi_ops_tagged zhpe_ep_tagged_unlocked;
 extern struct fi_ops_rma zhpe_ep_rma;
 extern struct fi_ops_atomic zhpe_ep_atomic;
-extern char *zhpe_stats_dir;
-extern char *zhpe_stats_unique;
 
 /* For the moment, we're going to assume these will always use locks. */
 extern struct fi_ops_cm zhpe_ep_cm_ops;
@@ -484,7 +469,7 @@ struct zhpe_conn {
 };
 
 struct zhpe_domain {
-	struct fid_domain	dom_fid;
+	struct util_domain	util_domain;
 	struct fi_info		info;
 	struct fi_domain_attr	attr;
 	struct zhpe_fabric	*fab;
@@ -506,13 +491,8 @@ struct zhpe_domain {
 					   const void *buf, size_t len,
 					   uint64_t access, uint32_t qaccess,
 					   struct fid_mr **mr);
-	struct util_domain	util_domain;
 	struct ofi_mr_cache	cache;
 	fastlock_t		cache_lock;
-	struct ofi_mem_monitor	monitor;
-	uint64_t		monitor_events;
-	uint64_t		*monitor_eventsp;
-	int			monitor_fd;
 	bool			cache_inited;
 };
 
@@ -915,7 +895,7 @@ enum zhpe_rx_state {
 struct zhpe_rx_entry_free {
 	struct zhpe_rx_ctx	*rx_ctx;
 	struct zhpeu_atm_list_ptr rx_fifo_list;
-	struct util_buf_pool	*rx_entry_pool;
+	struct ofi_bufpool	*rx_entry_pool;
 };
 
 struct zhpe_rx_entry {
@@ -1622,8 +1602,8 @@ static inline void *
 zhpe_pay_ptr(struct zhpe_conn *conn, struct zhpe_msg_hdr *zhdr,
 	     size_t off, size_t alignment)
 {
-	off += fi_get_aligned_sz(sizeof(*zhdr), sizeof(int));
-	off = fi_get_aligned_sz(off, alignment);
+	off += ofi_get_aligned_size(sizeof(*zhdr), sizeof(int));
+	off = ofi_get_aligned_size(off, alignment);
 
 	return (char *)zhdr + off;
 }
@@ -2323,7 +2303,7 @@ zhpe_rx_new_entry(struct zhpe_rx_entry_free *rx_free)
 	if (OFI_LIKELY(!!next))
 		ret = container_of(next, struct zhpe_rx_entry, rx_match_next);
 	else
-		ret = util_buf_alloc(rx_free->rx_entry_pool);
+		ret = ofi_buf_alloc(rx_free->rx_entry_pool);
 	if (!ret)
 		goto done;
 	_ZHPE_LOG_DBG(FI_LOG_EP_DATA,

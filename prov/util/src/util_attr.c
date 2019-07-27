@@ -33,6 +33,7 @@
 
 #include <stdio.h>
 
+#include <shared/ofi_str.h>
 #include <ofi_util.h>
 
 #define OFI_MSG_CAPS	(FI_SEND | FI_RECV)
@@ -40,7 +41,7 @@
 
 static int fi_valid_addr_format(uint32_t prov_format, uint32_t user_format)
 {
-	if (user_format == FI_FORMAT_UNSPEC)
+	if (user_format == FI_FORMAT_UNSPEC || prov_format == FI_FORMAT_UNSPEC)
 		return 1;
 
 	switch (prov_format) {
@@ -89,52 +90,43 @@ char *ofi_strdup_append(const char *head, const char *tail)
 	return str;
 }
 
-static int ofi_has_util_prefix(const char *str)
+int ofi_exclude_prov_name(char **prov_name_list, const char *util_prov_name)
 {
-	return !strncasecmp(str, OFI_UTIL_PREFIX, strlen(OFI_UTIL_PREFIX));
-}
+	char *exclude, *name, *temp;
 
-const char *ofi_util_name(const char *str, size_t *len)
-{
-	char *delim;
+	exclude = malloc(strlen(util_prov_name) + 2);
+	if (!exclude)
+		return -FI_ENOMEM;
 
-	delim = strchr(str, OFI_NAME_DELIM);
-	if (delim) {
-		if (ofi_has_util_prefix(delim + 1)) {
-			*len = strlen(delim + 1);
-			return delim + 1;
-		} else if (ofi_has_util_prefix(str)) {
-			*len = delim - str;
-			return str;
-		}
-	} else if (ofi_has_util_prefix(str)) {
-		*len = strlen(str);
-		return str;
+	exclude[0] = '^';
+	strcpy(&exclude[1], util_prov_name);
+
+	if (!*prov_name_list)
+		goto out;
+
+	name = strdup(*prov_name_list);
+	if (!name)
+		goto err1;
+
+	ofi_rm_substr_delim(name, util_prov_name, OFI_NAME_DELIM);
+
+	if (strlen(name)) {
+		temp = ofi_strdup_append(name, exclude);
+		if (!temp)
+			goto err2;
+		free(exclude);
+		exclude = temp;
 	}
-	*len = 0;
-	return NULL;
-}
-
-const char *ofi_core_name(const char *str, size_t *len)
-{
-	char *delim;
-
-	delim = strchr(str, OFI_NAME_DELIM);
-	if (delim) {
-		if (!ofi_has_util_prefix(delim + 1)) {
-			*len = strlen(delim + 1);
-			return delim + 1;
-		} else if (!ofi_has_util_prefix(str)) {
-			*len = delim - str;
-			return str;
-		}
-	} else if (!ofi_has_util_prefix(str)) {
-		*len = strlen(str);
-		return str;
-	}
-	*len = 0;
-	return NULL;
-
+	free(name);
+	free(*prov_name_list);
+out:
+	*prov_name_list = exclude;
+	return 0;
+err2:
+	free(name);
+err1:
+	free(exclude);
+	return -FI_ENOMEM;
 }
 
 static int ofi_dup_addr(const struct fi_info *info, struct fi_info *dup)
@@ -163,8 +155,7 @@ static int ofi_info_to_core(uint32_t version, const struct fi_provider *prov,
 			    ofi_alter_info_t info_to_core,
 			    struct fi_info **core_hints)
 {
-	const char *core_name;
-	size_t len;
+	int ret = -FI_ENOMEM;
 
 	if (!(*core_hints = fi_allocinfo()))
 		return -FI_ENOMEM;
@@ -190,17 +181,18 @@ static int ofi_info_to_core(uint32_t version, const struct fi_provider *prov,
 		}
 
 		if (util_info->fabric_attr->prov_name) {
-			core_name = ofi_core_name(util_info->fabric_attr->
-						  prov_name, &len);
-			if (core_name) {
-				(*core_hints)->fabric_attr->prov_name =
-					strndup(core_name, len);
-				if (!(*core_hints)->fabric_attr->prov_name) {
-					FI_WARN(prov, FI_LOG_FABRIC,
-						"Unable to alloc prov name\n");
-					goto err;
-				}
+			(*core_hints)->fabric_attr->prov_name =
+				strdup(util_info->fabric_attr->prov_name);
+			if (!(*core_hints)->fabric_attr->prov_name) {
+				FI_WARN(prov, FI_LOG_FABRIC,
+					"Unable to alloc prov name\n");
+				goto err;
 			}
+			ret = ofi_exclude_prov_name(
+					&(*core_hints)->fabric_attr->prov_name,
+					prov->name);
+			if (ret)
+				goto err;
 		}
 	}
 
@@ -217,7 +209,7 @@ static int ofi_info_to_core(uint32_t version, const struct fi_provider *prov,
 
 err:
 	fi_freeinfo(*core_hints);
-	return -FI_ENOMEM;
+	return ret;
 }
 
 static int ofi_info_to_util(uint32_t version, const struct fi_provider *prov,
@@ -335,28 +327,34 @@ int ofix_getinfo(uint32_t version, const char *node, const char *service,
 }
 
 /* Caller should use only fabric_attr in returned core_info */
-int ofi_get_core_info_fabric(struct fi_fabric_attr *util_attr,
+int ofi_get_core_info_fabric(const struct fi_provider *prov,
+			     const struct fi_fabric_attr *util_attr,
 			     struct fi_info **core_info)
 {
 	struct fi_info hints;
-	const char *core_name;
-	size_t len;
 	int ret;
 
-	core_name = ofi_core_name(util_attr->prov_name, &len);
-	if (!core_name)
+	/* ofix_getinfo() would append utility provider name after core / lower
+	 * layer provider name */
+	if (!strstr(util_attr->prov_name, prov->name))
 		return -FI_ENODATA;
 
 	memset(&hints, 0, sizeof hints);
 	if (!(hints.fabric_attr = calloc(1, sizeof(*hints.fabric_attr))))
 		return -FI_ENOMEM;
 
-	hints.fabric_attr->name = util_attr->name;
-	hints.fabric_attr->api_version = util_attr->api_version;
-	if (!(hints.fabric_attr->prov_name = strndup(core_name, len))) {
+	hints.fabric_attr->prov_name = strdup(util_attr->prov_name);
+	if (!hints.fabric_attr->prov_name) {
 		ret = -FI_ENOMEM;
 		goto out;
 	}
+
+	ret = ofi_exclude_prov_name(&hints.fabric_attr->prov_name, prov->name);
+	if (ret)
+		goto out;
+
+	hints.fabric_attr->name = util_attr->name;
+	hints.fabric_attr->api_version = util_attr->api_version;
 	hints.mode = ~0;
 
 	ret = fi_getinfo(util_attr->api_version, NULL, NULL, OFI_CORE_PROV_ONLY,
@@ -621,6 +619,20 @@ int ofi_check_domain_attr(const struct fi_provider *prov, uint32_t api_version,
 	return 0;
 }
 
+static int ofi_check_ep_type(const struct fi_provider *prov,
+			     const struct fi_ep_attr *prov_attr,
+			     const struct fi_ep_attr *user_attr)
+{
+	if ((user_attr->type != FI_EP_UNSPEC) &&
+	    (prov_attr->type != FI_EP_UNSPEC) &&
+	    (user_attr->type != prov_attr->type)) {
+		FI_INFO(prov, FI_LOG_CORE, "Unsupported endpoint type\n");
+		FI_INFO_CHECK(prov, prov_attr, user_attr, type, FI_TYPE_EP_TYPE);
+		return -FI_ENODATA;
+	}
+	return 0;
+}
+
 int ofi_check_ep_attr(const struct util_prov *util_prov, uint32_t api_version,
 		      const struct fi_info *prov_info,
 		      const struct fi_info *user_info)
@@ -628,13 +640,11 @@ int ofi_check_ep_attr(const struct util_prov *util_prov, uint32_t api_version,
 	const struct fi_ep_attr *prov_attr = prov_info->ep_attr;
 	const struct fi_ep_attr *user_attr = user_info->ep_attr;
 	const struct fi_provider *prov = util_prov->prov;
+	int ret;
 
-	if ((user_attr->type != FI_EP_UNSPEC) &&
-	    (user_attr->type != prov_attr->type)) {
-		FI_INFO(prov, FI_LOG_CORE, "Unsupported endpoint type\n");
-		FI_INFO_CHECK(prov, prov_attr, user_attr, type, FI_TYPE_EP_TYPE);
-		return -FI_ENODATA;
-	}
+	ret = ofi_check_ep_type(prov, prov_attr, user_attr);
+	if (ret)
+		return ret;
 
 	if ((user_attr->protocol != FI_PROTO_UNSPEC) &&
 	    (user_attr->protocol != prov_attr->protocol)) {
@@ -748,7 +758,7 @@ int ofi_check_rx_attr(const struct fi_provider *prov,
 		return -FI_ENODATA;
 	}
 
-	if (prov_attr->op_flags & ~(prov_attr->op_flags)) {
+	if (user_attr->op_flags & ~(prov_attr->op_flags)) {
 		FI_INFO(prov, FI_LOG_CORE, "op_flags not supported\n");
 		FI_INFO_CHECK(prov, prov_attr, user_attr, op_flags,
 			     FI_TYPE_OP_FLAGS);
@@ -851,7 +861,7 @@ int ofi_check_tx_attr(const struct fi_provider *prov,
 		return -FI_ENODATA;
 	}
 
-	if (prov_attr->op_flags & ~(prov_attr->op_flags)) {
+	if (user_attr->op_flags & ~(prov_attr->op_flags)) {
 		FI_INFO(prov, FI_LOG_CORE, "op_flags not supported\n");
 		FI_INFO_CHECK(prov, prov_attr, user_attr, op_flags,
 			     FI_TYPE_OP_FLAGS);
@@ -975,6 +985,15 @@ int ofi_check_info(const struct util_prov *util_prov,
 	if (!user_info)
 		return 0;
 
+	/* Check oft-used endpoint type attribute first to avoid any other
+	 * unnecessary check */
+	if (user_info->ep_attr) {
+		ret = ofi_check_ep_type(prov, prov_info->ep_attr,
+					user_info->ep_attr);
+		if (ret)
+			return ret;
+	}
+
 	if (user_info->caps & ~(prov_info->caps)) {
 		FI_INFO(prov, FI_LOG_CORE, "Unsupported capabilities\n");
 		FI_INFO_CHECK(prov, prov_info, user_info, caps, FI_TYPE_CAPS);
@@ -992,6 +1011,8 @@ int ofi_check_info(const struct util_prov *util_prov,
 	if (!fi_valid_addr_format(prov_info->addr_format,
 				  user_info->addr_format)) {
 		FI_INFO(prov, FI_LOG_CORE, "address format not supported\n");
+		FI_INFO_CHECK(prov, prov_info, user_info, addr_format,
+			      FI_TYPE_ADDR_FORMAT);
 		return -FI_ENODATA;
 	}
 

@@ -19,7 +19,7 @@
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
  * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AWV
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
  * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
  * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <getopt.h>
+#include <ctype.h>
 
 #include <ofi_osd.h>
 
@@ -187,6 +188,7 @@ static int str2addr_format(char *inputstr, uint32_t *value)
 	ORCASE(FI_ADDR_MLX);
 	ORCASE(FI_ADDR_STR);
 	ORCASE(FI_ADDR_PSMX2);
+	ORCASE(FI_ADDR_EFA);
 
 	fprintf(stderr, "error: Unrecognized address format: %s\n", inputstr);
 
@@ -219,6 +221,8 @@ static const char *param_type(enum fi_param_type type)
 		return "String";
 	case FI_PARAM_INT:
 		return "Integer";
+	case FI_PARAM_SIZE_T:
+		return "size_t";
 	case FI_PARAM_BOOL:
 		return "Boolean (0/1, on/off, true/false, yes/no)";
 	default:
@@ -226,29 +230,53 @@ static const char *param_type(enum fi_param_type type)
 	}
 }
 
+static char * get_var_prefix(const char *prov_name)
+{
+	int i;
+	char *prefix;
+
+	if (!prov_name) {
+		return NULL;
+	} else {
+		if (asprintf(&prefix, "FI_%s", prov_name) < 0)
+			return NULL;
+		for (i = 0; i < strlen(prefix); ++i)
+			prefix[i] = toupper((unsigned char) prefix[i]);
+	}
+
+	return prefix;
+}
+
 static int print_vars(void)
 {
 	int ret, count, i;
 	struct fi_param *params;
 	char delim;
+	char *var_prefix;
 
 	ret = fi_getparams(&params, &count);
 	if (ret)
 		return ret;
 
+	var_prefix = get_var_prefix(hints->fabric_attr->prov_name);
+
 	for (i = 0; i < count; ++i) {
+		if (var_prefix && strncmp(params[i].name, var_prefix, strlen(var_prefix)))
+			continue;
+
 		printf("# %s: %s\n", params[i].name, param_type(params[i].type));
 		printf("# %s\n", params[i].help_string);
 
 		if (params[i].value) {
 			delim = strchr(params[i].value, ' ') ? '"' : '\0';
 			printf("%s=%c%s%c\n", params[i].name, delim,
-				params[i].value, delim);
+			       params[i].value, delim);
 		}
 
 		printf("\n");
 	}
 
+	free(var_prefix);
 	fi_freeparams(params);
 	return ret;
 }
@@ -306,7 +334,9 @@ static int run(struct fi_info *hints, char *node, char *port)
 		return ret;
 	}
 
-	if (verbose)
+	if (env)
+		ret = print_vars();
+	else if (verbose)
 		ret = print_long_info(info);
 	else if (list_providers)
 		ret = print_providers(info);
@@ -409,12 +439,8 @@ print_help:
 		}
 	}
 
-	if (env) {
-		ret = print_vars();
-		goto out;
-	}
-
 	ret = run(use_hints ? hints : NULL, node, port);
+
 out:
 	fi_freeinfo(hints);
 	return -ret;

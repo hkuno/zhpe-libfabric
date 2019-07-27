@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="Source Files">
@@ -97,6 +97,18 @@
     <Filter Include="Source Files\prov\tcp\src">
       <UniqueIdentifier>{8c151366-dd08-48d5-aa21-50a500cbde73}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source Files\prov\hook">
+      <UniqueIdentifier>{b85ecf6c-fb76-4d65-a7f0-cba470a0adee}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\prov\hook\src">
+      <UniqueIdentifier>{b4689956-b61f-4c5b-b827-9af0797ea087}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\prov\hook\perf">
+      <UniqueIdentifier>{06bbf944-2165-474f-a574-2e61ec0bec25}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\prov\hook\perf\src">
+      <UniqueIdentifier>{be316a01-6bff-4203-b070-ffaa66bb398e}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\common.c">
@@ -127,6 +139,9 @@
       <Filter>Source Files\src</Filter>
     </ClCompile>
     <ClCompile Include="src\rbtree.c">
+      <Filter>Source Files\src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tree.c">
       <Filter>Source Files\src</Filter>
     </ClCompile>
     <ClCompile Include="src\var.c">
@@ -163,6 +178,9 @@
       <Filter>Source Files\prov\util</Filter>
     </ClCompile>
     <ClCompile Include="prov\util\src\util_mem_monitor.c">
+      <Filter>Source Files\prov\util</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\util\src\util_mr_cache.c">
       <Filter>Source Files\prov\util</Filter>
     </ClCompile>
     <ClCompile Include="src\windows\osd.c">
@@ -273,13 +291,22 @@
     <ClCompile Include="prov\rxd\src\rxd_ep.c">
       <Filter>Source Files\prov\rxd\src</Filter>
     </ClCompile>
+    <ClCompile Include="prov\rxd\src\rxd_msg.c">
+      <Filter>Source Files\prov\rxd\src</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\rxd\src\rxd_tagged.c">
+      <Filter>Source Files\prov\rxd\src</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\rxd\src\rxd_rma.c">
+      <Filter>Source Files\prov\rxd\src</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\rxd\src\rxd_atomic.c">
+      <Filter>Source Files\prov\rxd\src</Filter>
+    </ClCompile>
     <ClCompile Include="prov\rxd\src\rxd_fabric.c">
       <Filter>Source Files\prov\rxd\src</Filter>
     </ClCompile>
     <ClCompile Include="prov\rxd\src\rxd_init.c">
-      <Filter>Source Files\prov\rxd\src</Filter>
-    </ClCompile>
-    <ClCompile Include="prov\rxd\src\rxd_rma.c">
       <Filter>Source Files\prov\rxd\src</Filter>
     </ClCompile>
     <ClCompile Include="prov\rxm\src\rxm_attr.c">
@@ -291,6 +318,9 @@
     <ClCompile Include="prov\rxm\src\rxm_cq.c">
       <Filter>Source Files\prov\rxm\src</Filter>
     </ClCompile>
+    <ClCompile Include="prov\rxm\src\rxm_av.c">
+      <Filter>Source Files\prov\rxm\src</Filter>
+    </ClCompile>
     <ClCompile Include="prov\rxm\src\rxm_domain.c">
       <Filter>Source Files\prov\rxm\src</Filter>
     </ClCompile>
@@ -298,6 +328,9 @@
       <Filter>Source Files\prov\rxm\src</Filter>
     </ClCompile>
     <ClCompile Include="prov\rxm\src\rxm_fabric.c">
+      <Filter>Source Files\prov\rxm\src</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\rxm\src\rxm_atomic.c">
       <Filter>Source Files\prov\rxm\src</Filter>
     </ClCompile>
     <ClCompile Include="prov\rxm\src\rxm_init.c">
@@ -310,9 +343,6 @@
       <Filter>Source Files\src</Filter>
     </ClCompile>
     <ClCompile Include="prov\netdir\src\netdir_addr.c">
-      <Filter>Source Files\prov\netdir\src</Filter>
-    </ClCompile>
-    <ClCompile Include="prov\netdir\src\netdir_attr.c">
       <Filter>Source Files\prov\netdir\src</Filter>
     </ClCompile>
     <ClCompile Include="prov\netdir\src\netdir_cq.c">
@@ -384,16 +414,28 @@
     <ClCompile Include="prov\tcp\src\tcpx_conn_mgr.c">
       <Filter>Source Files\prov\tcp\src</Filter>
     </ClCompile>
+    <ClCompile Include="prov\tcp\src\tcpx_shared_ctx.c">
+      <Filter>Source Files\prov\tcp\src</Filter>
+    </ClCompile>
     <ClCompile Include="prov\tcp\src\tcpx_cq.c">
       <Filter>Source Files\prov\tcp\src</Filter>
     </ClCompile>
     <ClCompile Include="prov\tcp\src\tcpx_domain.c">
       <Filter>Source Files\prov\tcp\src</Filter>
     </ClCompile>
+    <ClCompile Include="prov\tcp\src\tcpx_rma.c">
+      <Filter>Source Files\prov\tcp\src</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\tcp\src\tcpx_msg.c">
+      <Filter>Source Files\prov\tcp\src</Filter>
+    </ClCompile>
     <ClCompile Include="prov\tcp\src\tcpx_ep.c">
       <Filter>Source Files\prov\tcp\src</Filter>
     </ClCompile>
     <ClCompile Include="prov\tcp\src\tcpx_fabric.c">
+      <Filter>Source Files\prov\tcp\src</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\tcp\src\tcpx_eq.c">
       <Filter>Source Files\prov\tcp\src</Filter>
     </ClCompile>
     <ClCompile Include="prov\tcp\src\tcpx_init.c">
@@ -404,6 +446,42 @@
     </ClCompile>
     <ClCompile Include="prov\util\src\util_pep.c">
       <Filter>Source Files\prov\util</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\hook\src\hook.c">
+      <Filter>Source Files\prov\hook\src</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\hook\src\hook_av.c">
+      <Filter>Source Files\prov\hook\src</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\hook\src\hook_cm.c">
+      <Filter>Source Files\prov\hook\src</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\hook\src\hook_cntr.c">
+      <Filter>Source Files\prov\hook\src</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\hook\src\hook_cq.c">
+      <Filter>Source Files\prov\hook\src</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\hook\src\hook_domain.c">
+      <Filter>Source Files\prov\hook\src</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\hook\src\hook_ep.c">
+      <Filter>Source Files\prov\hook\src</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\hook\src\hook_eq.c">
+      <Filter>Source Files\prov\hook\src</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\hook\src\hook_wait.c">
+      <Filter>Source Files\prov\hook\src</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\hook\src\hook_xfer.c">
+      <Filter>Source Files\prov\hook\src</Filter>
+    </ClCompile>
+    <ClCompile Include="prov\hook\perf\src\hook_perf.c">
+      <Filter>Source Files\prov\hook\perf\src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\shared\ofi_str.c">
+      <Filter>Source Files\src</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -419,6 +497,9 @@
     <ClInclude Include="include\ofi_indexer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="include\shared\ofi_str.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="include\ofi_list.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -432,6 +513,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="include\rbtree.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ofi_tree.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="include\rdma\fabric.h">
@@ -560,6 +644,9 @@
     <ClInclude Include="prov\rxd\src\rxd.h">
       <Filter>Source Files\prov\rxd\include</Filter>
     </ClInclude>
+    <ClInclude Include="prov\rxd\src\rxd_proto.h">
+      <Filter>Source Files\prov\rxd\include</Filter>
+    </ClInclude>
     <ClInclude Include="prov\rxm\src\rxm.h">
       <Filter>Source Files\prov\rxm\include</Filter>
     </ClInclude>
@@ -570,9 +657,6 @@
       <Filter>Source Files\prov\netdir\include</Filter>
     </ClInclude>
     <ClInclude Include="prov\netdir\src\netdir_iface.h">
-      <Filter>Source Files\prov\netdir\include</Filter>
-    </ClInclude>
-    <ClInclude Include="prov\netdir\src\netdir_err.h">
       <Filter>Source Files\prov\netdir\include</Filter>
     </ClInclude>
     <ClInclude Include="prov\netdir\src\netdir_ov.h">
@@ -622,6 +706,12 @@
     </ClInclude>
     <ClInclude Include="include\windows\netdb.h">
       <Filter>Header Files\windows</Filter>
+    </ClInclude>
+    <ClInclude Include="prov\hook\src\hook.h">
+      <Filter>Source Files\prov\hook\src</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ofi_hook.h">
+      <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

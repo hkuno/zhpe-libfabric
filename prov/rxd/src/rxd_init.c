@@ -32,15 +32,58 @@
 
 #include <rdma/fi_errno.h>
 
+#include <ofi.h>
 #include <ofi_prov.h>
+
+#include "rxd_proto.h"
 #include "rxd.h"
+
+struct rxd_env rxd_env = {
+	.spin_count	= 1000,
+	.retry		= 1,
+	.max_peers	= 1024,
+	.max_unacked	= 128,
+};
+
+char *rxd_pkt_type_str[] = {
+	RXD_FOREACH_TYPE(OFI_STR)
+};
+
+static void rxd_init_env(void)
+{
+	fi_param_get_int(&rxd_prov, "spin_count", &rxd_env.spin_count);
+	fi_param_get_bool(&rxd_prov, "retry", &rxd_env.retry);
+	fi_param_get_int(&rxd_prov, "max_peers", &rxd_env.max_peers);
+	fi_param_get_int(&rxd_prov, "max_unacked", &rxd_env.max_unacked);
+}
+
+void rxd_info_to_core_mr_modes(uint32_t version, const struct fi_info *hints,
+			       struct fi_info *core_info)
+{
+	/* We handle FI_MR_BASIC and FI_MR_SCALABLE irrespective of version */
+	if (hints && hints->domain_attr &&
+	    (hints->domain_attr->mr_mode & (FI_MR_SCALABLE | FI_MR_BASIC))) {
+		core_info->mode = FI_LOCAL_MR;
+		core_info->domain_attr->mr_mode = hints->domain_attr->mr_mode;
+	} else if (FI_VERSION_LT(version, FI_VERSION(1, 5))) {
+		core_info->mode |= FI_LOCAL_MR;
+		/* Specify FI_MR_UNSPEC (instead of FI_MR_BASIC) so that
+		 * providers that support only FI_MR_SCALABLE aren't dropped */
+		core_info->domain_attr->mr_mode = FI_MR_UNSPEC;
+	} else {
+		core_info->domain_attr->mr_mode |= FI_MR_LOCAL;
+		core_info->domain_attr->mr_mode |= OFI_MR_BASIC_MAP;
+	}
+}
 
 int rxd_info_to_core(uint32_t version, const struct fi_info *rxd_info,
 		     struct fi_info *core_info)
 {
+	rxd_info_to_core_mr_modes(version, rxd_info, core_info);
 	core_info->caps = FI_MSG;
-	core_info->mode = FI_LOCAL_MR;
+	core_info->mode = FI_LOCAL_MR | FI_CONTEXT | FI_MSG_PREFIX;
 	core_info->ep_attr->type = FI_EP_DGRAM;
+
 	return 0;
 }
 
@@ -51,9 +94,20 @@ int rxd_info_to_rxd(uint32_t version, const struct fi_info *core_info,
 	info->mode = rxd_info.mode;
 
 	*info->tx_attr = *rxd_info.tx_attr;
+	info->tx_attr->inject_size = MIN(core_info->ep_attr->max_msg_size,
+			RXD_MAX_MTU_SIZE) - (sizeof(struct rxd_base_hdr) +
+			core_info->ep_attr->msg_prefix_size +
+			sizeof(struct rxd_rma_hdr) + (RXD_IOV_LIMIT *
+			sizeof(struct ofi_rma_iov)) + sizeof(struct rxd_atom_hdr));
+
 	*info->rx_attr = *rxd_info.rx_attr;
 	*info->ep_attr = *rxd_info.ep_attr;
 	*info->domain_attr = *rxd_info.domain_attr;
+	if (core_info->nic) {
+		info->nic = ofi_nic_dup(core_info->nic);
+		if (!info->nic)
+			return -FI_ENOMEM;
+	}
 	return 0;
 }
 
@@ -73,7 +127,7 @@ static void rxd_fini(void)
 struct fi_provider rxd_prov = {
 	.name = OFI_UTIL_PREFIX "rxd",
 	.version = FI_VERSION(RXD_MAJOR_VERSION, RXD_MINOR_VERSION),
-	.fi_version = RXD_FI_VERSION,
+	.fi_version = FI_VERSION(1, 8),
 	.getinfo = rxd_getinfo,
 	.fabric = rxd_fabric,
 	.cleanup = rxd_fini
@@ -83,6 +137,14 @@ RXD_INI
 {
 	fi_param_define(&rxd_prov, "spin_count", FI_PARAM_INT,
 			"Number of iterations to receive packets (0 - infinite)");
+	fi_param_define(&rxd_prov, "retry", FI_PARAM_BOOL,
+			"Toggle packet retrying (default: yes)");
+	fi_param_define(&rxd_prov, "max_peers", FI_PARAM_INT,
+			"Maximum number of peers to track (default: 1024)");
+	fi_param_define(&rxd_prov, "max_unacked", FI_PARAM_INT,
+			"Maximum number of packets to send at once (default: 128)");
+
+	rxd_init_env();
 
 	return &rxd_prov;
 }

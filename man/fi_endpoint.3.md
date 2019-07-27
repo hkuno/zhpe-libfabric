@@ -253,20 +253,31 @@ behavior to discard completed operations is provider specific.
 
 ## fi_ep_bind
 
-fi_ep_bind is used to associate an endpoint with hardware resources.
-The common use of fi_ep_bind is to direct asynchronous operations
-associated with an endpoint to a completion queue.  An endpoint must
-be bound with CQs capable of reporting completions for any
-asynchronous operation initiated on the endpoint.  This is true even
-for endpoints which are configured to suppress successful completions,
-in order that operations that complete in error may be reported to the
-user.  For passive endpoints, this requires binding the endpoint with
-an EQ that supports the communication management (CM) domain.
+fi_ep_bind is used to associate an endpoint with other allocated
+resources, such as completion queues, counters, address vectors,
+event queues, shared contexts, and memory regions.  The type of objects that
+must be bound with an endpoint depend on the endpoint type and its
+configuration.
+
+Passive endpoints must be bound with an EQ that supports connection
+management events.  Connectionless endpoints must be bound to a
+single address vector.  If an endpoint is using a shared transmit
+and/or receive context, the shared contexts must be bound to the endpoint.
+CQs, counters, AV, and shared contexts must be bound to endpoints
+before they are enabled either explicitly or implicitly.
+
+An endpoint must be bound with CQs capable of reporting completions for any
+asynchronous operation initiated on the endpoint.  For example, if the
+endpoint supports any outbound transfers (sends, RMA, atomics, etc.), then
+it must be bound to a completion queue that can report transmit completions.
+This is true even if the endpoint is configured to suppress successful
+completions, in order that operations that complete in error may be reported
+to the user.
 
 An active endpoint may direct asynchronous completions to different
 CQs, based on the type of operation.  This is specified using
-fi_ep_bind flags.  The following flags may be used separately or OR'ed
-together when binding an endpoint to a completion domain CQ.
+fi_ep_bind flags.  The following flags may be OR'ed together when
+binding an endpoint to a completion domain CQ.
 
 *FI_TRANSMIT*
 : Directs the completion of outbound data transfer requests to the
@@ -280,60 +291,27 @@ together when binding an endpoint to a completion domain CQ.
   endpoint.
 
 *FI_SELECTIVE_COMPLETION*
-: By default, data transfer operations generate completion entries
-  into a completion queue after they have successfully completed.
+: By default, data transfer operations write CQ completion entries
+  into the associated completion queue after they have successfully completed.
   Applications can use this bind flag to selectively enable when
   completions are generated.  If FI_SELECTIVE_COMPLETION is specified,
-  data transfer operations will not generate entries for successful
+  data transfer operations will not generate CQ entries for _successful_
   completions unless FI_COMPLETION is set as an operational flag for the
-  given operation.  FI_SELECTIVE_COMPLETION must be OR'ed with FI_TRANSMIT
-  and/or FI_RECV flags.
+  given operation.  Operations that fail asynchronously will still generate
+  completions, even if a completion is not requested.  FI_SELECTIVE_COMPLETION
+  must be OR'ed with FI_TRANSMIT and/or FI_RECV flags.
 
   When FI_SELECTIVE_COMPLETION is set, the user must determine when a
   request that does NOT have FI_COMPLETION set has completed indirectly,
-  usually based on the completion of a subsequent operation.  Use of
-  this flag may improve performance by allowing the provider to avoid
-  writing a completion entry for every operation.
+  usually based on the completion of a subsequent operation or by using
+  completion counters.  Use of this flag may improve performance by allowing
+  the provider to avoid writing a CQ completion entry for every operation.
 
-  Example: An application can selectively generate send completions by
-  using the following general approach:
+  See Notes section below for additional information on how this flag
+  interacts with the FI_CONTEXT and FI_CONTEXT2 mode bits.
 
-```c
-  fi_tx_attr::op_flags = 0; // default - no completion
-  fi_ep_bind(ep, cq, FI_TRANSMIT | FI_SELECTIVE_COMPLETION);
-  fi_send(ep, ...);                   // no completion
-  fi_sendv(ep, ...);                  // no completion
-  fi_sendmsg(ep, ..., FI_COMPLETION); // completion!
-  fi_inject(ep, ...);                 // no completion
-```
-
-  Example: An application can selectively disable send completions by
-  modifying the operational flags:
-
-```c
-  fi_tx_attr::op_flags = FI_COMPLETION; // default - completion
-  fi_ep_bind(ep, cq, FI_TRANSMIT | FI_SELECTIVE_COMPLETION);
-  fi_send(ep, ...);       // completion
-  fi_sendv(ep, ...);      // completion
-  fi_sendmsg(ep, ..., 0); // no completion!
-  fi_inject(ep, ...);     // no completion!
-```
-
-  Example: Omitting FI_SELECTIVE_COMPLETION when binding will generate
-  completions for all non-fi_inject calls:
-
-```c
-  fi_tx_attr::op_flags = 0;
-  fi_ep_bind(ep, cq, FI_TRANSMIT);    // default - completion
-  fi_send(ep, ...);                   // completion
-  fi_sendv(ep, ...);                  // completion
-  fi_sendmsg(ep, ..., 0);             // completion!
-  fi_sendmsg(ep, ..., FI_COMPLETION); // completion
-  fi_sendmsg(ep, ..., FI_INJECT|FI_COMPLETION); // completion!
-  fi_inject(ep, ...);                 // no completion!
-```
-
-An endpoint may also be bound to a fabric counter.  When
+An endpoint may optionally be bound to a completion counter.  Associating
+an endpoint with a counter is in addition to binding the EP with a CQ.  When
 binding an endpoint to a counter, the following flags may be specified.
 
 *FI_SEND*
@@ -347,22 +325,22 @@ binding an endpoint to a counter, the following flags may be specified.
   and normal message operations.
 
 *FI_READ*
-: Increments the specified counter whenever an RMA read or atomic fetch
-  operation initiated from the endpoint has completed successfully or
-  in error.
+: Increments the specified counter whenever an RMA read, atomic fetch,
+  or atomic compare operation initiated from the endpoint has completed
+  successfully or in error.
 
 *FI_WRITE*
-: Increments the specified counter whenever an RMA write or atomic operation
-  initiated from the endpoint has completed successfully or in error.
+: Increments the specified counter whenever an RMA write or base atomic
+  operation initiated from the endpoint has completed successfully or in error.
 
 *FI_REMOTE_READ*
-: Increments the specified counter whenever an RMA read or
-  atomic fetch operation is initiated from a remote endpoint that
+: Increments the specified counter whenever an RMA read, atomic fetch, or
+  atomic compare operation is initiated from a remote endpoint that
   targets the given endpoint.  Use of this flag requires that the
   endpoint be created using FI_RMA_EVENT.
 
 *FI_REMOTE_WRITE*
-: Increments the specified counter whenever an RMA write or
+: Increments the specified counter whenever an RMA write or base
   atomic operation is initiated from a remote endpoint that targets
   the given endpoint.  Use of this flag requires that the
   endpoint be created using FI_RMA_EVENT.
@@ -371,12 +349,6 @@ An endpoint may only be bound to a single CQ or counter for a given
 type of operation.  For example, a EP may not bind to two counters
 both using FI_WRITE.  Furthermore, providers may limit CQ and counter
 bindings to endpoints of the same endpoint type (DGRAM, MSG, RDM, etc.).
-
-Connectionless endpoints must be bound to a single address vector.
-
-If an endpoint is using a shared transmit and/or receive context, the
-shared contexts must be bound to the endpoint.  CQs, counters, AV, and
-shared contexts must be bound to endpoints before they are enabled.
 
 ## fi_scalable_ep_bind
 
@@ -512,6 +484,35 @@ The following option levels and option names and parameters are defined.
   endpoint, except in the case of passive endpoints, in which the size reflects
   the maximum size of the data that may be present as part of a connection
   request event. This option is read only.
+
+- *FI_OPT_BUFFERED_LIMIT - size_t*
+: Defines the maximum size of a buffered message that will be reported
+  to users as part of a receive completion when the FI_BUFFERED_RECV mode
+  is enabled on an endpoint.
+  
+  fi_getopt() will return the currently configured threshold, or the
+  provider's default threshold if one has not be set by the application.
+  fi_setopt() allows an application to configure the threshold.  If the
+  provider cannot support the requested threshold, it will fail the
+  fi_setopt() call with FI_EMSGSIZE.  Calling fi_setopt() with the
+  threshold set to SIZE_MAX will set the threshold to the maximum
+  supported by the provider.  fi_getopt() can then be used to retrieve
+  the set size.
+
+  In most cases, the sending and receiving endpoints must be
+  configured to use the same threshold value, and the threshold must be
+  set prior to enabling the endpoint.
+
+- *FI_OPT_BUFFERED_MIN - size_t*
+: Defines the minimum size of a buffered message that will be reported.
+  Applications would set this to a size that's big enough to decide whether
+  to discard or claim a buffered receive or when to claim a buffered receive
+  on getting a buffered receive completion. The value is typically used by a
+  provider when sending a rendezvous protocol request where it would send
+  atleast FI_OPT_BUFFERED_MIN bytes of application data along with it. A smaller
+  sized renedezvous protocol message usually results in better latency for the
+  overall transfer of a large message.
+
 
 ## fi_rx_size_left (DEPRECATED)
 
@@ -753,7 +754,9 @@ For example, a mem_tag_format of 0x30FF indicates support for 14
 tagged bits, separated into 3 fields.  The first field consists of
 2-bits, the second field 4-bits, and the final field 8-bits.  Valid
 masks for such a tagged field would be a bitwise OR'ing of zero or
-more of the following values: 0x3000, 0x0F00, and 0x00FF.
+more of the following values: 0x3000, 0x0F00, and 0x00FF. The provider
+may not validate the mask provided by the application for performance
+reasons.
 
 By identifying fields within a tag, a provider may be able to optimize
 their search routines.  An application which requests tag fields must
@@ -763,8 +766,9 @@ can request a specific number of fields of a given size.  A provider
 must return a tag format that supports the requested number of fields,
 with each field being at least the size requested, or fail the
 request.  A provider may increase the size of the fields. When reporting
-completions (see FI_CQ_FORMAT_TAGGED), the provider must provide the 
-exact value of the received tag, clearing out any unsupported tag bits.
+completions (see FI_CQ_FORMAT_TAGGED), it is not guaranteed that the
+provider would clear out any unsupported tag bits in the tag field of
+the completion entry.
 
 It is recommended that field sizes be ordered from smallest to
 largest.  A generic, unstructured tag and mask can be achieved by
@@ -869,8 +873,8 @@ section.
 ## msg_order - Message Ordering
 
 Message ordering refers to the order in which transport layer headers
-(as viewed by the application) are processed.  Relaxed message order
-enables data transfers to be sent and received out of order, which may
+(as viewed by the application) are identified and processed.  Relaxed message
+order enables data transfers to be sent and received out of order, which may
 improve performance by utilizing multiple paths through the fabric
 from the initiating endpoint to a target endpoint.  Message order
 applies only between a single source and destination endpoint pair.
@@ -946,6 +950,54 @@ transfer operation in order to guarantee that ordering is met.
   sends, are transmitted in the order submitted relative to other
   message send.  If not set, message sends may be transmitted out of
   order from their submission.
+
+*FI_ORDER_RMA_RAR*
+: RMA read after read.  If set, RMA read operations are
+  transmitted in the order submitted relative to other
+  RMA read operations.  If not set, RMA reads
+  may be transmitted out of order from their submission.
+
+*FI_ORDER_RMA_RAW*
+: RMA read after write.  If set, RMA read operations are
+  transmitted in the order submitted relative to RMA write
+  operations.  If not set, RMA reads may be transmitted ahead
+  of RMA writes.
+
+*FI_ORDER_RMA_WAR*
+: RMA write after read.  If set, RMA write operations are
+  transmitted in the order submitted relative to RMA read
+  operations.  If not set, RMA writes may be transmitted
+  ahead of RMA reads.
+
+*FI_ORDER_RMA_WAW*
+: RMA write after write.  If set, RMA write operations are
+  transmitted in the order submitted relative to other RMA
+  write operations.  If not set, RMA writes may be
+  transmitted out of order from their submission.
+
+*FI_ORDER_ATOMIC_RAR*
+: Atomic read after read.  If set, atomic fetch operations are
+  transmitted in the order submitted relative to other
+  atomic fetch operations.  If not set, atomic fetches
+  may be transmitted out of order from their submission.
+
+*FI_ORDER_ATOMIC_RAW*
+: Atomic read after write.  If set, atomic fetch operations are
+  transmitted in the order submitted relative to atomic update
+  operations.  If not set, atomic fetches may be transmitted ahead
+  of atomic updates.
+
+*FI_ORDER_ATOMIC_WAR*
+: RMA write after read.  If set, atomic update operations are
+  transmitted in the order submitted relative to atomic fetch
+  operations.  If not set, atomic updates may be transmitted
+  ahead of atomic fetches.
+
+*FI_ORDER_ATOMIC_WAW*
+: RMA write after write.  If set, atomic update operations are
+  transmitted in the order submitted relative to other atomic
+  update operations.  If not atomic updates may be
+  transmitted out of order from their submission.
 
 ## comp_order - Completion Ordering
 
@@ -1055,12 +1107,18 @@ section.
 For a description of message ordering, see the msg_order field in
 the _Transmit Context Attribute_ section.  Receive context message
 ordering defines the order in which received transport message headers
-are processed when received by an endpoint.
+are processed when received by an endpoint.  When ordering is set, it
+indicates that message headers will be processed in order, based on
+how the transmit side has identified the messages. Typically, this means
+that messages will be handled in order based on a message level sequence
+number.
 
 The following ordering flags, as defined for transmit ordering, also
 apply to the processing of received operations: FI_ORDER_NONE,
 FI_ORDER_RAR, FI_ORDER_RAW, FI_ORDER_RAS, FI_ORDER_WAR, FI_ORDER_WAW,
-FI_ORDER_WAS, FI_ORDER_SAR, FI_ORDER_SAW, and FI_ORDER_SAS.
+FI_ORDER_WAS, FI_ORDER_SAR, FI_ORDER_SAW, FI_ORDER_SAS, FI_ORDER_RMA_RAR,
+FI_ORDER_RMA_RAW, FI_ORDER_RMA_WAR, FI_ORDER_RMA_WAW, FI_ORDER_ATOMIC_RAR,
+FI_ORDER_ATOMIC_RAW, FI_ORDER_ATOMIC_WAR, and FI_ORDER_ATOMIC_WAW.
 
 ## comp_order - Completion Ordering
 
@@ -1303,62 +1361,32 @@ value of transmit or receive context attributes of an endpoint.
   FI_OPT_MIN_MULTI_RECV).
 
 *FI_COMPLETION*
-: Indicates that a completion entry should be generated for data
-  transfer operations. This flag only applies to operations issued on
-  endpoints that were bound to a CQ or counter with the 
-  FI_SELECTIVE_COMPLETION flag. See the fi_ep_bind section above for more
-  detail.
+: Indicates that a completion queue entry should be written for data
+  transfer operations. This flag only applies to operations issued on an
+  endpoint that was bound to a completion queue with the
+  FI_SELECTIVE_COMPLETION flag set, otherwise, it is ignored.  See the
+  fi_ep_bind section above for more detail.
 
 *FI_INJECT_COMPLETE*
 : Indicates that a completion should be generated when the
-  source buffer(s) may be reused.  A completion guarantees that
-  the buffers will not be read from again and the application may
-  reclaim them.  No other guarantees are made with respect to the
-  state of the operation.
-
-  Note: This flag is used to control when a completion entry is inserted
-  into a completion queue.  It does not apply to operations that do not
-  generate a completion queue entry, such as the fi_inject operation, and
-  is not subject to the inject_size message limit restriction.
+  source buffer(s) may be reused.  See [`fi_cq`(3)](fi_cq.3.html) for
+  additional details on completion semantics.
 
 *FI_TRANSMIT_COMPLETE*
 : Indicates that a completion should be generated when the transmit
-  operation has completed relative to the local provider.  The exact
-  behavior is dependent on the endpoint type.
-
-  For reliable endpoints:
-
-  Indicates that a completion should be generated when the operation has
-  been delivered to the peer endpoint.  A completion guarantees that the
-  operation is no longer dependent on the fabric or local resources.  The
-  state of the operation at the peer endpoint is not defined.
-
-  For unreliable endpoints:
-
-  Indicates that a completion should be generated when the operation has
-  been delivered to the fabric.  A completion guarantees that the
-  operation is no longer dependent on local resources.  The state of the
-  operation within the fabric is not defined.
+  operation has completed relative to the local provider.  See
+  [`fi_cq`(3)](fi_cq.3.html) for additional details on completion semantics.
 
 *FI_DELIVERY_COMPLETE*
-: Indicates that a completion should not be generated until an operation
-  has been processed by the destination endpoint(s).  A completion
-  guarantees that the result of the operation is available.
-
-  This completion mode applies only to reliable endpoints.  For operations
-  that return data to the initiator, such as RMA read or atomic-fetch,
-  the source endpoint is also considered a destination endpoint.  This is the
-  default completion mode for such operations.
+: Indicates that a completion should be generated when the operation has been
+  processed by the destination endpoint(s).  See [`fi_cq`(3)](fi_cq.3.html)
+  for additional details on completion semantics.
 
 *FI_COMMIT_COMPLETE*
 : Indicates that a completion should not be generated (locally or at the
   peer) until the result of an operation have been made persistent.
-  A completion guarantees that the result is both available and durable,
-  in the case of power failure.
-
-  This completion mode applies only to operations that target persistent
-  memory regions over reliable endpoints.  This completion mode is
-  experimental.
+  See [`fi_cq`(3)](fi_cq.3.html) for additional details on completion
+  semantics.
 
 *FI_MULTICAST*
 : Indicates that data transfers will target multicast addresses by default.
@@ -1370,12 +1398,12 @@ value of transmit or receive context attributes of an endpoint.
 Users should call fi_close to release all resources allocated to the
 fabric endpoint.
 
-Endpoints allocated with the FI_CONTEXT mode set must typically
-provide struct fi_context as their per operation context parameter.
+Endpoints allocated with the FI_CONTEXT or FI_CONTEXT2 mode bits set must
+typically provide struct fi_context(2) as their per operation context parameter.
 (See fi_getinfo.3 for details.)  However, when FI_SELECTIVE_COMPLETION is
-enabled to suppress completion entries, and an operation is initiated
-without FI_COMPLETION flag set, then the context parameter is ignored.
-An application does not need to pass in a valid struct fi_context into
+enabled to suppress CQ completion entries, and an operation is initiated
+without the FI_COMPLETION flag set, then the context parameter is ignored.
+An application does not need to pass in a valid struct fi_context(2) into
 such data transfers.
 
 Operations that complete in error that are not associated with valid
@@ -1388,8 +1416,7 @@ both a counter and completion queue.  When combined with using
 selective completions, this allows an application to use counters to
 track successful completions, with a CQ used to report errors.
 Operations that complete with an error increment the error counter
-and generate a completion event.  The generation of entries going to
-the CQ can then be controlled using FI_SELECTIVE_COMPLETION.
+and generate a CQ completion event.
 
 As mentioned in fi_getinfo(3), the ep_attr structure can be used to
 query providers that support various endpoint attributes. fi_getinfo
@@ -1427,6 +1454,7 @@ Fabric errno values are defined in `rdma/fi_errno.h`.
 
 [`fi_getinfo`(3)](fi_getinfo.3.html),
 [`fi_domain`(3)](fi_domain.3.html),
+[`fi_cq`(3)](fi_cq.3.html)
 [`fi_msg`(3)](fi_msg.3.html),
 [`fi_tagged`(3)](fi_tagged.3.html),
 [`fi_rma`(3)](fi_rma.3.html)

@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2014 Intel Corporation. All rights reserved.
- * Copyright (c) 2017-2018 Hewlett Packard Enterprise Development LP.  All rights reserved.
+ * Copyright (c) 2017-2019 Hewlett Packard Enterprise Development LP.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -63,20 +63,20 @@ struct zhpe_rx_ctx *zhpe_rx_ctx_alloc(const struct fi_rx_attr *attr,
 	rx_ctx->attr = *attr;
 
 	rx_ctx->domain = domain;
-	rc = util_buf_pool_create(&rx_ctx->rx_user_free.rx_entry_pool,
-				  sizeof(struct zhpe_rx_entry), L1_CACHE_BYTES,
-				  0, 64);
+	rc = ofi_bufpool_create(&rx_ctx->rx_user_free.rx_entry_pool,
+				sizeof(struct zhpe_rx_entry), L1_CACHE_BYTES,
+				0, 64, 0);
 	if (rc < 0) {
 		rx_ctx->rx_user_free.rx_entry_pool = NULL;
-		ZHPE_LOG_ERROR("util_buf_pool_create() error %d\n", rc);
+		ZHPE_LOG_ERROR("ofi_bufpool_create() error %d\n", rc);
 		goto err;
 	}
-	rc = util_buf_pool_create(&rx_ctx->rx_prog_free.rx_entry_pool,
-				  sizeof(struct zhpe_rx_entry), L1_CACHE_BYTES,
-				  0, 64);
+	rc = ofi_bufpool_create(&rx_ctx->rx_prog_free.rx_entry_pool,
+				sizeof(struct zhpe_rx_entry), L1_CACHE_BYTES,
+				0, 64, 0);
 	if (rc < 0) {
 		rx_ctx->rx_prog_free.rx_entry_pool = NULL;
-		ZHPE_LOG_ERROR("util_buf_pool_create() error %d\n", rc);
+		ZHPE_LOG_ERROR("ofi_bufpool_create() error %d\n", rc);
 		goto err;
 	}
 	if (attr->total_buffered_recv > 0) {
@@ -124,17 +124,17 @@ void zhpe_rx_ctx_free(struct zhpe_rx_ctx *rx_ctx)
 	{
 		rx_entry = container_of(next, struct zhpe_rx_entry,
 					rx_match_next);
-		util_buf_release(rx_ctx->rx_user_free.rx_entry_pool, rx_entry);
+		ofi_buf_free(rx_entry);
 	}
 	while ((next = zhpeu_atm_fifo_pop(&rx_ctx->rx_prog_free.rx_fifo_list)))
 	{
 		rx_entry = container_of(next, struct zhpe_rx_entry,
 					rx_match_next);
-		util_buf_release(rx_ctx->rx_prog_free.rx_entry_pool, rx_entry);
+		ofi_buf_free(rx_entry);
 	}
 
-	util_buf_pool_destroy(rx_ctx->rx_user_free.rx_entry_pool);
-	util_buf_pool_destroy(rx_ctx->rx_prog_free.rx_entry_pool);
+	ofi_bufpool_destroy(rx_ctx->rx_user_free.rx_entry_pool);
+	ofi_bufpool_destroy(rx_ctx->rx_prog_free.rx_entry_pool);
 	zhpe_slab_destroy(&rx_ctx->eager);
 	mutex_destroy(&rx_ctx->mutex);
 

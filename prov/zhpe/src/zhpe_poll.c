@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2014 Intel Corporation, Inc.  All rights reserved.
- * Copyright (c) 2017-2018 Hewlett Packard Enterprise Development LP.  All rights reserved.
+ * Copyright (c) 2017-2019 Hewlett Packard Enterprise Development LP.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -223,7 +223,7 @@ int zhpe_poll_open(struct fid_domain *domain, struct fi_poll_attr *attr,
 	if (attr && zhpe_poll_verify_attr(attr))
 		return -FI_EINVAL;
 
-	dom = container_of(domain, struct zhpe_domain, dom_fid);
+	dom = container_of(domain, struct zhpe_domain, util_domain.domain_fid);
 	poll = calloc(1, sizeof(*poll));
 	if (!poll)
 		return -FI_ENOMEM;

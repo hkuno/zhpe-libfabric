@@ -361,6 +361,13 @@ this routine.  Use of this call is required if the FI_RAW_MR mode bit has
 been set by the provider; however, it is safe to use this call with any
 memory region.
 
+On input, the key_size parameter should indicate the size of the raw_key
+buffer.  If the actual key is larger than what can fit into the buffer, it
+will return -FI_ETOOSMALL.  On output, key_size is set to the size of the
+buffer needed to store the key, which may be larger than the input value.
+The needed key_size can also be obtained through the mr_key_size domain
+attribute (fi_domain_attr) field.
+
 A raw key must be mapped by a peer before it can be used in data transfer
 operations.  See fi_mr_map_raw below.
 
@@ -440,6 +447,7 @@ struct fi_mr_attr {
 	const struct iovec *mr_iov;
 	size_t             iov_count;
 	uint64_t           access;
+	uint64_t           offset;
 	uint64_t           requested_key;
 	void               *context;
 	size_t             auth_key_size;
@@ -459,33 +467,49 @@ as the mr_iov_limit domain attribute.  See `fi_domain(3)`.
 
 ## access
 
-Indicates the type of access that the local or a peer endpoint has to
-the registered memory region.  Supported access permissions are the
+Indicates the type of _operations_ that the local or a peer endpoint may
+perform on registered memory region.  Supported access permissions are the
 bitwise OR of the following flags:
 
 *FI_SEND*
 : The memory buffer may be used in outgoing message data transfers.  This
-  includes fi_msg and fi_tagged operations.
+  includes fi_msg and fi_tagged send operations.
 
 *FI_RECV*
 : The memory buffer may be used to receive inbound message transfers.
-  This includes fi_msg and fi_tagged operations.
+  This includes fi_msg and fi_tagged receive operations.
 
 *FI_READ*
 : The memory buffer may be used as the result buffer for RMA read
-  and atomic operations on the initiator side.
+  and atomic operations on the initiator side.  Note that from the
+  viewpoint of the application, the memory buffer is being written
+  into by the network.
 
 *FI_WRITE*
 : The memory buffer may be used as the source buffer for RMA write
-  and atomic operations on the initiator side.
+  and atomic operations on the initiator side.  Note that from the
+  viewpoint of the application, the endpoint is reading from the memory
+  buffer and copying the data onto the network.
 
 *FI_REMOTE_READ*
 : The memory buffer may be used as the source buffer of an RMA read
-  operation on the target side.
+  operation on the target side.  The contents of the memory buffer
+  are not modified by such operations.
 
 *FI_REMOTE_WRITE*
 : The memory buffer may be used as the target buffer of an RMA write
-  or atomic operation.
+  or atomic operation.  The contents of the memory buffer may be
+  modified as a result of such operations.
+
+Note that some providers may not enforce fine grained access permissions.
+For example, a memory region registered for FI_WRITE access may also
+behave as if FI_SEND were specified as well.  Relaxed enforcement of
+such access is permitted, though not guaranteed, provided security is
+maintained.
+
+## offset
+
+The offset field is reserved for future use and must be 0.
 
 ## requested_key
 
@@ -582,6 +606,47 @@ Fabric errno values are defined in
 
 *-FI_EBADFLAGS*
 : Returned if the specified flags are not supported by the provider.
+
+# MEMORY REGISTRATION CACHE
+
+Many hardware NICs accessed by libfabric require that data buffers be
+registered with the hardware while the hardware accesses it.  This ensures
+that the virtual to physical address mappings for those buffers do not change
+while the transfer is ocurring.  The performance impact of registering
+memory regions can be significant.  As a result, some providers make use
+of a registration cache, particularly when working with applications that
+are unable to manage their own network buffers.  A registration cache avoids
+the overhead of registering and unregistering a data buffer with each
+transfer.
+
+As a general rule, if hardware requires the FI_MR_LOCAL mode bit described
+above, but this is not supported by the application, a memory registration
+cache _may_ be in use.  The following environment variables may be used to
+configure registration caches.
+
+*FI_MR_CACHE_MAX_SIZE*
+: This defines the total number of bytes for all memory regions that may
+  be tracked by the cache.  If not set, the cache has no limit on how many
+  bytes may be registered and cached.  Setting this will reduce the
+  amount of memory that is not actively being used as part of a data transfer
+  that is registered with a provider.  By default, the cache size is
+  unlimited.
+
+*FI_MR_CACHE_MAX_COUNT*
+: This defines the total number of memory regions that may be registered with
+  the cache.  If not set, a default limit is chosen.  Setting this will reduce
+  the number of regions that are registered, regardless of their size, which
+  are not actively being used as part of a data transfer.  Setting this to
+  zero will disable registration caching.
+
+*FI_MR_CACHE_MERGE_REGIONS*
+: If this variable is set to true, yes, or 1, then memory regions that are
+  adjacent or overlapping will be merged into a single larger region.  Merging
+  regions reduces the total cache size and the number of regions managed by
+  the cache.  However, merging regions can have a negative impact on
+  performance if a large number of adjacent regions are sent as separate data
+  transfers (such as sending elements of an array to peer(s)), and the larger
+  region is access infrequently.  By default merging regions is disabled.
 
 # SEE ALSO
 

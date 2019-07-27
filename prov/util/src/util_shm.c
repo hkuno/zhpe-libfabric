@@ -64,7 +64,7 @@ int smr_create(const struct fi_provider *prov, struct smr_map *map,
 	inject_pool_offset = resp_queue_offset + sizeof(struct smr_resp_queue) +
 			sizeof(struct smr_resp) * attr->tx_count;
 	peer_addr_offset = inject_pool_offset + sizeof(struct smr_inject_pool) +
-			sizeof(struct smr_inject_buf) * attr->rx_count;
+			sizeof(struct smr_inject_pool_entry) * attr->rx_count;
 	name_offset = peer_addr_offset + sizeof(struct smr_addr) * SMR_MAX_PEERS;
 	total_size = name_offset + strlen(attr->name) + 1;
 	total_size = roundup_power_of_two(total_size);
@@ -88,7 +88,6 @@ int smr_create(const struct fi_provider *prov, struct smr_map *map,
 		goto err2;
 	}
 
-	/* TODO: If we unlink here, can other processes open the region? */
 	close(fd);
 
 	*smr = mapped_addr;
@@ -129,6 +128,7 @@ err1:
 void smr_free(struct smr_region *smr)
 {
 	shm_unlink(smr_name(smr));
+	munmap(smr, smr->total_size);
 }
 
 int smr_map_create(const struct fi_provider *prov, int peer_count,
@@ -198,6 +198,7 @@ void smr_map_to_endpoint(struct smr_region *region, int index)
 
 	strncpy(smr_peer_addr(region)[index].name,
 		region->map->peers[index].peer.name, SMR_NAME_SIZE);
+	smr_peer_addr(region)[index].name[SMR_NAME_SIZE - 1] = '\0';
 	if (region->map->peers[index].peer.addr == FI_ADDR_UNSPEC)
 		return;
 

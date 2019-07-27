@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2013-2017 Intel Corporation. All rights reserved.
  * Copyright (c) 2016 Cisco Systems, Inc. All rights reserved.
- * Copyright (c) 2017-2018 Hewlett Packard Enterprise Development LP.  All rights reserved.
+ * Copyright (c) 2017-2019 Hewlett Packard Enterprise Development LP.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -69,6 +69,17 @@ GNI_INI ;
 VERBS_INI ;
 #else
 #  define VERBS_INIT NULL
+#endif
+
+#if (HAVE_EFA) && (HAVE_EFA_DL)
+#  define EFA_INI FI_EXT_INI
+#  define EFA_INIT NULL
+#elif (HAVE_EFA)
+#  define EFA_INI INI_SIG(fi_efa_ini)
+#  define EFA_INIT fi_efa_ini()
+EFA_INI ;
+#else
+#  define EFA_INIT NULL
 #endif
 
 #if (HAVE_PSM) && (HAVE_PSM_DL)
@@ -217,5 +228,47 @@ ZHPE_INI ;
 #else
 #  define ZHPE_INIT NULL
 #endif
+
+#if (HAVE_MRAIL) && (HAVE_MRAIL_DL)
+#  define MRAIL_INI FI_EXT_INI
+#  define MRAIL_INIT NULL
+#elif (HAVE_MRAIL)
+#  define MRAIL_INI INI_SIG(fi_mrail_ini)
+#  define MRAIL_INIT fi_mrail_ini()
+MRAIL_INI ;
+#else
+#  define MRAIL_INIT NULL
+#endif
+
+#if (HAVE_RSTREAM) && (HAVE_RSTREAM_DL)
+#  define RSTREAM_INI FI_EXT_INI
+#  define RSTREAM_INIT NULL
+#elif (HAVE_RSTREAM)
+#  define RSTREAM_INI INI_SIG(fi_rstream_ini)
+#  define RSTREAM_INIT fi_rstream_ini()
+RSTREAM_INI ;
+#else
+#  define RSTREAM_INIT NULL
+#endif
+
+#if(HAVE_PERF)
+#  define HOOK_PERF_INI INI_SIG(fi_hook_perf_ini)
+#  define HOOK_PERF_INIT fi_hook_perf_ini()
+HOOK_PERF_INI ;
+#else
+#  define HOOK_PERF_INIT NULL
+#endif
+
+#if(HAVE_HOOK_DEBUG)
+#  define HOOK_DEBUG_INI INI_SIG(fi_debug_hook_ini)
+#  define HOOK_DEBUG_INIT fi_debug_hook_ini()
+HOOK_DEBUG_INI ;
+#else
+#  define HOOK_DEBUG_INIT NULL
+#endif
+
+#  define HOOK_NOOP_INI INI_SIG(fi_hook_noop_ini)
+#  define HOOK_NOOP_INIT fi_hook_noop_ini()
+HOOK_NOOP_INI ;
 
 #endif /* _OFI_PROV_H_ */

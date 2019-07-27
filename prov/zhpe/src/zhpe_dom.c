@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2014 Intel Corporation, Inc.  All rights reserved.
- * Copyright (c) 2017-2018 Hewlett Packard Enterprise Development LP.  All rights reserved.
+ * Copyright (c) 2017-2019 Hewlett Packard Enterprise Development LP.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -168,7 +168,7 @@ static int zhpe_dom_close(struct fid *fid)
 {
 	struct zhpe_domain *dom;
 
-	dom = container_of(fid, struct zhpe_domain, dom_fid.fid);
+	dom = container_of(fid, struct zhpe_domain, util_domain.domain_fid.fid);
 	if (dom->cache_inited) {
 		fastlock_acquire(&dom->cache_lock);
 		while (ofi_mr_cache_flush(&dom->cache));
@@ -384,7 +384,8 @@ static int zhpe_regattr(struct fid *fid, const struct fi_mr_attr *attr,
 		goto done;
 	}
 
-	domain = container_of(fid, struct zhpe_domain, dom_fid.fid);
+	domain = container_of(fid, struct zhpe_domain,
+			      util_domain.domain_fid.fid);
 
 	key = attr->requested_key;
 	if (domain->attr.mr_mode & FI_MR_PROV_KEY)
@@ -406,7 +407,7 @@ static int zhpe_regattr(struct fid *fid, const struct fi_mr_attr *attr,
 	if (domain->mr_eq) {
 		zmr->mr_fid.fid.context = attr->context;
 		eq_entry.context = attr->context;
-		eq_entry.fid = &domain->dom_fid.fid;
+		eq_entry.fid = &domain->util_domain.domain_fid.fid;
 		ret = zhpe_eq_report_event(domain->mr_eq, FI_MR_COMPLETE,
 					   &eq_entry, sizeof(eq_entry), 0);
 		if (ret < 0) {
@@ -453,7 +454,7 @@ static int zhpe_dom_bind(struct fid *fid, struct fid *bfid, uint64_t flags)
 	struct zhpe_domain *dom;
 	struct zhpe_eq *eq;
 
-	dom = container_of(fid, struct zhpe_domain, dom_fid.fid);
+	dom = container_of(fid, struct zhpe_domain, util_domain.domain_fid.fid);
 	eq = container_of(bfid, struct zhpe_eq, eq.fid);
 
 	if (dom->eq)
@@ -470,7 +471,7 @@ static int zhpe_dom_ctrl(struct fid *fid, int command, void *arg)
 {
 	struct zhpe_domain *dom;
 
-	dom = container_of(fid, struct zhpe_domain, dom_fid.fid);
+	dom = container_of(fid, struct zhpe_domain, util_domain.domain_fid.fid);
 
 	switch (command) {
 	/* FIXME: Revisit deferred work. */
@@ -563,22 +564,23 @@ int zhpe_domain(struct fid_fabric *fabric, struct fi_info *info,
 		goto err0;
 	}
 
-	fastlock_init(&zhpe_domain->lock);
-	zhpe_domain->monitor_fd = -1;
+	ret = ofi_domain_init(fabric, info, &zhpe_domain->util_domain, context);
+	if (ret)
+		goto err1;
 
 	if (info)
 		zhpe_domain->info = *info;
 	else {
 		ret = -FI_EINVAL;
 		ZHPE_LOG_ERROR("invalid fi_info\n");
-		goto err1;
+		goto err1_5;
 	}
 
-	zhpe_domain->dom_fid.fid.fclass = FI_CLASS_DOMAIN;
-	zhpe_domain->dom_fid.fid.context = context;
-	zhpe_domain->dom_fid.fid.ops = &zhpe_dom_fi_ops;
-	zhpe_domain->dom_fid.ops = &zhpe_dom_ops;
-	zhpe_domain->dom_fid.mr = &zhpe_dom_mr_ops;
+	zhpe_domain->util_domain.domain_fid.fid.fclass = FI_CLASS_DOMAIN;
+	zhpe_domain->util_domain.domain_fid.fid.context = context;
+	zhpe_domain->util_domain.domain_fid.fid.ops = &zhpe_dom_fi_ops;
+	zhpe_domain->util_domain.domain_fid.ops = &zhpe_dom_ops;
+	zhpe_domain->util_domain.domain_fid.mr = &zhpe_dom_mr_ops;
 
 	if (!info->domain_attr ||
 	    info->domain_attr->data_progress == FI_PROGRESS_UNSPEC)
@@ -587,7 +589,7 @@ int zhpe_domain(struct fid_fabric *fabric, struct fi_info *info,
 		zhpe_domain->progress_mode = info->domain_attr->data_progress;
 
 	zhpe_domain->fab = fab;
-	*dom = &zhpe_domain->dom_fid;
+	*dom = &zhpe_domain->util_domain.domain_fid;
 
 	if (info->domain_attr)
 		zhpe_domain->attr = *(info->domain_attr);
@@ -628,6 +630,10 @@ int zhpe_domain(struct fid_fabric *fabric, struct fi_info *info,
 	rbtDelete(zhpe_domain->mr_tree);
  err2:
 	zhpe_pe_finalize(zhpe_domain->pe);
+
+ err1_5:
+	if (ofi_domain_close(&zhpe_domain->util_domain))
+		ZHPE_LOG_ERROR("ofi_domain_close fails");
  err1:
 	fastlock_destroy(&zhpe_domain->lock);
 	free(zhpe_domain);

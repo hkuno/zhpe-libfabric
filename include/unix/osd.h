@@ -37,11 +37,12 @@
 
 #include <stdlib.h>
 #include <unistd.h>
-#include <errno.h>
 #include <complex.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <sys/uio.h>
+#include <rdma/fi_errno.h>
+
 
 /* MSG_NOSIGNAL doesn't exist on OS X */
 #ifndef MSG_NOSIGNAL
@@ -75,6 +76,8 @@
 #define OFI_SOCK_TRY_CONN_AGAIN(err)	\
 	((err) == EINPROGRESS)
 
+#define OFI_MAX_SOCKET_BUF_SIZE	SIZE_MAX
+
 struct util_shm
 {
 	int		shared_fd;
@@ -106,6 +109,11 @@ static inline int ofi_getsockname(SOCKET fd, struct sockaddr *addr, socklen_t *l
 	return getsockname(fd, addr, len);
 }
 
+static inline int ofi_getpeername(SOCKET fd, struct sockaddr *addr, socklen_t *len)
+{
+	return getpeername(fd, addr, len);
+}
+
 static inline SOCKET ofi_socket(int domain, int type, int protocol)
 {
 	return socket(domain, type, protocol);
@@ -127,10 +135,10 @@ static inline ssize_t ofi_recv_socket(SOCKET fd, void *buf, size_t count,
 	return recv(fd, buf, count, flags);
 }
 
-static inline ssize_t ofi_recvfrom_socket(SOCKET fd, const void *buf, size_t count, int flags,
-					  const struct sockaddr *to, socklen_t tolen)
+static inline ssize_t ofi_recvfrom_socket(SOCKET fd, void *buf, size_t count, int flags,
+					  struct sockaddr *from, socklen_t *fromlen)
 {
-	return sendto(fd, buf, count, flags, to, tolen);
+	return recvfrom(fd, buf, count, flags, from, fromlen);
 }
 
 static inline ssize_t ofi_send_socket(SOCKET fd, const void *buf, size_t count,
@@ -155,6 +163,30 @@ static inline ssize_t ofi_readv_socket(SOCKET fd, struct iovec *iov, int iov_cnt
 	return readv(fd, iov, iov_cnt);
 }
 
+static inline ssize_t
+ofi_sendmsg_tcp(SOCKET fd, const struct msghdr *msg, int flags)
+{
+	return sendmsg(fd, msg, flags);
+}
+
+static inline ssize_t
+ofi_sendmsg_udp(SOCKET fd, const struct msghdr *msg, int flags)
+{
+	return sendmsg(fd, msg, flags);
+}
+
+static inline ssize_t
+ofi_recvmsg_tcp(SOCKET fd, struct msghdr *msg, int flags)
+{
+	return recvmsg(fd, msg, flags);
+}
+
+static inline ssize_t
+ofi_recvmsg_udp(SOCKET fd, struct msghdr *msg, int flags)
+{
+	return recvmsg(fd, msg, flags);
+}
+
 static inline int ofi_shutdown(SOCKET socket, int how)
 {
 	return shutdown(socket, how);
@@ -177,9 +209,17 @@ static inline int ofi_syserr(void)
 	return errno;
 }
 
-static inline int ofi_sysconf(int name)
+/* sysconf can return -1 and not change errno */
+static inline long ofi_sysconf(int name)
 {
-	return sysconf(name);
+	int ret;
+
+	errno = 0;
+	ret = sysconf(name);
+	if (ret <= 0)
+		return errno ? -errno : -FI_EOTHER;
+
+	return ret;
 }
 
 /* OSX has no such definition. So, add it manually */
@@ -278,7 +318,5 @@ ofi_cpuid(unsigned func, unsigned subfunc, unsigned cpuinfo[4])
 #define ofi_sfence()
 
 #endif /* defined(__x86_64__) || defined(__amd64__) */
-
-
 
 #endif /* _FI_UNIX_OSD_H_ */

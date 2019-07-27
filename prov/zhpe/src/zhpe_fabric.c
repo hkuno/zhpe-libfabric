@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2014 Intel Corporation, Inc.  All rights reserved.
  * Copyright (c) 2016 Cisco Systems, Inc.  All rights reserved.
- * Copyright (c) 2017-2018 Hewlett Packard Enterprise Development LP.  All rights reserved.
+ * Copyright (c) 2017-2019 Hewlett Packard Enterprise Development LP.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -49,9 +49,6 @@ int zhpe_eq_def_sz = ZHPE_EQ_DEF_SZ;
 char *zhpe_pe_affinity_str = NULL;
 size_t zhpe_ep_max_eager_sz = ZHPE_EP_MAX_EAGER_SZ;
 int zhpe_mr_cache_enable = ZHPE_MR_CACHE_ENABLE;
-int zhpe_mr_cache_merge_regions = ZHPE_MR_CACHE_MERGE_REGIONS;
-size_t zhpe_mr_cache_max_cnt = ZHPE_MR_CACHE_MAX_CNT;
-size_t zhpe_mr_cache_max_size = ZHPE_MR_CACHE_MAX_SIZE;
 
 const struct fi_fabric_attr zhpe_fabric_attr = {
 	.fabric = NULL,
@@ -270,7 +267,8 @@ int zhpe_verify_info(uint32_t api_version, const struct fi_info *hints,
 
 	if (hints->domain_attr && hints->domain_attr->domain) {
 		domain = container_of(hints->domain_attr->domain,
-				      struct zhpe_domain, dom_fid);
+				      struct zhpe_domain,
+				      util_domain.domain_fid);
 		if (!zhpe_dom_check_list(domain)) {
 			ZHPE_LOG_DBG("no matching domain\n");
 			return -FI_ENODATA;
@@ -613,12 +611,6 @@ static void zhpe_read_default_params()
 				    &zhpe_ep_max_eager_sz);
 		fi_param_get_bool(&zhpe_prov, "mr_cache_enable",
 				  &zhpe_mr_cache_enable);
-		fi_param_get_bool(&zhpe_prov, "mr_cache_merge_regions",
-				  &zhpe_mr_cache_merge_regions);
-		fi_param_get_size_t(&zhpe_prov, "mr_cache_max_cnt",
-				    &zhpe_mr_cache_max_cnt);
-		fi_param_get_size_t(&zhpe_prov, "mr_cache_max_size",
-				    &zhpe_mr_cache_max_size);
 
 		read_default_params = 1;
 	}
@@ -913,15 +905,6 @@ ZHPE_INI
 
 	fi_param_define(&zhpe_prov, "mr_cache_max_size", FI_PARAM_SIZE_T,
 			"Maximum total size of cached registrations");
-
-#ifdef HAVE_ZHPE_STATS
-	fi_param_define(&zhpe_prov, "stats_dir", FI_PARAM_STRING,
-			"Enables simulator statistics collection into the"
-			" specified directory.");
-
-	fi_param_define(&zhpe_prov, "stats_unique", FI_PARAM_STRING,
-			"Uniquifier for filenames in stats directory.");
-#endif
 
 	fastlock_init(&zhpe_list_lock);
 

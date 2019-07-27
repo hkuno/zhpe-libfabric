@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2013-2014 Intel Corporation. All rights reserved.
  * Copyright (c) 2016 Cisco Systems, Inc. All rights reserved.
- * Copyright (c) 2017-2018 Hewlett Packard Enterprise Development LP.  All rights reserved.
+ * Copyright (c) 2017-2019 Hewlett Packard Enterprise Development LP.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -1122,7 +1122,7 @@ static void zhpe_set_domain_attr(uint32_t api_version, void *src_addr,
 	struct zhpe_domain *domain;
 
 	domain = zhpe_dom_list_head();
-	attr->domain = domain ? &domain->dom_fid : NULL;
+	attr->domain = domain ? &domain->util_domain.domain_fid : NULL;
 	if (!hint_attr) {
 		*attr = zhpe_domain_attr;
 		if (FI_VERSION_LT(api_version, FI_VERSION(1, 5)))
@@ -1134,7 +1134,8 @@ static void zhpe_set_domain_attr(uint32_t api_version, void *src_addr,
 
 	if (hint_attr->domain) {
 		domain = container_of(hint_attr->domain,
-				      struct zhpe_domain, dom_fid);
+				      struct zhpe_domain,
+				      util_domain.domain_fid);
 		*attr = domain->attr;
 		attr->domain = hint_attr->domain;
 		goto out;
@@ -1323,7 +1324,8 @@ int zhpe_alloc_endpoint(struct fid_domain *domain, struct fi_info *info,
 	struct zhpe_rx_ctx *rx_ctx;
 	struct zhpe_domain *zhpe_dom;
 
-	zhpe_dom = container_of(domain, struct zhpe_domain, dom_fid);
+	zhpe_dom = container_of(domain, struct zhpe_domain,
+				util_domain.domain_fid);
 	if (info) {
 		ret = zhpe_verify_info(zhpe_dom->fab->fab_fid.api_version,
 				       info, 0);

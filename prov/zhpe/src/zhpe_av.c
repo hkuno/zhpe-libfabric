@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2014 Intel Corporation, Inc.  All rights reserved.
  * Copyright (c) 2016, Cisco Systems, Inc. All rights reserved.
- * Copyright (c) 2017-2018 Hewlett Packard Enterprise Development LP.  All rights reserved.
+ * Copyright (c) 2017-2019 Hewlett Packard Enterprise Development LP.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -558,7 +558,7 @@ int zhpe_av_open(struct fid_domain *domain, struct fi_av_attr *attr,
 	if (attr->type == FI_AV_UNSPEC)
 		attr->type = FI_AV_TABLE;
 
-	dom = container_of(domain, struct zhpe_domain, dom_fid);
+	dom = container_of(domain, struct zhpe_domain, util_domain.domain_fid);
 	if (dom->attr.av_type != FI_AV_UNSPEC &&
 	    dom->attr.av_type != attr->type)
 		return -FI_EINVAL;
