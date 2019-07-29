@@ -587,7 +587,6 @@ int zhpe_domain(struct fid_fabric *fabric, struct fi_info *info,
 		zhpe_domain->progress_mode = info->domain_attr->data_progress;
 
 	zhpe_domain->fab = fab;
-	*dom = &zhpe_domain->dom_fid;
 
 	if (info->domain_attr)
 		zhpe_domain->attr = *(info->domain_attr);
@@ -619,6 +618,7 @@ int zhpe_domain(struct fid_fabric *fabric, struct fi_info *info,
 	if (ret < 0)
 		goto err4;
 
+	*dom = &zhpe_domain->dom_fid;
 	zhpe_dom_add_to_list(zhpe_domain);
 
 	return 0;
