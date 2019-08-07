@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Hewlett Packard Enterprise Development LP.  All rights reserved.
+ * Copyright (c) 2018-2019 Hewlett Packard Enterprise Development LP.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -65,7 +65,8 @@ struct fi_zhpe_ext_ops_v1 {
 		    struct fi_zhpe_mmap_desc **mmap_desc);
 	int (*munmap)(struct fi_zhpe_mmap_desc *mmap_desc);
 	int (*commit)(struct fi_zhpe_mmap_desc *mmap_desc,
-		      const void *addr, size_t length, bool fence);
+		      const void *addr, size_t length, bool fence,
+		      bool invalidate);
 };
 
 #ifdef  __cplusplus

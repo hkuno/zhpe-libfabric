@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2014 Intel Corporation, Inc.  All rights reserved.
  * Copyright (c) 2016 Cisco Systems, Inc.  All rights reserved.
- * Copyright (c) 2017-2018 Hewlett Packard Enterprise Development LP.  All rights reserved.
+ * Copyright (c) 2017-2019 Hewlett Packard Enterprise Development LP.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -546,20 +546,14 @@ static int zhpe_ext_munmap(struct fi_zhpe_mmap_desc *mmap_desc)
 }
 
 static int zhpe_ext_commit(struct fi_zhpe_mmap_desc *mmap_desc,
-			   const void *addr, size_t length, bool fence)
+			   const void *addr, size_t length, bool fence,
+			   bool invalidate)
 {
-	int			ret = -FI_EINVAL;
 	struct fi_zhpe_mmap_desc_int *mdesc =
 		container_of(mmap_desc, struct fi_zhpe_mmap_desc_int, pub);
 
-	if (!mmap_desc)
-		goto done;
-	ret = zhpeq_mmap_commit(mdesc->zmdesc,
-				(addr ? addr : mdesc->pub.addr),
-				(length ? length : mdesc->pub.length), fence);
-
- done:
-	return ret;
+	return zhpeq_mmap_commit((mmap_desc ? mdesc->zmdesc : NULL),
+				 addr, length, fence, invalidate);
 }
 
 static struct fi_zhpe_ext_ops_v1 zhpe_ext_ops_v1 = {
