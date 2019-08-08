@@ -462,7 +462,7 @@ static int mmap_get_rkey(struct fid_ep *ep, fi_addr_t fi_addr, uint64_t key,
 	return ret;
 }
 
-struct fi_zhpe_mmap_desc_int {
+struct fi_zhpe_mmap_desc_private {
 	struct fi_zhpe_mmap_desc pub;
 	struct zhpeq_mmap_desc  *zmdesc;
 };
@@ -474,7 +474,7 @@ static int zhpe_ext_mmap(void *addr, size_t length, int prot, int flags,
 {
 	int			ret = -FI_EINVAL;
 	uint32_t		zq_cache_mode = 0;
-	struct fi_zhpe_mmap_desc_int *mdesc = NULL;
+	struct fi_zhpe_mmap_desc_private *mdesc = NULL;
 	struct zhpe_rkey_data	*rkey = NULL;
 
 	if (!mmap_desc)
@@ -516,11 +516,11 @@ static int zhpe_ext_mmap(void *addr, size_t length, int prot, int flags,
 	mdesc->pub.length = length;
 
 	ret = zhpeq_mmap(rkey->kdata, zq_cache_mode,
-			 addr, length, prot, flags, offset, &mdesc->pub.addr,
-			 &mdesc->zmdesc);
+			 addr, length, prot, flags, offset, &mdesc->zmdesc);
 
  done:
 	if (ret >= 0) {
+		mdesc->pub.addr = mdesc->zmdesc->addr;
 		*mmap_desc = &mdesc->pub;
 		ret = 0;
 	} else
@@ -533,8 +533,8 @@ static int zhpe_ext_mmap(void *addr, size_t length, int prot, int flags,
 static int zhpe_ext_munmap(struct fi_zhpe_mmap_desc *mmap_desc)
 {
 	int			ret = -FI_EINVAL;
-	struct fi_zhpe_mmap_desc_int *mdesc =
-		container_of(mmap_desc, struct fi_zhpe_mmap_desc_int, pub);
+	struct fi_zhpe_mmap_desc_private *mdesc =
+		container_of(mmap_desc, struct fi_zhpe_mmap_desc_private, pub);
 
 	if (!mmap_desc)
 		goto done;
@@ -549,8 +549,8 @@ static int zhpe_ext_commit(struct fi_zhpe_mmap_desc *mmap_desc,
 			   const void *addr, size_t length, bool fence,
 			   bool invalidate)
 {
-	struct fi_zhpe_mmap_desc_int *mdesc =
-		container_of(mmap_desc, struct fi_zhpe_mmap_desc_int, pub);
+	struct fi_zhpe_mmap_desc_private *mdesc =
+		container_of(mmap_desc, struct fi_zhpe_mmap_desc_private, pub);
 
 	return zhpeq_mmap_commit((mmap_desc ? mdesc->zmdesc : NULL),
 				 addr, length, fence, invalidate);
