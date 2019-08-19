@@ -547,13 +547,13 @@ static int zhpe_ext_munmap(struct fi_zhpe_mmap_desc *mmap_desc)
 
 static int zhpe_ext_commit(struct fi_zhpe_mmap_desc *mmap_desc,
 			   const void *addr, size_t length, bool fence,
-			   bool invalidate)
+			   bool invalidate, bool wait)
 {
 	struct fi_zhpe_mmap_desc_private *mdesc =
 		container_of(mmap_desc, struct fi_zhpe_mmap_desc_private, pub);
 
 	return zhpeq_mmap_commit((mmap_desc ? mdesc->zmdesc : NULL),
-				 addr, length, fence, invalidate);
+				 addr, length, fence, invalidate, wait);
 }
 
 static struct fi_zhpe_ext_ops_v1 zhpe_ext_ops_v1 = {

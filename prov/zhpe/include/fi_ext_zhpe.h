@@ -66,7 +66,7 @@ struct fi_zhpe_ext_ops_v1 {
 	int (*munmap)(struct fi_zhpe_mmap_desc *mmap_desc);
 	int (*commit)(struct fi_zhpe_mmap_desc *mmap_desc,
 		      const void *addr, size_t length, bool fence,
-		      bool invalidate);
+		      bool invalidate, bool wait);
 };
 
 #ifdef  __cplusplus
