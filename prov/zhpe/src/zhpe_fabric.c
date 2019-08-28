@@ -556,30 +556,67 @@ static int zhpe_ext_commit(struct fi_zhpe_mmap_desc *mmap_desc,
 				 addr, length, fence, invalidate, wait);
 }
 
+static int zhpe_ext_ep_counters(struct fid_ep *ep,
+				struct fi_zhpe_ep_counters *counters)
+{
+	int			ret = -FI_EINVAL;
+	struct zhpe_ep		*zhpe_ep;
+	struct zhpe_ep_attr	*ep_attr;
+	struct zhpe_tx_ctx	*tx_ctx;
+
+	if (!ep || !counters ||
+	    counters->version != FI_ZHPE_EP_COUNTERS_VERSION ||
+	    counters->len != sizeof(*counters))
+		goto done;
+
+	switch (ep->fid.fclass) {
+
+	case FI_CLASS_EP:
+		zhpe_ep = container_of(ep, struct zhpe_ep, ep);
+		tx_ctx = zhpe_ep->attr->tx_ctx;
+		ep_attr = zhpe_ep->attr;
+		break;
+
+	case FI_CLASS_TX_CTX:
+		tx_ctx = container_of(ep, struct zhpe_tx_ctx, ctx);
+		ep_attr = tx_ctx->ep_attr;
+		break;
+
+	default:
+		goto done;
+	}
+
+	counters->hw_atomics = atm_load_rlx(&ep_attr->counters.hw_atomics);
+	ret = 0;
+ done:
+
+	return ret;
+}
+
 static struct fi_zhpe_ext_ops_v1 zhpe_ext_ops_v1 = {
 	.lookup			= zhpe_ext_lookup,
 	.mmap			= zhpe_ext_mmap,
 	.munmap			= zhpe_ext_munmap,
 	.commit			= zhpe_ext_commit,
+	.ep_counters		= zhpe_ext_ep_counters,
 };
 
 static int zhpe_fabric_ops_open(struct fid *fid, const char *ops_name,
 				uint64_t flags, void **ops, void *context)
 {
-	int			ret = 0;
+	int			ret = -FI_EINVAL;
 
 	if (!fid || fid->fclass != FI_CLASS_FABRIC ||
-	    !ops_name || flags || context) {
-		ret = -FI_EINVAL;
+	    !ops_name || flags || context)
 		goto done;
-	}
-	if (!strcmp(ops_name, FI_ZHPE_OPS_V1))
-		*ops = &zhpe_ext_ops_v1;
-	else {
-		ret = -FI_EINVAL;
+
+	if (strcmp(ops_name, FI_ZHPE_OPS_V1))
 		goto done;
-	}
+
+	*ops = &zhpe_ext_ops_v1;
+	ret = 0;
  done:
+
 	return ret;
 }
 

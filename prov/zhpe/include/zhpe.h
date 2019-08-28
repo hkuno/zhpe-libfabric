@@ -94,6 +94,7 @@
 
 #include <zhpeq.h>
 #include <zhpeq_util.h>
+#include <zhpeq_util_fab_atomic.h>
 #include <fi_ext_zhpe.h>
 
 #include <zhpe_stats.h>
@@ -921,6 +922,7 @@ struct zhpe_ep_attr {
 	 * I have no clue why the ep_attr is where everything hides.
 	 */
 	struct zhpe_ep		*ep;
+	struct fi_zhpe_ep_counters counters;
 };
 
 struct zhpe_ep {
@@ -1121,6 +1123,9 @@ struct zhpe_pe_entry {
 		char		inline_data[ZHPEQ_IMM_MAX];
 		struct {
 			void	*result;
+			uint64_t atomic_operands[2];
+			uint8_t atomic_op;
+			uint8_t atomic_size;
 			uint8_t	result_type;
 		};
 	};
@@ -1415,6 +1420,9 @@ void zhpe_pe_tx_handle_rma(struct zhpe_pe_root *pe_root,
 			   struct zhpeq_cq_entry *zq_cqe);
 void zhpe_pe_tx_handle_atomic(struct zhpe_pe_root *pe_root,
 			      struct zhpeq_cq_entry *zq_cqe);
+void zhpe_pe_tx_handle_hw_atomic(struct zhpe_pe_root *pe_root,
+				 struct zhpeq_cq_entry *zq_cqe);
+int zhpe_pe_tx_hw_atomic(struct zhpe_pe_entry *pe_entry);
 void zhpe_pe_rkey_request(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
 			  struct zhpe_iov_state *rstate, int8_t *completions);
 
@@ -2143,6 +2151,11 @@ int zhpe_check_user_iov(const struct iovec *uiov, void **udesc,
 			size_t uiov_cnt, uint32_t qaccess,
 			struct zhpe_iov_state *lstate, size_t liov_max,
 			size_t *total_len);
+
+int zhpe_check_user_rma(const struct fi_rma_iov *urma, size_t urma_cnt,
+			uint32_t qaccess,
+			struct zhpe_iov_state *rstate, size_t riov_max,
+			size_t *total_len, struct zhpe_conn *conn);
 
 /* Type checked rbt calls. */
 

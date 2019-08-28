@@ -36,11 +36,10 @@
 #define ZHPE_LOG_DBG(...) _ZHPE_LOG_DBG(FI_LOG_EP_DATA, __VA_ARGS__)
 #define ZHPE_LOG_ERROR(...) _ZHPE_LOG_ERROR(FI_LOG_EP_DATA, __VA_ARGS__)
 
-static int
-zhpe_check_user_rma(const struct fi_rma_iov *urma, size_t urma_cnt,
-		    uint32_t qaccess,
-		    struct zhpe_iov_state *rstate, size_t riov_max,
-		    size_t *total_len, struct zhpe_conn *conn)
+int zhpe_check_user_rma(const struct fi_rma_iov *urma, size_t urma_cnt,
+			uint32_t qaccess,
+			struct zhpe_iov_state *rstate, size_t riov_max,
+			size_t *total_len, struct zhpe_conn *conn)
 {
 	int			ret = 0;
 	struct zhpe_iov		*riov = rstate->viov;
