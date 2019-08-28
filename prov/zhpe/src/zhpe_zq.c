@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2018 Hewlett Packard Enterprise Development LP.  All rights reserved.
+ * Copyright (c) 2017-2019 Hewlett Packard Enterprise Development LP.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -1166,7 +1166,7 @@ int zhpe_conn_key_export(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
 	 * hidden.
 	 */
 	if (ret == -FI_EAGAIN) {
-		if (ohdr.op_type == ZHPE_OP_KEY_REQUEST)
+		if (ohdr.op_type == ZHPE_OP_KEY_RESPONSE)
 			ret = 0;
 		else {
 			seq++;
