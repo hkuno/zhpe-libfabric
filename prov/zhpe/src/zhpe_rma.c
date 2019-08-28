@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2014 Intel Corporation, Inc.  All rights reserved.
- * Copyright (c) 2017-2018 Hewlett Packard Enterprise Development LP.  All rights reserved.
+ * Copyright (c) 2017-2019 Hewlett Packard Enterprise Development LP.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -57,7 +57,7 @@ zhpe_check_user_rma(const struct fi_rma_iov *urma, size_t urma_cnt,
 			ret = -FI_EMSGSIZE;
 			goto done;
 		}
-		riov[j].iov_addr = urma[i].addr;
+		riov[j].iov_raddr = urma[i].addr;
 		riov[j].iov_len = urma[i].len;
 		*total_len += urma[i].len;
 		riov[j].iov_key = urma[i].key;
@@ -74,7 +74,7 @@ zhpe_check_user_rma(const struct fi_rma_iov *urma, size_t urma_cnt,
 		}
 		riov[j].iov_rkey = rkey;
 		ret = zhpeq_rem_key_access(rkey->kdata,
-					   riov[j].iov_addr, riov[j].iov_len,
+					   riov[j].iov_raddr, riov[j].iov_len,
 					   qaccess, &riov[j].iov_zaddr);
 		rstate->cnt = ++j;
 		if (ret < 0)
@@ -223,8 +223,7 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 		flags |= FI_INJECT;
 		if (flags & FI_WRITE) {
 			copy_iov_to_mem(pe_entry->inline_data,
-					&pe_entry->lstate, ZHPE_IOV_ZIOV,
-					pe_entry->rem);
+					&pe_entry->lstate, pe_entry->rem);
 			zhpe_pe_tx_report_complete(pe_entry,
 						   FI_INJECT_COMPLETE);
 		}
