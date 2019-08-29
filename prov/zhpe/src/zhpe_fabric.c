@@ -538,8 +538,7 @@ static int zhpe_ext_munmap(struct fi_zhpe_mmap_desc *mmap_desc)
 
 	if (!mmap_desc)
 		goto done;
-	ret = zhpeq_mmap_unmap(mdesc->zmdesc,
-			       mdesc->pub.addr, mdesc->pub.length);
+	ret = zhpeq_mmap_unmap(mdesc->zmdesc);
 
  done:
 	return ret;
