@@ -131,12 +131,17 @@ int fi_ibv_get_shared_ini_conn(struct fi_ibv_xrc_ep *ep,
 
 	*ini_conn = NULL;
 	conn = calloc(1, sizeof(*conn));
-	if (!conn)
+	if (!conn) {
+		VERBS_WARN(FI_LOG_EP_CTRL,
+			   "Unable to allocate INI connection memory\n");
 		return -FI_ENOMEM;
+	}
 
 	conn->tgt_qpn = FI_IBV_NO_INI_TGT_QPNUM;
 	conn->peer_addr = mem_dup(key.addr, ofi_sizeofaddr(key.addr));
 	if (!conn->peer_addr) {
+		VERBS_WARN(FI_LOG_EP_CTRL,
+			   "mem_dup of peer address failed\n");
 		free(conn);
 		return -FI_ENOMEM;
 	}
@@ -147,7 +152,7 @@ int fi_ibv_get_shared_ini_conn(struct fi_ibv_xrc_ep *ep,
 	ofi_atomic_initialize32(&conn->ref_cnt, 1);
 
 	ret = ofi_rbmap_insert(domain->xrc.ini_conn_rbmap,
-			       (void *) &key, (void *) conn);
+			       (void *) &key, (void *) conn, NULL);
 	assert(ret != -FI_EALREADY);
 	if (ret) {
 		VERBS_WARN(FI_LOG_EP_CTRL, "INI QP RBTree insert failed %d\n",
@@ -183,6 +188,15 @@ void fi_ibv_put_shared_ini_conn(struct fi_ibv_xrc_ep *ep)
 	if (ep->base_ep.id)
 		ep->base_ep.id->qp = NULL;
 
+	/* If XRC physical QP connection was not completed, make sure
+	 * any pending connection to that destination will get scheduled. */
+	if (ep->base_ep.id && ep->base_ep.id == ini_conn->phys_conn_id) {
+		if (ini_conn->state == FI_IBV_INI_QP_CONNECTING)
+			ini_conn->state = FI_IBV_INI_QP_UNCONNECTED;
+
+		ini_conn->phys_conn_id = NULL;
+	}
+
 	/* Tear down physical INI/TGT when no longer being used */
 	if (!ofi_atomic_dec32(&ini_conn->ref_cnt)) {
 		if (ini_conn->ini_qp && ibv_destroy_qp(ini_conn->ini_qp))
@@ -190,6 +204,7 @@ void fi_ibv_put_shared_ini_conn(struct fi_ibv_xrc_ep *ep)
 				   "Destroy of XRC physical INI QP failed %d\n",
 				   errno);
 
+		assert(dlist_empty(&ini_conn->pending_list));
 		fi_ibv_set_ini_conn_key(ep, &key);
 		node = ofi_rbmap_find(domain->xrc.ini_conn_rbmap, &key);
 		assert(node);
@@ -246,6 +261,8 @@ void fi_ibv_sched_ini_conn(struct fi_ibv_ini_shared_conn *ini_conn)
 				  &ep->ini_conn->active_list);
 		last_state = ep->ini_conn->state;
 		if (last_state == FI_IBV_INI_QP_UNCONNECTED) {
+			assert(!ep->ini_conn->phys_conn_id && ep->base_ep.id);
+
 			if (ep->ini_conn->ini_qp &&
 			    ibv_destroy_qp(ep->ini_conn->ini_qp)) {
 				VERBS_WARN(FI_LOG_EP_CTRL, "Failed to destroy "
@@ -259,16 +276,17 @@ void fi_ibv_sched_ini_conn(struct fi_ibv_ini_shared_conn *ini_conn)
 			}
 			ep->ini_conn->ini_qp = ep->base_ep.id->qp;
 			ep->ini_conn->state = FI_IBV_INI_QP_CONNECTING;
+			ep->ini_conn->phys_conn_id = ep->base_ep.id;
 		} else {
-			if (!ep->base_ep.id->qp) {
-				ret = fi_ibv_reserve_qpn(ep,
-						 &ep->conn_setup->rsvd_ini_qpn);
-				if (ret) {
-					VERBS_WARN(FI_LOG_EP_CTRL,
-						   "Failed to create rsvd INI "
-						   "QP %d\n", ret);
-					goto err;
-				}
+			assert(!ep->base_ep.id->qp);
+
+			ret = fi_ibv_reserve_qpn(ep,
+					&ep->conn_setup->rsvd_ini_qpn);
+			if (ret) {
+				VERBS_WARN(FI_LOG_EP_CTRL,
+					   "Failed to create rsvd INI "
+					   "QP %d\n", ret);
+				goto err;
 			}
 		}
 
@@ -296,7 +314,6 @@ int fi_ibv_process_ini_conn(struct fi_ibv_xrc_ep *ep,int reciprocal,
 			    void *param, size_t paramlen)
 {
 	struct fi_ibv_xrc_cm_data *cm_data = param;
-	struct rdma_conn_param conn_param = { 0 };
 	int ret;
 
 	assert(ep->base_ep.ibv_qp);
@@ -304,30 +321,34 @@ int fi_ibv_process_ini_conn(struct fi_ibv_xrc_ep *ep,int reciprocal,
 	fi_ibv_set_xrc_cm_data(cm_data, reciprocal, ep->conn_setup->conn_tag,
 			       ep->base_ep.eq->xrc.pep_port,
 			       ep->ini_conn->tgt_qpn);
-	conn_param.private_data = cm_data;
-	conn_param.private_data_len = paramlen;
-	conn_param.responder_resources = RDMA_MAX_RESP_RES;
-	conn_param.initiator_depth = RDMA_MAX_INIT_DEPTH;
-	conn_param.flow_control = 1;
-	conn_param.retry_count = 15;
-	conn_param.rnr_retry_count = 7;
-	conn_param.srq = 1;
+	ep->base_ep.conn_param.private_data = cm_data;
+	ep->base_ep.conn_param.private_data_len = paramlen;
+	ep->base_ep.conn_param.responder_resources = RDMA_MAX_RESP_RES;
+	ep->base_ep.conn_param.initiator_depth = RDMA_MAX_INIT_DEPTH;
+	ep->base_ep.conn_param.flow_control = 1;
+	ep->base_ep.conn_param.retry_count = 15;
+	ep->base_ep.conn_param.rnr_retry_count = 7;
+	ep->base_ep.conn_param.srq = 1;
 
 	/* Shared connections use reserved temporary QP numbers to
 	 * avoid the appearance of stale/duplicate CM messages */
 	if (!ep->base_ep.id->qp)
-		conn_param.qp_num = ep->conn_setup->rsvd_ini_qpn->qp_num;
+		ep->base_ep.conn_param.qp_num =
+				ep->conn_setup->rsvd_ini_qpn->qp_num;
 
 	assert(ep->conn_state == FI_IBV_XRC_UNCONNECTED ||
 	       ep->conn_state == FI_IBV_XRC_ORIG_CONNECTED);
 	fi_ibv_next_xrc_conn_state(ep);
 
-	ret = rdma_connect(ep->base_ep.id, &conn_param) ? -errno : 0;
+	ret = rdma_resolve_route(ep->base_ep.id, VERBS_RESOLVE_TIMEOUT);
 	if (ret) {
 		ret = -errno;
-		VERBS_WARN(FI_LOG_EP_CTRL, "rdma_connect failed %d\n", -ret);
+		VERBS_WARN(FI_LOG_EP_CTRL,
+			   "rdma_resolve_route failed %s (%d)\n",
+			   strerror(-ret), -ret);
 		fi_ibv_prev_xrc_conn_state(ep);
 	}
+
 	return ret;
 }
 

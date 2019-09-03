@@ -242,7 +242,6 @@ int rxd_ep_post_buf(struct rxd_ep *ep)
 		return ret;
 	}
 
-	ep->posted_bufs++;
 	slist_insert_tail(&pkt_entry->s_entry, &ep->rx_pkt_list);
 
 	return 0;
@@ -321,7 +320,8 @@ void rxd_init_data_pkt(struct rxd_ep *ep, struct rxd_x_entry *tx_entry,
 
 struct rxd_x_entry *rxd_tx_entry_init_common(struct rxd_ep *ep, fi_addr_t addr,
 			uint32_t op, const struct iovec *iov, size_t iov_count,
-			uint64_t tag, uint64_t data, uint32_t flags, void *context)
+			uint64_t tag, uint64_t data, uint32_t flags, void *context,
+			struct rxd_base_hdr **base_hdr, void **ptr)
 {
 	struct rxd_x_entry *tx_entry;
 
@@ -354,6 +354,10 @@ struct rxd_x_entry *rxd_tx_entry_init_common(struct rxd_ep *ep, fi_addr_t addr,
 	tx_entry->cq_entry.data = data;
 
 	tx_entry->pkt->peer = tx_entry->peer;
+
+	*base_hdr = rxd_get_base_hdr(tx_entry->pkt);
+	*ptr = (void *) *base_hdr;
+	rxd_init_base_hdr(ep, &(*ptr), tx_entry);
 
 	dlist_insert_tail(&tx_entry->entry,
 			  &ep->peers[tx_entry->peer].tx_list);
@@ -571,10 +575,8 @@ void rxd_ep_send_ack(struct rxd_ep *rxd_ep, fi_addr_t peer)
 	rxd_ep->peers[peer].last_tx_ack = ack->base_hdr.seq_no;
 
 	dlist_insert_tail(&pkt_entry->d_entry, &rxd_ep->ctrl_pkts);
-	if (rxd_ep_send_pkt(rxd_ep, pkt_entry)) {
-		dlist_remove(&pkt_entry->d_entry);
-		ofi_buf_free(pkt_entry);
-	}
+	if (rxd_ep_send_pkt(rxd_ep, pkt_entry))
+		rxd_remove_free_pkt_entry(pkt_entry);
 }
 
 static void rxd_ep_free_res(struct rxd_ep *ep)
@@ -626,21 +628,26 @@ static void rxd_close_peer(struct rxd_ep *ep, struct rxd_peer *peer)
 	peer->active = 0;
 }
 
-static void rxd_cleanup_unexp_msg(struct dlist_entry *list)
+void rxd_cleanup_unexp_msg(struct rxd_unexp_msg *unexp_msg)
+{
+	struct rxd_pkt_entry *pkt_entry;
+	while (!dlist_empty(&unexp_msg->pkt_list)) {
+		dlist_pop_front(&unexp_msg->pkt_list, struct rxd_pkt_entry,
+				pkt_entry, d_entry);
+		ofi_buf_free(pkt_entry);
+	}
+
+	rxd_free_unexp_msg(unexp_msg);
+}
+
+static void rxd_cleanup_unexp_msg_list(struct dlist_entry *list)
 {
 	struct rxd_unexp_msg *unexp_msg;
-	struct rxd_pkt_entry *pkt_entry;
 
 	while (!dlist_empty(list)) {
 		dlist_pop_front(list, struct rxd_unexp_msg,
 				unexp_msg, entry);
-		while (!dlist_empty(&unexp_msg->pkt_list)) {
-			dlist_pop_front(&unexp_msg->pkt_list, struct rxd_pkt_entry,
-					pkt_entry, d_entry);
-			ofi_buf_free(pkt_entry);
-		}
-		ofi_buf_free(unexp_msg->pkt_entry);
-		free(unexp_msg);
+		rxd_cleanup_unexp_msg(unexp_msg);
 	}
 }
 
@@ -673,8 +680,8 @@ static int rxd_ep_close(struct fid *fid)
 		ofi_buf_free(pkt_entry);
 	}
 
-	rxd_cleanup_unexp_msg(&ep->unexp_list);
-	rxd_cleanup_unexp_msg(&ep->unexp_tag_list);
+	rxd_cleanup_unexp_msg_list(&ep->unexp_list);
+	rxd_cleanup_unexp_msg_list(&ep->unexp_tag_list);
 
 	while (!dlist_empty(&ep->ctrl_pkts)) {
 		dlist_pop_front(&ep->ctrl_pkts, struct rxd_pkt_entry,
@@ -978,12 +985,6 @@ void rxd_ep_progress(struct util_ep *util_ep)
 	}
 
 out:
-	while (ep->posted_bufs < ep->rx_size) {
-		ret = rxd_ep_post_buf(ep);
-		if (ret)
-			break;
-	}
-
 	fastlock_release(&ep->util_ep.lock);
 }
 

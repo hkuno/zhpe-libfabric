@@ -100,9 +100,7 @@ static void rxd_progress_unexp_msg(struct rxd_ep *ep, struct rxd_x_entry *rx_ent
 			ep->peers[unexp_msg->base_hdr->peer].curr_unexp = NULL;
 	}
 
-	ofi_buf_free(unexp_msg->pkt_entry);
-	dlist_remove(&unexp_msg->entry);
-	free(unexp_msg);
+	rxd_free_unexp_msg(unexp_msg);
 }
 
 static int rxd_progress_unexp_list(struct rxd_ep *ep,
@@ -139,7 +137,6 @@ static int rxd_progress_unexp_list(struct rxd_ep *ep,
 static int rxd_ep_discard_recv(struct rxd_ep *rxd_ep, void *context,
 			       struct rxd_unexp_msg *unexp_msg)
 {
-	struct rxd_pkt_entry *pkt_entry;
 	uint64_t seq = unexp_msg->base_hdr->seq_no;
 	int ret;
 
@@ -155,15 +152,7 @@ static int rxd_ep_discard_recv(struct rxd_ep *rxd_ep, void *context,
 			   unexp_msg->data_hdr->cq_data : 0,
 			   unexp_msg->tag_hdr->tag);
 
-	while (!dlist_empty(&unexp_msg->pkt_list)) {
-		dlist_pop_front(&unexp_msg->pkt_list, struct rxd_pkt_entry,
-				pkt_entry, d_entry);
-		ofi_buf_free(pkt_entry);
-	}
-
-	ofi_buf_free(unexp_msg->pkt_entry);
-	dlist_remove(&unexp_msg->entry);
-	free(unexp_msg);
+	rxd_cleanup_unexp_msg(unexp_msg);
 
 	return ret;
 }
@@ -320,13 +309,9 @@ static struct rxd_x_entry *rxd_tx_entry_init_msg(struct rxd_ep *ep, fi_addr_t ad
 	void *ptr;
 
 	tx_entry = rxd_tx_entry_init_common(ep, addr, op, iov, iov_count,
-					    tag, data, flags, context);
+					    tag, data, flags, context, &base_hdr, &ptr);
 	if (!tx_entry)
 		return NULL;
-
-	base_hdr = rxd_get_base_hdr(tx_entry->pkt);
-	ptr = (void *) base_hdr;
-	rxd_init_base_hdr(ep, &ptr, tx_entry);
 
 	max_inline = rxd_domain->max_inline_msg;
 
@@ -352,8 +337,7 @@ static struct rxd_x_entry *rxd_tx_entry_init_msg(struct rxd_ep *ep, fi_addr_t ad
 					    tx_entry->cq_entry.len,
 					    max_inline);
 
-	tx_entry->pkt->pkt_size = ((char *) ptr - (char *) base_hdr) +
-				ep->tx_prefix_size;
+	tx_entry->pkt->pkt_size = rxd_pkt_size(ep, base_hdr, ptr);
 
 	return tx_entry;
 }
