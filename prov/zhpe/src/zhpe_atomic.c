@@ -46,6 +46,8 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 	ssize_t			ret = -FI_EINVAL;
 	int64_t			tindex = -1;
 	struct zhpe_msg_hdr	hdr = { .op_type = ZHPE_OP_ATOMIC };
+	enum zhpeq_atomic_size	hw_size = ZHPEQ_ATOMIC_SIZE_NONE;
+	enum zhpeq_atomic_op	hw_op = ZHPEQ_ATOMIC_NONE;
 	struct zhpe_pe_entry	*pe_entry;
 	struct zhpe_msg_hdr	*zhdr;
 	union zhpe_msg_payload	*zpay;
@@ -63,6 +65,8 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 	uint64_t		o64;
 	uint64_t		c64;
 	uint64_t		dontcare;
+	struct fi_rma_iov	rma_iov;
+	void			*result;
 
 	switch (ep->fid.fclass) {
 
@@ -92,51 +96,37 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 		if (flags &
 		    ~(ZHPE_NO_COMPLETION | ZHPE_USE_OP_FLAGS |
 		      ZHPE_TRIGGERED_OP | FI_COMPLETION | FI_TRIGGER |
-		      FI_FENCE | FI_ATOMICS | FI_FETCH_ATOMIC |
-		      FI_COMPARE_ATOMIC | FI_INJECT | FI_INJECT_COMPLETE |
+		      FI_FENCE | FI_INJECT | FI_INJECT_COMPLETE |
 		      FI_TRANSMIT_COMPLETE | FI_DELIVERY_COMPLETE |
-		      FI_REMOTE_CQ_DATA))
+		      FI_MORE))
 			goto done;
 
 		if (flags & ZHPE_USE_OP_FLAGS)
 			flags |= op_flags;
 
 		flags &= ~ZHPE_MASK_COMPLETE;
-		flags |= FI_DELIVERY_COMPLETE;
 	}
 
 	/* FIXME: Assuming precisely 1 IOV and 1 item. */
 	ret = -FI_EMSGSIZE;
-	if (msg->op != FI_ATOMIC_READ && msg->iov_count != 1)
+	if (msg->op != FI_ATOMIC_READ) {
+		if (msg->iov_count != 1 || !msg->msg_iov ||
+		    msg->msg_iov[0].count != 1)
+			goto done;
+	}
+	if (msg->rma_iov_count != 1 || !msg->rma_iov ||
+		msg->rma_iov[0].count != 1)
 		goto done;
-	if (msg->rma_iov_count != 1)
-		goto done;
-	if (msg->msg_iov[0].count != 1 || msg->rma_iov[0].count != 1)
-		goto done;
-	if (resultv && (result_count != 1 || resultv[0].count != 1))
-		goto done;
-	if (comparev && (compare_count != 1 || comparev[0].count != 1))
-		goto done;
+	if (resultv) {
+		if (result_count != 1 || resultv[0].count != 1)
+			goto done;
+	}
+	if (comparev) {
+		if (compare_count != 1 || comparev[0].count != 1)
+			goto done;
+	}
 
 	ret = -FI_EOPNOTSUPP;
-
-	switch (msg->op) {
-
-	case FI_ATOMIC_READ:
-		flags |= FI_READ;
-		break;
-	case FI_ATOMIC_WRITE:
-	case FI_BAND:
-	case FI_BOR:
-	case FI_BXOR:
-	case FI_CSWAP:
-	case FI_SUM:
-		flags |= FI_WRITE;
-		break;
-
-	default:
-		goto done;
-	}
 
 	datatype = msg->datatype;
 
@@ -158,18 +148,125 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 	case FI_UINT32:
 		datatype = FI_UINT32;
 		datasize = sizeof(uint32_t);
+		hw_size = ZHPEQ_ATOMIC_SIZE32;
 		break;
 
 	case FI_INT64:
 	case FI_UINT64:
 		datatype = FI_UINT64;
 		datasize = sizeof(uint64_t);
+		hw_size = ZHPEQ_ATOMIC_SIZE64;
 		break;
 
 	default:
 		goto done;
 	}
 
+	o64 = 0;
+	if (msg->op != FI_ATOMIC_READ) {
+		vaddr  = msg->msg_iov[0].addr;
+		if (msg->desc)
+			zmr = msg->desc[0];
+		else
+			zmr = NULL;
+		if (zmr) {
+			ret = zhpeq_lcl_key_access(zmr->kdata, vaddr, datasize,
+						   ZHPEQ_MR_PUT, &dontcare);
+			if (ret < 0)
+				goto done;
+		}
+		(void)zhpeu_fab_atomic_load(datatype, vaddr, &o64);
+	}
+
+	c64 = 0;
+	if (comparev) {
+		vaddr = comparev[0].addr;
+		if (compare_desc)
+			zmr = compare_desc[0];
+		else
+			zmr = NULL;
+		if (zmr) {
+			ret = zhpeq_lcl_key_access(zmr->kdata, vaddr, datasize,
+						   ZHPEQ_MR_PUT, &dontcare);
+			if (ret < 0)
+				goto done;
+		}
+		(void)zhpeu_fab_atomic_load(datatype, vaddr, &c64);
+	}
+
+	result = NULL;
+	if (resultv) {
+		vaddr = resultv[0].addr;
+		if (result_desc)
+			zmr = result_desc[0];
+		else
+			zmr = NULL;
+		if (zmr) {
+			ret = zhpeq_lcl_key_access(zmr->kdata, vaddr, datasize,
+						   ZHPEQ_MR_GET, &dontcare);
+			if (ret < 0)
+				goto done;
+		}
+		result = vaddr;
+	}
+
+	switch (msg->op) {
+
+	case FI_ATOMIC_READ:
+		hw_op = ZHPEQ_ATOMIC_ADD;
+		flags |= FI_READ;
+		break;
+
+	case FI_ATOMIC_WRITE:
+		hw_op = ZHPEQ_ATOMIC_SWAP;
+		flags |= FI_WRITE;
+		break;
+
+	case FI_BAND:
+	case FI_BOR:
+	case FI_BXOR:
+		flags |= FI_WRITE;
+		break;
+
+	case FI_CSWAP:
+		if (!comparev) {
+			ret = -FI_EINVAL;
+			goto done;
+		}
+		hw_op = ZHPEQ_ATOMIC_CAS;
+		flags |= FI_WRITE;
+		break;
+
+	case FI_MSWAP:
+		if (!comparev) {
+			ret = -FI_EINVAL;
+			goto done;
+		}
+		switch ((int)hw_size) {
+
+		case ZHPEQ_ATOMIC_SIZE32:
+			if ((uint32_t)c64 == ~(uint32_t)0)
+				hw_op = ZHPEQ_ATOMIC_SWAP;
+			break;
+
+		case ZHPEQ_ATOMIC_SIZE64:
+			if (c64 == ~(uint64_t)0)
+				hw_op = ZHPEQ_ATOMIC_SWAP;
+			break;
+		}
+		flags |= FI_WRITE;
+		break;
+
+	case FI_SUM:
+		hw_op = ZHPEQ_ATOMIC_ADD;
+		flags |= FI_WRITE;
+		break;
+
+	default:
+		goto done;
+	}
+
+	/* FIXME: rearrange trigger logic */
 	if (flags & FI_TRIGGER) {
 		ret = zhpe_queue_atomic_op(ep, msg, comparev, compare_count,
 					   resultv, result_count, flags,
@@ -188,54 +285,51 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 
 	hdr.rx_id = zhpe_get_rx_id(tx_ctx, msg->addr);
 	hdr.pe_entry_id = htons(tindex);
-	pe_entry->cq_data = msg->data;
-	/* We must wait for delivery complete to be consistent with
-	 * hardware.
-	 */
+	pe_entry->result = result;
+	pe_entry->result_type = datatype;
+
+	if (zhpeq_is_asic() && hw_size != ZHPEQ_ATOMIC_SIZE_NONE &&
+	    hw_op != ZHPEQ_ATOMIC_NONE) {
+		flags = zhpe_tx_fixup_completion(flags | FI_TRANSMIT_COMPLETE,
+						 op_flags, tx_ctx);
+		pe_entry->flags = flags;
+		rma_iov.addr = msg->rma_iov[0].addr;
+		rma_iov.len = datasize;
+		rma_iov.key = msg->rma_iov[0].key;
+		ret = zhpe_check_user_rma(&rma_iov, 1, ZHPEQ_MR_PUT_REMOTE,
+					  &pe_entry->rstate,
+					  ZHPE_EP_MAX_IOV_LIMIT, &dontcare,
+					  conn);
+		if (ret < 0)
+			goto done;
+
+		pe_entry->pe_root.handler = zhpe_pe_tx_handle_hw_atomic;
+		pe_entry->atomic_op = hw_op;
+		pe_entry->atomic_size = hw_size;
+		pe_entry->atomic_operands[0] = o64;
+		pe_entry->atomic_operands[1] = c64;
+		flags |= FI_TRANSMIT_COMPLETE;
+		pe_entry->flags = flags;
+
+		if (pe_entry->rstate.missing) {
+			ret = 0;
+			pe_entry->pe_root.compstat.flags |= ZHPE_PE_KEY_WAIT;
+			zhpe_pe_rkey_request(
+				conn, hdr, &pe_entry->rstate,
+				&pe_entry->pe_root.compstat.completions);
+		} else {
+			ret = zhpe_pe_tx_hw_atomic(pe_entry);
+			tindex = -1;
+		}
+		goto done;
+	}
+
+	flags |= FI_DELIVERY_COMPLETE;
+	pe_entry->flags = flags;
 	hdr.flags |= ZHPE_MSG_DELIVERY_COMPLETE;
 	pe_entry->pe_root.compstat.completions++;
 
 	zpay = zhpe_pay_ptr(conn, zhdr, 0, __alignof__(*zpay));
-
-	o64 = 0;
-	if (msg->op != FI_ATOMIC_READ) {
-		vaddr  = msg->msg_iov[0].addr;
-		zmr = msg->desc[0];
-		if (zmr) {
-			ret = zhpeq_lcl_key_access(zmr->kdata, vaddr, datasize,
-						   ZHPEQ_MR_PUT,  &dontcare);
-			if (ret < 0)
-				goto done;
-		}
-		o64 = *(uint64_t *)vaddr;
-	}
-
-	c64 = 0;
-	if (comparev) {
-		vaddr = comparev[0].addr;
-		zmr = compare_desc[0];
-		if (zmr) {
-			ret = zhpeq_lcl_key_access(zmr->kdata, vaddr, datasize,
-						   ZHPEQ_MR_PUT, &dontcare);
-			if (ret < 0)
-				goto done;
-		}
-		c64 = *(uint64_t *)vaddr;
-	}
-
-	pe_entry->result = NULL;
-	if (resultv) {
-		vaddr = resultv[0].addr;
-		zmr = result_desc[0];
-		if (zmr) {
-			ret = zhpeq_lcl_key_access(zmr->kdata, vaddr, datasize,
-						   ZHPEQ_MR_GET, &dontcare);
-			if (ret < 0)
-				goto done;
-		}
-		pe_entry->result = vaddr;
-		pe_entry->result_type = datatype;
-	}
 
 	zpay->atomic_req.operand = htobe64(o64);
 	zpay->atomic_req.compare = htobe64(c64);
@@ -245,8 +339,6 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 	zpay->atomic_req.op = msg->op;
 	zpay->atomic_req.datatype = datatype;
 	zpay->atomic_req.datasize = datasize;
-
-	pe_entry->flags = flags;
 
 	*zhdr = hdr;
 	cmd_len = zpay->atomic_req.end - (char *)zhdr;
@@ -261,25 +353,6 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 static ssize_t zhpe_ep_atomic_writemsg(struct fid_ep *ep,
 			const struct fi_msg_atomic *msg, uint64_t flags)
 {
-#if ENABLE_DEBUG
-	switch (msg->op) {
-	case FI_MIN:
-	case FI_MAX:
-	case FI_SUM:
-	case FI_PROD:
-	case FI_LOR:
-	case FI_LAND:
-	case FI_BOR:
-	case FI_BAND:
-	case FI_LXOR:
-	case FI_BXOR:
-	case FI_ATOMIC_WRITE:
-		break;
-	default:
-		ZHPE_LOG_ERROR("Invalid operation type\n");
-		return -FI_EINVAL;
-	}
-#endif
 	return zhpe_do_tx_atomic(ep, msg, NULL, NULL, 0,
 				  NULL, NULL, 0, flags);
 }
@@ -310,7 +383,6 @@ static ssize_t zhpe_ep_atomic_write(struct fid_ep *ep,
 	msg.datatype = datatype;
 	msg.op = op;
 	msg.context = context;
-	msg.data = 0;
 
 	return zhpe_ep_atomic_writemsg(ep, &msg, ZHPE_USE_OP_FLAGS);
 }
@@ -343,7 +415,6 @@ static ssize_t zhpe_ep_atomic_writev(struct fid_ep *ep,
 	msg.datatype = datatype;
 	msg.op = op;
 	msg.context = context;
-	msg.data = 0;
 
 	return zhpe_ep_atomic_writemsg(ep, &msg, ZHPE_USE_OP_FLAGS);
 }
@@ -354,7 +425,10 @@ static ssize_t zhpe_ep_atomic_inject(struct fid_ep *ep, const void *buf,
 				uint64_t key, enum fi_datatype datatype,
 				enum fi_op op)
 {
-	struct fi_msg_atomic msg;
+	void			*desc = NULL;
+	struct fi_msg_atomic msg = {
+		.desc		= &desc
+	};
 	struct fi_ioc msg_iov;
 	struct fi_rma_ioc rma_iov;
 
@@ -372,7 +446,6 @@ static ssize_t zhpe_ep_atomic_inject(struct fid_ep *ep, const void *buf,
 
 	msg.datatype = datatype;
 	msg.op = op;
-	msg.data = 0;
 
 	return zhpe_ep_atomic_writemsg(ep, &msg, FI_INJECT |
 				       ZHPE_NO_COMPLETION | ZHPE_USE_OP_FLAGS);
@@ -383,25 +456,6 @@ static ssize_t zhpe_ep_atomic_readwritemsg(struct fid_ep *ep,
 				struct fi_ioc *resultv, void **result_desc,
 				size_t result_count, uint64_t flags)
 {
-	switch (msg->op) {
-	case FI_MIN:
-	case FI_MAX:
-	case FI_SUM:
-	case FI_PROD:
-	case FI_LOR:
-	case FI_LAND:
-	case FI_BOR:
-	case FI_BAND:
-	case FI_LXOR:
-	case FI_BXOR:
-	case FI_ATOMIC_READ:
-	case FI_ATOMIC_WRITE:
-		break;
-	default:
-		ZHPE_LOG_ERROR("Invalid operation type\n");
-		return -FI_EINVAL;
-	}
-
 	return zhpe_do_tx_atomic(ep, msg, NULL, NULL, 0,
 				 resultv, result_desc, result_count, flags);
 }
@@ -486,20 +540,6 @@ static ssize_t zhpe_ep_atomic_compwritemsg(struct fid_ep *ep,
 			void **result_desc, size_t result_count,
 			uint64_t flags)
 {
-	switch (msg->op) {
-	case FI_CSWAP:
-	case FI_CSWAP_NE:
-	case FI_CSWAP_LE:
-	case FI_CSWAP_LT:
-	case FI_CSWAP_GE:
-	case FI_CSWAP_GT:
-	case FI_MSWAP:
-		break;
-	default:
-		ZHPE_LOG_ERROR("Invalid operation type\n");
-		return -FI_EINVAL;
-	}
-
 	return zhpe_do_tx_atomic(ep, msg, comparev, compare_desc,
 				 compare_count, resultv, result_desc,
 				 result_count, flags);
@@ -626,6 +666,7 @@ int zhpe_query_atomic(struct fid_domain *domain,
 	case FI_BOR:
 	case FI_BXOR:
 	case FI_CSWAP:
+	case FI_MSWAP:
 	case FI_SUM:
 		break;
 

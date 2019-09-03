@@ -460,7 +460,7 @@ static int mmap_get_rkey(struct fid_ep *ep, fi_addr_t fi_addr, uint64_t key,
 	return ret;
 }
 
-struct fi_zhpe_mmap_desc_int {
+struct fi_zhpe_mmap_desc_private {
 	struct fi_zhpe_mmap_desc pub;
 	struct zhpeq_mmap_desc  *zmdesc;
 };
@@ -472,7 +472,7 @@ static int zhpe_ext_mmap(void *addr, size_t length, int prot, int flags,
 {
 	int			ret = -FI_EINVAL;
 	uint32_t		zq_cache_mode = 0;
-	struct fi_zhpe_mmap_desc_int *mdesc = NULL;
+	struct fi_zhpe_mmap_desc_private *mdesc = NULL;
 	struct zhpe_rkey_data	*rkey = NULL;
 
 	if (!mmap_desc)
@@ -514,11 +514,11 @@ static int zhpe_ext_mmap(void *addr, size_t length, int prot, int flags,
 	mdesc->pub.length = length;
 
 	ret = zhpeq_mmap(rkey->kdata, zq_cache_mode,
-			 addr, length, prot, flags, offset, &mdesc->pub.addr,
-			 &mdesc->zmdesc);
+			 addr, length, prot, flags, offset, &mdesc->zmdesc);
 
  done:
 	if (ret >= 0) {
+		mdesc->pub.addr = mdesc->zmdesc->addr;
 		*mmap_desc = &mdesc->pub;
 		ret = 0;
 	} else
@@ -531,32 +531,62 @@ static int zhpe_ext_mmap(void *addr, size_t length, int prot, int flags,
 static int zhpe_ext_munmap(struct fi_zhpe_mmap_desc *mmap_desc)
 {
 	int			ret = -FI_EINVAL;
-	struct fi_zhpe_mmap_desc_int *mdesc =
-		container_of(mmap_desc, struct fi_zhpe_mmap_desc_int, pub);
+	struct fi_zhpe_mmap_desc_private *mdesc =
+		container_of(mmap_desc, struct fi_zhpe_mmap_desc_private, pub);
 
 	if (!mmap_desc)
 		goto done;
-	ret = zhpeq_mmap_unmap(mdesc->zmdesc,
-			       mdesc->pub.addr, mdesc->pub.length);
+	ret = zhpeq_mmap_unmap(mdesc->zmdesc);
 
  done:
 	return ret;
 }
 
 static int zhpe_ext_commit(struct fi_zhpe_mmap_desc *mmap_desc,
-			   const void *addr, size_t length, bool fence)
+			   const void *addr, size_t length, bool fence,
+			   bool invalidate, bool wait)
+{
+	struct fi_zhpe_mmap_desc_private *mdesc =
+		container_of(mmap_desc, struct fi_zhpe_mmap_desc_private, pub);
+
+	return zhpeq_mmap_commit((mmap_desc ? mdesc->zmdesc : NULL),
+				 addr, length, fence, invalidate, wait);
+}
+
+static int zhpe_ext_ep_counters(struct fid_ep *ep,
+				struct fi_zhpe_ep_counters *counters)
 {
 	int			ret = -FI_EINVAL;
-	struct fi_zhpe_mmap_desc_int *mdesc =
-		container_of(mmap_desc, struct fi_zhpe_mmap_desc_int, pub);
+	struct zhpe_ep		*zhpe_ep;
+	struct zhpe_ep_attr	*ep_attr;
+	struct zhpe_tx_ctx	*tx_ctx;
 
-	if (!mmap_desc)
+	if (!ep || !counters ||
+	    counters->version != FI_ZHPE_EP_COUNTERS_VERSION ||
+	    counters->len != sizeof(*counters))
 		goto done;
-	ret = zhpeq_mmap_commit(mdesc->zmdesc,
-				(addr ? addr : mdesc->pub.addr),
-				(length ? length : mdesc->pub.length), fence);
 
+	switch (ep->fid.fclass) {
+
+	case FI_CLASS_EP:
+		zhpe_ep = container_of(ep, struct zhpe_ep, ep);
+		tx_ctx = zhpe_ep->attr->tx_ctx;
+		ep_attr = zhpe_ep->attr;
+		break;
+
+	case FI_CLASS_TX_CTX:
+		tx_ctx = container_of(ep, struct zhpe_tx_ctx, ctx);
+		ep_attr = tx_ctx->ep_attr;
+		break;
+
+	default:
+		goto done;
+	}
+
+	counters->hw_atomics = atm_load_rlx(&ep_attr->counters.hw_atomics);
+	ret = 0;
  done:
+
 	return ret;
 }
 
@@ -565,25 +595,25 @@ static struct fi_zhpe_ext_ops_v1 zhpe_ext_ops_v1 = {
 	.mmap			= zhpe_ext_mmap,
 	.munmap			= zhpe_ext_munmap,
 	.commit			= zhpe_ext_commit,
+	.ep_counters		= zhpe_ext_ep_counters,
 };
 
 static int zhpe_fabric_ops_open(struct fid *fid, const char *ops_name,
 				uint64_t flags, void **ops, void *context)
 {
-	int			ret = 0;
+	int			ret = -FI_EINVAL;
 
 	if (!fid || fid->fclass != FI_CLASS_FABRIC ||
-	    !ops_name || flags || context) {
-		ret = -FI_EINVAL;
+	    !ops_name || flags || context)
 		goto done;
-	}
-	if (!strcmp(ops_name, FI_ZHPE_OPS_V1))
-		*ops = &zhpe_ext_ops_v1;
-	else {
-		ret = -FI_EINVAL;
+
+	if (strcmp(ops_name, FI_ZHPE_OPS_V1))
 		goto done;
-	}
+
+	*ops = &zhpe_ext_ops_v1;
+	ret = 0;
  done:
+
 	return ret;
 }
 

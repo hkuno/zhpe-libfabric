@@ -794,7 +794,7 @@ void zhpe_slab_destroy(struct zhpe_slab *slab)
 	}
 }
 
-int zhpe_slab_alloc(struct zhpe_slab *slab, size_t size,  struct zhpe_iov *iov)
+int zhpe_slab_alloc(struct zhpe_slab *slab, size_t size, struct zhpe_iov *ziov)
 {
 	int			ret = -ENOMEM;
 	struct zhpe_slab_free_entry *chunk;
@@ -803,7 +803,7 @@ int zhpe_slab_alloc(struct zhpe_slab *slab, size_t size,  struct zhpe_iov *iov)
 	if (!slab->mem)
 		goto done;
 
-	iov->iov_len = size | ZHPE_ZIOV_LEN_KEY_INT;
+	ziov->iov_len = size | ZHPE_ZIOV_LEN_KEY_INT;
 	size = (size + ~CHUNK_SIZE_MASK) & CHUNK_SIZE_MASK;
 	if (size < CHUNK_SIZE_MIN)
 		size = CHUNK_SIZE_MIN;
@@ -825,21 +825,21 @@ int zhpe_slab_alloc(struct zhpe_slab *slab, size_t size,  struct zhpe_iov *iov)
 	if (chunk->size - size <= CHUNK_SIZE_MIN + CHUNK_SIZE_SIZE + 1) {
 		/* No. */
 		dlist_remove(&chunk->lentry);
-		iov->iov_base = ((char *)chunk + CHUNK_DATA_OFF);
+		ziov->iov_base = ((char *)chunk + CHUNK_DATA_OFF);
 	} else {
 		chunk->size -= size + CHUNK_SIZE_SIZE;
 		next = _next_chunk(chunk);
 		next->prev_size = (chunk->size & CHUNK_SIZE_MASK);
 		next->size = size;
-		iov->iov_base = ((char *)next + CHUNK_DATA_OFF);
+		ziov->iov_base = ((char *)next + CHUNK_DATA_OFF);
 		chunk = next;
 	}
 	next = _next_chunk(chunk);
 	next->size |= CHUNK_SIZE_PINUSE;
 	slab_check(slab);
-	iov->iov_desc = slab->zmr;
-	(void)zhpeq_lcl_key_access(slab->zmr->kdata, iov->iov_base, size,
-				   0, &iov->iov_zaddr);
+	ziov->iov_desc = slab->zmr;
+	(void)zhpeq_lcl_key_access(slab->zmr->kdata, ziov->iov_base, size,
+				   0, &ziov->iov_zaddr);
 	ret = 0;
  done:
 	return ret;
@@ -932,14 +932,12 @@ int zhpe_iov_op(struct zhpe_pe_root *pe_root,
 			  uint64_t rza, void *context),
 		size_t *rem)
 {
-	int			ret = 0;
+	int64_t			ret = 0;
 	struct zhpeq		*zq = pe_root->conn->ztx->zq;
-	struct zhpe_iov_state	save_lstate = *lstate;
-	struct zhpe_iov_state	save_rstate = *rstate;
-	int64_t			rc;
-	uint32_t		zindex;
-	size_t			ops;
-	size_t			bytes;
+	int64_t			zindex = -1;
+	size_t			ops = 0;
+	size_t			bytes = 0;
+	int			rc;
 	size_t			len;
 	size_t			llen;
 	size_t			rlen;
@@ -947,78 +945,61 @@ int zhpe_iov_op(struct zhpe_pe_root *pe_root,
 	uint64_t		rza;
 	void			*lptr;
 
-	/* Note: caller should initialize pe_root->completions zero or some
-	 * other appropirate value and set the ZHPE_PE_PROV flag, if
-	 * required.
-	 *
-	 * We need to determine the number of ops before reserve them.
-	 */
-	ops = 0;
-	bytes = 0;
-	while (!zhpe_iov_state_empty(lstate) &&
-	       !zhpe_iov_state_empty(rstate) &&
-	       ops < max_ops && bytes < max_bytes) {
+	while (*rem > 0 && ops < max_ops && bytes < max_bytes) {
 
-		llen = zhpe_ziov_state_len(lstate);
-		rlen = zhpe_ziov_state_len(rstate);
-		len = llen;
+		llen = zhpe_iov_state_len(lstate);
+		rlen = zhpe_iov_state_len(rstate);
+		len = *rem;
+		if (len > llen)
+			len = llen;
 		if (len > rlen)
 			len = rlen;
-		ops++;
-		bytes += len;
-		zhpe_ziov_state_adv(lstate, len);
-		zhpe_ziov_state_adv(rstate, len);
-	}
-	*lstate = save_lstate;
-	*rstate = save_rstate;
-
-	max_ops = ops;
-	if (!ops)
-		goto done;
-	if (bytes < max_bytes)
-		max_bytes = bytes;
-	for (;;) {
-		rc = zhpeq_reserve(zq, max_ops);
-		if (rc >= 0)
+		if (!len)
 			break;
-		if (max_ops == 1 || rc != -FI_EAGAIN) {
-			ret = rc;
-			goto done;
+
+		if (zindex < 0) {
+			ret = zhpeq_reserve(zq, 1);
+			if (ret < 0)
+				break;
+			zindex = ret;
+		} else {
+			ret = zhpeq_reserve_next(zq, zindex);
+			if (ret < 0) {
+				/*
+				 * Can only be EAGAIN, suppress error and
+				 * commit earlier ops.
+				 */
+				ret = 0;
+				break;
+			}
 		}
-		max_ops = 1;
-	}
-	zindex = rc;
 
-	atm_add(&pe_root->compstat.completions, max_ops);
+		lptr = zhpe_iov_state_ptr(lstate);
+		lza = zhpe_iov_state_zaddr(lstate);
+		rza = zhpe_iov_state_zaddr(rstate);
 
-	for (ops = 0; ops < max_ops; ops++) {
-		llen = zhpe_ziov_state_len(lstate);
-		lptr = zhpe_iov_state_ptr(lstate, ZHPE_IOV_ZIOV);
-		lza = zhpe_ziov_state_zaddr(lstate);
-		rlen = zhpe_ziov_state_len(rstate);
-		rza = zhpe_ziov_state_zaddr(rstate);
-
-		len = llen;
-		if (len > rlen)
-			len = rlen;
-		if (len > max_bytes)
-			len = max_bytes;
-		max_bytes -= len;
-		*rem -= len;
 		ret = op(zq, zindex + ops, false, lptr, lza, len, rza, pe_root);
-		if (ret < 0)
-			break;
-		zhpe_ziov_state_adv(lstate, len);
-		zhpe_ziov_state_adv(rstate, len);
-	}
-	if (ret < 0) {
-		for (; ops < max_ops; ops++)
+		/* Bump ops for potential error handling. */
+		if (ret < 0) {
 			zhpeq_nop(zq, zindex + ops, false,
 				  ZHPE_CONTEXT_IGNORE_PTR);
-	}
-	ret = zhpe_zq_commit_spin(zq, zindex, max_ops);
+			ops++;
+			break;
+		}
 
- done:
+		ops++;
+		bytes += len;
+		*rem -= len;
+		zhpe_iov_state_adv(lstate, len);
+		zhpe_iov_state_adv(rstate, len);
+	}
+	if (ops) {
+		pe_root->compstat.completions += ops;
+		rc = zhpe_zq_commit_spin(zq, zindex, ops);
+		if (rc < 0 && ret >= 0)
+			ret = rc;
+	}
+
 	return (ret < 0 ? ret : ops);
 }
 
@@ -1030,7 +1011,11 @@ int zhpe_put_imm_to_iov(struct zhpe_pe_root *pe_root, void *lbuf,
 		.iov_base = lbuf,
 		.iov_len = llen,
 	};
-	struct zhpe_iov_state	lstate = { .viov = &liov, .cnt = 1 };
+	struct zhpe_iov_state	lstate = {
+		.ops		= &zhpe_iov_state_ziovl_ops,
+		.viov		= &liov,
+		.cnt		= 1,
+	};
 
 	if (llen > ZHPEQ_IMM_MAX)
 		return -FI_EINVAL;
@@ -1047,7 +1032,11 @@ int zhpe_iov_to_get_imm(struct zhpe_pe_root *pe_root,
 	struct zhpe_iov		liov = {
 		.iov_len = llen,
 	};
-	struct zhpe_iov_state	lstate = { .viov = &liov, .cnt = 1 };
+	struct zhpe_iov_state	lstate = {
+		.ops		= &zhpe_iov_state_ziovl_ops,
+		.viov		= &liov,
+		.cnt		= 1,
+	};
 
 	if (llen > ZHPEQ_IMM_MAX)
 		return -FI_EINVAL;
@@ -1166,7 +1155,7 @@ int zhpe_conn_key_export(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
 	 * hidden.
 	 */
 	if (ret == -FI_EAGAIN) {
-		if (ohdr.op_type == ZHPE_OP_KEY_REQUEST)
+		if (ohdr.op_type == ZHPE_OP_KEY_RESPONSE)
 			ret = 0;
 		else {
 			seq++;
@@ -1439,6 +1428,149 @@ int zhpe_recv_fixed_blob(int sock_fd, void *blob, size_t blob_len)
  done:
 
 	return ret;
+}
+
+static void *zhpe_iov_ptr(const struct zhpe_iov_state *state)
+{
+	struct iovec		*iov = state->viov;
+
+	return ((char *)iov[state->idx].iov_base + state->off);
+}
+
+static void *zhpe_ziovl_ptr(const struct zhpe_iov_state *state)
+{
+	struct zhpe_iov		*iov = state->viov;
+
+	return ((char *)iov[state->idx].iov_base + state->off);
+}
+
+static uint64_t zhpe_iov_len(const struct zhpe_iov_state *state)
+{
+	struct iovec		*iov = state->viov;
+
+	return (iov[state->idx].iov_len - state->off);
+}
+
+static uint64_t zhpe_ziovx_len(const struct zhpe_iov_state *state)
+{
+	struct zhpe_iov		*iov = state->viov;
+
+	return (iov[state->idx].iov_len - state->off);
+}
+
+static uint64_t zhpe_ziovx_zaddr(const struct zhpe_iov_state *state)
+{
+	struct zhpe_iov		*iov = state->viov;
+
+	return iov[state->idx].iov_zaddr + state->off;
+}
+
+struct zhpe_iov_state_ops zhpe_iov_state_iovec_ops = {
+	.iov_ptr		= zhpe_iov_ptr,
+	.iov_len		= zhpe_iov_len,
+};
+
+struct zhpe_iov_state_ops zhpe_iov_state_ziovl_ops = {
+	.iov_ptr		= zhpe_ziovl_ptr,
+	.iov_len		= zhpe_ziovx_len,
+	.iov_zaddr		= zhpe_ziovx_zaddr,
+};
+
+struct zhpe_iov_state_ops zhpe_iov_state_ziovr_ops = {
+	.iov_len		= zhpe_ziovx_len,
+	.iov_zaddr		= zhpe_ziovx_zaddr,
+};
+
+uint64_t zhpe_iov_state_adv(struct zhpe_iov_state *state, uint64_t incr)
+{
+	uint64_t		slen;
+
+	slen = zhpe_iov_state_len(state);
+	state->off += incr;
+	if (state->off == slen) {
+		state->idx++;
+		state->off = 0;
+	}
+
+	return (state->idx >= state->cnt);
+}
+
+uint64_t zhpe_iov_state_avail(const struct zhpe_iov_state *state)
+{
+	uint64_t		ret;
+	struct zhpe_iov		*ziov = state->viov;
+	size_t			i;
+
+	assert(state->ops != &zhpe_iov_state_iovec_ops);
+	ret = zhpe_iov_state_len(state);
+	for (i = state->idx + 1; i < state->cnt; i++)
+		ret += zhpe_ziov_len(&ziov[i]);
+
+	return ret;
+}
+
+size_t copy_iov(struct zhpe_iov_state *dstate, struct zhpe_iov_state *sstate,
+		size_t n)
+{
+	size_t			ret = 0;
+	size_t			len;
+	size_t			slen;
+	size_t			dlen;
+	char			*sptr;
+	char			*dptr;
+
+	while (n > 0 &&
+	       !zhpe_iov_state_empty(sstate) &&
+	       !zhpe_iov_state_empty(dstate)) {
+		slen = zhpe_iov_state_len(sstate);
+		sptr = zhpe_iov_state_ptr(sstate);
+		dlen = zhpe_iov_state_len(dstate);
+		dptr = zhpe_iov_state_ptr(dstate);
+
+		len = n;
+		if (len > slen)
+			len = slen;
+		if (len > dlen)
+			len = dlen;
+		memcpy(dptr, sptr, len);
+
+		ret += len;
+		n -= len;
+		zhpe_iov_state_adv(sstate, len);
+		zhpe_iov_state_adv(dstate, len);
+	}
+
+	return ret;
+}
+
+size_t copy_iov_to_mem(void *dst, struct zhpe_iov_state *sstate, size_t n)
+{
+	struct iovec		diov = {
+		.iov_base	= dst,
+		.iov_len	= n,
+	};
+	struct zhpe_iov_state	dstate = {
+		.ops		= &zhpe_iov_state_iovec_ops,
+		.viov		= &diov,
+		.cnt		= 1,
+	};
+
+	return copy_iov(&dstate, sstate, n);
+}
+
+size_t copy_mem_to_iov(struct zhpe_iov_state *dstate, const void *src, size_t n)
+{
+	struct iovec		siov = {
+		.iov_base	= (void *)src,
+		.iov_len	= n,
+	};
+	struct zhpe_iov_state	sstate = {
+		.ops		= &zhpe_iov_state_iovec_ops,
+		.viov		= &siov,
+		.cnt		= 1,
+	};
+
+	return copy_iov(dstate, &sstate, n);
 }
 
 #if ENABLE_DEBUG

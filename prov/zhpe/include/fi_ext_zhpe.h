@@ -56,6 +56,14 @@ struct fi_zhpe_mmap_desc {
 	size_t			length;
 };
 
+#define FI_ZHPE_EP_COUNTERS_VERSION (0)
+
+struct fi_zhpe_ep_counters {
+	uint32_t		version;
+	uint32_t		len;
+	uint64_t		hw_atomics;
+};
+
 /* zhpe provider specific ops */
 struct fi_zhpe_ext_ops_v1 {
 	int (*lookup)(const char *url, void **sa, size_t *sa_len);
@@ -65,7 +73,10 @@ struct fi_zhpe_ext_ops_v1 {
 		    struct fi_zhpe_mmap_desc **mmap_desc);
 	int (*munmap)(struct fi_zhpe_mmap_desc *mmap_desc);
 	int (*commit)(struct fi_zhpe_mmap_desc *mmap_desc,
-		      const void *addr, size_t length, bool fence);
+		      const void *addr, size_t length, bool fence,
+		      bool invalidate, bool wait);
+	int (*ep_counters)(struct fid_ep *ep,
+			   struct fi_zhpe_ep_counters *counters);
 };
 
 #ifdef  __cplusplus
