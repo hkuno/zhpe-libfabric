@@ -558,7 +558,7 @@ int zhpe_domain(struct fid_fabric *fabric, struct fi_info *info,
 			goto err0;
 	}
 
-	zhpe_domain = calloc_cachealigned(1, sizeof(*zhpe_domain));
+	zhpe_domain = xcalloc_cachealigned(1, sizeof(*zhpe_domain));
 	if (!zhpe_domain) {
 		ret = -FI_ENOMEM;
 		goto err0;

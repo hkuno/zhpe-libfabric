@@ -42,7 +42,7 @@ struct zhpe_rx_ctx *zhpe_rx_ctx_alloc(const struct fi_rx_attr *attr,
 	int			rc;
 	struct zhpe_rx_ctx	*rx_ctx;
 
-	rx_ctx = calloc_cachealigned(1, sizeof(*rx_ctx));
+	rx_ctx = xcalloc_cachealigned(1, sizeof(*rx_ctx));
 	if (!rx_ctx)
 		return NULL;
 
@@ -146,7 +146,7 @@ static struct zhpe_tx_ctx *zhpe_tx_context_alloc(const struct fi_tx_attr *attr,
 {
 	struct zhpe_tx_ctx	*tx_ctx;
 
-	tx_ctx = calloc_cachealigned(1, sizeof(*tx_ctx));
+	tx_ctx = xcalloc_cachealigned(1, sizeof(*tx_ctx));
 	if (!tx_ctx)
 		return NULL;
 

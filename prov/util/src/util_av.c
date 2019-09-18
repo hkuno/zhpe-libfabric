@@ -424,7 +424,7 @@ static int util_av_init(struct util_av *av, const struct fi_av_attr *attr,
 {
 	int ret = 0;
 	size_t max_count;
-	struct ofi_bufpool_attr pool_attr = {
+	struct xbofi_bufpool_attr pool_attr = {
 		.size		= util_attr->addrlen +
 				  sizeof(struct util_av_entry),
 		.alignment	= 16,

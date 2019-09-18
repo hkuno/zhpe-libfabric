@@ -609,7 +609,7 @@ int zhpe_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr,
 	if (ret)
 		return ret;
 
-	zhpe_cq = calloc_cachealigned(1, sizeof(*zhpe_cq));
+	zhpe_cq = xcalloc_cachealigned(1, sizeof(*zhpe_cq));
 	if (!zhpe_cq)
 		return -FI_ENOMEM;
 

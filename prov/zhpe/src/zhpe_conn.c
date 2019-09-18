@@ -75,7 +75,7 @@ struct zhpe_conn *zhpe_conn_insert(struct zhpe_ep_attr *ep_attr,
 {
 	struct zhpe_conn	*conn;
 
-	conn = calloc_cachealigned(1, sizeof(*conn));
+	conn = xcalloc_cachealigned(1, sizeof(*conn));
 	if (!conn)
 		goto done;
 
@@ -648,35 +648,37 @@ int zhpe_gethostaddr(sa_family_t family, union sockaddr_in46 *addr)
 	return ret;
 }
 
-int zhpe_checklocaladdr(const struct ifaddrs *ifaddrs,
-			const union sockaddr_in46 *addr)
+int zhpe_checklocaladdr(const union sockaddr_in46 *addr)
 {
 	int			ret = 1;
-	struct ifaddrs		*ifaddrs_local = NULL;
+	struct ifaddrs		*ifaddrs = NULL;
 	const struct ifaddrs	*ifa;
+	union sockaddr_in46	acopy;
 
 	if (sockaddr_loopback(addr, true))
 		goto done;
 
-	if (!ifaddrs) {
-		ret = ofi_getifaddrs(&ifaddrs_local);
-		if (ret < 0) {
-			ZHPE_LOG_ERROR("ofi_getifaddrs() failed: %s\n",
-				       strerror(errno));
-			goto done;
-		}
+	ret = ofi_getifaddrs(&ifaddrs);
+	if (ret < 0) {
+		ZHPE_LOG_ERROR("ofi_getifaddrs() failed: %s\n",
+			       fi_strerror(-ret));
+		goto done;
 	}
 
+	sockaddr_cpy(&acopy, addr);
+	acopy.sa_port = 0;
 	ret = 0;
-	for (ifa = (ifaddrs ?: ifaddrs_local); ifa; ifa = ifa->ifa_next) {
-		if (!ifa->ifa_addr || !(ifa->ifa_flags & IFF_UP))
+	for (ifa = ifaddrs; ifa; ifa = ifa->ifa_next) {
+		if (!ifa->ifa_addr || !(ifa->ifa_flags & IFF_UP) ||
+		    !zhpeu_sockaddr_inet(ifa->ifa_addr))
 			continue;
-		ret = !sockaddr_cmp_noport(addr, ifa->ifa_addr);
-		if (ret)
+		((union sockaddr_in46 *)ifa->ifa_addr)->sin_port = 0;
+		if (!zhpeu_sockaddr_cmp(addr, ifa->ifa_addr)) {
+			ret = 1;
 			break;
+		}
 	}
-	if (ifaddrs_local)
-		freeifaddrs(ifaddrs_local);
+	freeifaddrs(ifaddrs);
  done:
 	return ret;
 }

@@ -89,7 +89,7 @@ static int do_tx_setup(struct zhpe_ep_attr *ep_attr, struct zhpe_tx **ztx_out)
 	struct zhpe_free_index	ufree;
 	struct zhpe_free_index	pfree;
 
-	ztx = calloc_cachealigned(1, sizeof(*ztx));
+	ztx = xcalloc_cachealigned(1, sizeof(*ztx));
 	if (!ztx)
 		goto done;
 	dlist_init(&ztx->pe_lentry);
@@ -1571,6 +1571,90 @@ size_t copy_mem_to_iov(struct zhpe_iov_state *dstate, const void *src, size_t n)
 	};
 
 	return copy_iov(dstate, &sstate, n);
+}
+
+const char *zhpe_straddr(char *buf, size_t *len,
+			 uint32_t addr_format, const void *addr)
+{
+	const char		*ret = NULL;
+	char			*s;
+	char			*colon;
+	int			size;
+
+	if (!len || !addr)
+		goto done;
+	if (addr_format == FI_FORMAT_UNSPEC)
+		if (zhpeu_sockaddr_inet(addr))
+			addr_format = FI_SOCKADDR;
+		else if (zhpeu_sockaddr_family(addr) != AF_ZHPE)
+			goto done;
+	}
+	if (addr_format != FI_FORMAT_UNSPEC) {
+		ret = ofi_straddr(buf, len, addr_format, addr);
+		goto done;
+	}
+	/* A zhpe address. */
+	s = zhpeu_sockaddr_str(addr);
+	if (!s)
+		goto done;
+	/* Leading characters are xxx: */
+	colon = strchr(s, ':');
+	if (!colon)
+		colon = s;
+	else
+		colon++;
+	size = snprintf(buf, *len, "fi_addr_zhpe://%s", colon);
+	free(s);
+	if (size < 0) {
+		size = -1;
+		goto done;
+	}
+	ret = buf;
+
+ done:
+	/* Make sure that possibly truncated messages have a null terminator. */
+	if (buf && *len)
+		buf[*len - 1] = '\0';
+	*len = size + 1;
+
+	return ret;
+}
+
+char *zhpe_astraddr(uint32_t addr_format, const void *addr)
+{
+	char			*ret;
+	char			*buf = NULL;
+	char			first_buf[1];
+	size_t			len;
+
+	ret = zhpe_straddr(first_buf, &len, addr_format, addr);
+	if (!ret)
+		goto done;
+	buf = malloc(len);
+	if (!buf)
+		goto done;
+	ret = zhpe_straddr(str, len, addr_format, addr);
+	if (!ret) {
+		free(str);
+		goto done;
+	}
+	ret = str;
+
+	return ret;
+}
+
+void zhpe_straddr_log(const char *func, uint line, enum fi_log_level level,
+		      enum fi_log_subsys subsys, const char *log_str,
+		      const void *addr)
+{
+	char			*addr_str = NULL;\
+
+	if (fi_log_enabled(&zhpe_prov, level, subsys))
+		return;
+	addr_str = zhpe_astraddr(FI_FORMAT_UNSPEC, addr);
+	fi_log(&zhpe_prov, level, subsys, callf, line,
+	       "%s: %s\n", log_str, (addr_str ?: ""));
+	free(addr_str);
 }
 
 #if ENABLE_DEBUG

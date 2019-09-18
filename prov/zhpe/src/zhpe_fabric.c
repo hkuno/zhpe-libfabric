@@ -198,8 +198,6 @@ int zhpe_verify_info(uint32_t api_version, const struct fi_info *hints,
 	enum fi_ep_type		ep_type;
 	struct zhpe_domain	*domain;
 	struct zhpe_fabric	*fabric;
-	struct addrinfo		ai;
-	struct addrinfo		*rai;
 
 	if (!hints)
 		return 0;
@@ -243,21 +241,7 @@ int zhpe_verify_info(uint32_t api_version, const struct fi_info *hints,
 	switch (hints->addr_format) {
 
 	case FI_FORMAT_UNSPEC:
-
-	case FI_SOCKADDR:
-		/* FIXME: Think about FI_SOCKADDR vs IPV6 some more. */
-	case FI_SOCKADDR_IN:
-		break;
-
-	case FI_SOCKADDR_IN6:
-		/* Are IPV6 addresses configured? */
-		zhpe_getaddrinfo_hints_init(&ai, AF_INET6);
-		ai.ai_flags |= AI_PASSIVE;
-		ret = zhpe_getaddrinfo(NULL, "0", &ai, &rai);
-		if (ret < 0)
-			/* No. */
-			return -FI_ENODATA;
-		freeaddrinfo(rai);
+		/* We roll our own addresses. */
 		break;
 
 	default:
@@ -693,7 +677,7 @@ static bool hints_addr_valid(const struct fi_info *hints,
 	} else if (sa->sa_family != AF_INET)
 		return false;
 
-	return sockaddr_valid(addr, addr_len, true);
+	return zhpeu_sockaddr_valid(addr, addr_len, true);
 }
 
 static int zhpe_ep_getinfo(uint32_t api_version, const char *node,
@@ -753,10 +737,11 @@ static int zhpe_ep_getinfo(uint32_t api_version, const char *node,
 
 	if (src_addr)
 		ZHPE_LOG_DBG("src_addr: %s\n",
-			     sockaddr_ntop(src_addr, ntop, sizeof(ntop)));
+			     zhpeu_sockaddr_ntop(src_addr, ntop, sizeof(ntop)));
 	if (dest_addr)
 		ZHPE_LOG_DBG("dest_addr: %s\n",
-			     sockaddr_ntop(dest_addr, ntop, sizeof(ntop)));
+			     zhpeu_sockaddr_ntop(dest_addr, ntop,
+						 sizeof(ntop)));
 
 	switch (ep_type) {
 	case FI_EP_MSG:

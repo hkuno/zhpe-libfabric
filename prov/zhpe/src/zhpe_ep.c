@@ -666,10 +666,10 @@ static int zhpe_ep_close(struct fid *fid)
 
 static int zhpe_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags)
 {
-	int ret;
-	size_t i;
-	struct zhpe_ep *ep;
-	struct zhpe_eq *eq;
+	int			ret;
+	size_t			i;
+	struct zhpe_ep		*ep;
+	struct zhpe_eq		*eq;
 	struct zhpe_cq *cq;
 	struct zhpe_av *av;
 	struct zhpe_cntr *cntr;
@@ -825,9 +825,7 @@ static int zhpe_ep_control(struct fid *fid, int command, void *arg)
 
 	case FI_ALIAS:
 		alias = (struct fi_alias *)arg;
-		new_ep = calloc_cachealigned(1, sizeof(*new_ep));
-		if (!new_ep)
-			return -FI_ENOMEM;
+		new_ep = xcalloc_cachealigned(1, sizeof(*new_ep));
 
 		memcpy(&new_ep->tx_attr, &zhpe_ep->tx_attr,
 		       sizeof(struct fi_tx_attr));
@@ -1335,9 +1333,7 @@ int zhpe_alloc_endpoint(struct fid_domain *domain, struct fi_info *info,
 		}
 	}
 
-	zhpe_ep = calloc_cachealigned(1, sizeof(*zhpe_ep));
-	if (!zhpe_ep)
-		return -FI_ENOMEM;
+	zhpe_ep = xcalloc_cachealigned(1, sizeof(*zhpe_ep));
 
 	switch (fclass) {
 	case FI_CLASS_EP:
@@ -1374,11 +1370,7 @@ int zhpe_alloc_endpoint(struct fid_domain *domain, struct fi_info *info,
 		goto err1;
 	}
 
-	zhpe_ep->attr = calloc_cachealigned(1, sizeof(*zhpe_ep->attr));
-	if (!zhpe_ep->attr) {
-		ret = -FI_ENOMEM;
-		goto err1;
-	}
+	zhpe_ep->attr = xcalloc_cachealigned(1, sizeof(*zhpe_ep->attr));
 	zhpe_ep->attr->fclass = fclass;
 	zhpe_ep->attr->ep = zhpe_ep;
 	mutex_init(&zhpe_ep->attr->conn_mutex, NULL);

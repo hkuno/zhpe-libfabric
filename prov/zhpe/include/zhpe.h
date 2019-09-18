@@ -103,8 +103,23 @@
 #define _ZHPE_LOG_INFO(subsys, ...) FI_INFO(&zhpe_prov, subsys, __VA_ARGS__)
 #define _ZHPE_LOG_ERROR(subsys, ...) FI_WARN(&zhpe_prov, subsys, __VA_ARGS__)
 
+void zhpe_straddr_log(const char *func, uint line, enum fi_log_level level,
+		       enum fi_log_subsys subsys, const char *str,
+		       const void *addr);
+
+char *zhpe_straddr(uint32_t addr_format, const void *addr);
+
+#define _zhpe_straddr_log(...)					\
+	zhpe_straddr_log(__func__, __LINE__, __VA_ARGS__)
+#define _zhpe_straddr_log(...)					\
+	zhpe_straddr_log(__func__, __LINE__, __VA_ARGS__)
+
 #ifdef ENABLE_DEBUG
+#define zhpe_straddr_dbg(...)					\
+	_zhpe_straddr_log(FI_LOG_DEBUG, __VA_ARGS__)
 void gdb_hook(void);
+#else
+#define zhpe_straddr_log_dbg(_subsys, ...)
 #endif
 
 static inline int zhpe_sa_family(const struct fi_info *info)
@@ -133,7 +148,7 @@ static inline int zhpe_sa_family(const struct fi_info *info)
 extern const char zhpe_fab_name[];
 extern const char zhpe_dom_name[];
 extern const char zhpe_prov_name[];
-extern struct fi_provider zhpe_prov;
+extern struct util_prov zhpe_prov;
 extern int zhpe_pe_waittime;
 extern int zhpe_conn_retry;
 extern int zhpe_cm_def_map_sz;
@@ -284,11 +299,7 @@ enum {
 #define ZHPE_WIRE_PROTO_VERSION (1)
 
 struct zhpe_fabric {
-	struct fid_fabric	fab_fid;
-	int32_t			ref;
-	struct dlist_entry	service_list;
-	struct dlist_entry	fab_lentry;
-	fastlock_t		lock;
+	struct util_fabric	util_fabric;
 };
 
 #define ZHPE_RING_ENTRY_LEN		((size_t)64)
@@ -471,21 +482,10 @@ struct zhpe_conn {
 
 struct zhpe_domain {
 	struct util_domain	util_domain;
-	struct fi_info		info;
-	struct fi_domain_attr	attr;
-	struct zhpe_fabric	*fab;
-	fastlock_t		lock;
-	int32_t			ref;
-
-	struct zhpe_eq		*eq;
-	struct zhpe_eq		*mr_eq;
-
-	enum fi_progress	progress_mode;
 	RbtHandle		mr_tree;
 	uint64_t		mr_user_key;
 	uint64_t		mr_zhpe_key;
 	struct zhpe_pe		*pe;
-	struct dlist_entry	dom_lentry;
 	struct zhpeq_dom	*zdom;
 
 	int			(*reg_int)(struct zhpe_domain *domain,
@@ -566,27 +566,9 @@ struct zhpe_trigger {
 };
 
 struct zhpe_cntr {
-	struct fid_cntr		cntr_fid;
-	struct zhpe_domain	*domain;
-	uint32_t		value;
-	int32_t			ref;
-	uint32_t		err_cnt;
-	uint32_t		last_read_val;
-	pthread_cond_t 		cond;
-	pthread_mutex_t		mut;
-	struct fi_cntr_attr	attr;
-
-	struct dlist_entry	rx_list;
-	struct dlist_entry	tx_list;
-	fastlock_t		list_lock;
-
+	struct util_cntr	util_cntr;
 	fastlock_t		trigger_lock;
 	struct dlist_entry	trigger_list;
-
-	struct fid_wait		*waitset;
-	int			signal;
-	uint32_t		num_waiting;
-	int			err_flag;
 };
 
 struct zhpe_mr_ops {
@@ -610,31 +592,8 @@ struct zhpe_mr_cached {
 	struct ofi_mr_entry	*entry;
 };
 
-struct zhpe_av_addr {
-	union sockaddr_in46	addr;
-};
-
-struct zhpe_av_table_hdr {
-	uint64_t		size;
-	uint64_t		stored;
-};
-
 struct zhpe_av {
-	struct fid_av av_fid;
-	struct zhpe_domain *domain;
-	int32_t ref;
-	struct fi_av_attr attr;
-	uint64_t mask;
-	int rx_ctx_bits;
-	socklen_t addrlen;
-	struct zhpe_eq *eq;
-	struct zhpe_av_table_hdr *table_hdr;
-	struct zhpe_av_addr *table;
-	uint64_t *idx_arr;
-	struct util_shm shm;
-	int    shared;
-	struct dlist_entry ep_list;
-	fastlock_t list_lock;
+	struct util_av		util_av;
 };
 
 struct zhpe_fid_list {
@@ -906,6 +865,7 @@ struct zhpe_ep_attr {
 };
 
 struct zhpe_ep {
+	struct  util_ep		util_ep;
 	struct fid_ep ep;
 	struct fi_tx_attr tx_attr;
 	struct fi_rx_attr rx_attr;
@@ -914,13 +874,7 @@ struct zhpe_ep {
 };
 
 struct zhpe_pep {
-	struct fid_pep		pep;
-	struct zhpe_fabric	*zhpe_fab;
-	struct zhpe_cm_entry	cm;
-        union sockaddr_in46	src_addr;
-	struct fi_info		info;
-	struct zhpe_eq		*eq;
-	int			name_set;
+	struct util_pep		util_pep;
 };
 
 struct zhpe_pe_retry;
@@ -2033,8 +1987,7 @@ int zhpe_getaddrinfo(const char *node, const char *service,
 		     struct addrinfo *hints, struct addrinfo **res);
 struct addrinfo *zhpe_findaddrinfo(struct addrinfo *res, int family);
 int zhpe_gethostaddr(sa_family_t family, union sockaddr_in46 *addr);
-int zhpe_checklocaladdr(const struct ifaddrs *ifaddrs,
-			const union sockaddr_in46 *sa);
+int zhpe_checklocaladdr(const union sockaddr_in46 *sa);
 
 static inline uint32_t zhpe_convert_access(uint64_t access) {
 	uint32_t		ret = 0;

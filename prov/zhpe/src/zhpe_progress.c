@@ -1739,9 +1739,7 @@ struct zhpe_pe *zhpe_pe_init(struct zhpe_domain *domain)
 {
 	struct zhpe_pe *pe;
 
-	pe = calloc_cachealigned(1, sizeof(*pe));
-	if (!pe)
-		return NULL;
+	pe = xcalloc_cachealigned(1, sizeof(*pe));
 
 	zhpeu_work_head_init(&pe->work_head);
 	dlist_init(&pe->queue_list);
