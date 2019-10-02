@@ -38,10 +38,18 @@
 #include <ofi_prov.h>
 #include "rxm.h"
 
-int rxm_defer_requests = 0;
+#define RXM_ATOMIC_UNSUPPORTED_MSG_ORDER (OFI_ORDER_RAR_SET | OFI_ORDER_RAW_SET | \
+					  OFI_ORDER_WAR_SET | OFI_ORDER_WAW_SET | \
+					  FI_ORDER_SAR | FI_ORDER_SAW)
+
+#define RXM_PASSTHRU_CAPS (FI_MSG | FI_RMA | FI_SEND | FI_RECV |	\
+			   FI_READ | FI_WRITE | FI_REMOTE_READ |	\
+			   FI_REMOTE_WRITE)
+
 size_t rxm_msg_tx_size		= 128;
 size_t rxm_msg_rx_size		= 128;
 size_t rxm_def_univ_size	= 256;
+size_t rxm_eager_limit		= RXM_BUF_SIZE - sizeof(struct rxm_pkt);
 
 char *rxm_proto_state_str[] = {
 	RXM_PROTO_STATES(OFI_STR)
@@ -81,33 +89,49 @@ void rxm_info_to_core_mr_modes(uint32_t version, const struct fi_info *hints,
 int rxm_info_to_core(uint32_t version, const struct fi_info *hints,
 		     struct fi_info *core_info)
 {
+	int use_srx = 0;
+
 	rxm_info_to_core_mr_modes(version, hints, core_info);
 
 	core_info->mode |= FI_RX_CQ_DATA | FI_CONTEXT;
 
 	if (hints) {
-		if (hints->caps & FI_TAGGED)
-			core_info->caps |= FI_MSG;
+		core_info->caps = hints->caps & RXM_PASSTHRU_CAPS;
+		if (hints->caps & (FI_ATOMIC | FI_TAGGED))
+			core_info->caps |= FI_MSG | FI_SEND | FI_RECV;
 
 		/* FI_RMA cap is needed for large message transfer protocol */
-		if (hints->caps & (FI_MSG | FI_TAGGED))
-			core_info->caps |= FI_RMA;
+		if (core_info->caps & FI_MSG)
+			core_info->caps |= FI_RMA | FI_READ | FI_REMOTE_READ;
 
 		if (hints->domain_attr) {
 			core_info->domain_attr->caps |= hints->domain_attr->caps;
+			core_info->domain_attr->threading = hints->domain_attr->threading;
 		}
 		if (hints->tx_attr) {
+			core_info->tx_attr->op_flags =
+				hints->tx_attr->op_flags & RXM_PASSTHRU_TX_OP_FLAGS;
 			core_info->tx_attr->msg_order = hints->tx_attr->msg_order;
 			core_info->tx_attr->comp_order = hints->tx_attr->comp_order;
 		}
 		if (hints->rx_attr) {
+			core_info->rx_attr->op_flags =
+				hints->rx_attr->op_flags & RXM_PASSTHRU_RX_OP_FLAGS;
 			core_info->rx_attr->msg_order = hints->rx_attr->msg_order;
 			core_info->rx_attr->comp_order = hints->rx_attr->comp_order;
 		}
 	}
 	core_info->ep_attr->type = FI_EP_MSG;
+	if (!fi_param_get_bool(&rxm_prov, "use_srx", &use_srx) && use_srx) {
+		FI_DBG(&rxm_prov, FI_LOG_FABRIC,
+		       "Requesting shared receive context from core provider\n");
+		core_info->ep_attr->rx_ctx_cnt = FI_SHARED_CONTEXT;
+	}
 
+	core_info->tx_attr->op_flags &= ~RXM_TX_OP_FLAGS;
 	core_info->tx_attr->size = rxm_msg_tx_size;
+
+	core_info->rx_attr->op_flags &= ~FI_MULTI_RECV;
 	core_info->rx_attr->size = rxm_msg_rx_size;
 
 	return 0;
@@ -117,7 +141,8 @@ int rxm_info_to_rxm(uint32_t version, const struct fi_info *core_info,
 		    struct fi_info *info)
 {
 	info->caps = rxm_info.caps;
-	info->mode = core_info->mode | rxm_info.mode;
+	// TODO find which other modes should be filtered
+	info->mode = (core_info->mode & ~FI_RX_CQ_DATA) | rxm_info.mode;
 
 	info->tx_attr->caps		= rxm_info.tx_attr->caps;
 	info->tx_attr->mode		= info->mode;
@@ -131,7 +156,7 @@ int rxm_info_to_rxm(uint32_t version, const struct fi_info *core_info,
 					      core_info->tx_attr->rma_iov_limit);
 
 	info->rx_attr->caps		= rxm_info.rx_attr->caps;
-	info->rx_attr->mode		= info->mode;
+	info->rx_attr->mode		= info->rx_attr->mode & ~FI_RX_CQ_DATA;
 	info->rx_attr->msg_order 	= core_info->rx_attr->msg_order;
 	info->rx_attr->comp_order 	= rxm_info.rx_attr->comp_order;
 	info->rx_attr->size 		= rxm_info.rx_attr->size;
@@ -150,25 +175,29 @@ int rxm_info_to_rxm(uint32_t version, const struct fi_info *core_info,
 					      rxm_info.domain_attr->cq_data_size);
 	info->domain_attr->mr_key_size = core_info->domain_attr->mr_key_size;
 
+	if (core_info->nic) {
+		info->nic = ofi_nic_dup(core_info->nic);
+		if (!info->nic)
+			return -FI_ENOMEM;
+	}
+
 	return 0;
 }
 
 static int rxm_init_info(void)
 {
-	int param;
+	size_t param;
 
-	if (!fi_param_get_int(&rxm_prov, "buffer_size", &param)) {
+	if (!fi_param_get_size_t(&rxm_prov, "buffer_size", &param)) {
 		if (param > sizeof(struct rxm_pkt)) {
-			rxm_info.tx_attr->inject_size = param;
+			rxm_eager_limit = param - sizeof(struct rxm_pkt);
 		} else {
 			FI_WARN(&rxm_prov, FI_LOG_CORE,
 				"Requested buffer size too small\n");
 			return -FI_EINVAL;
 		}
-	} else {
-		rxm_info.tx_attr->inject_size = RXM_BUF_SIZE;
 	}
-	rxm_info.tx_attr->inject_size -= sizeof(struct rxm_pkt);
+	rxm_info.tx_attr->inject_size = rxm_eager_limit;
 	rxm_util_prov.info = &rxm_info;
 	return 0;
 }
@@ -178,15 +207,54 @@ static void rxm_alter_info(const struct fi_info *hints, struct fi_info *info)
 	struct fi_info *cur;
 
 	for (cur = info; cur; cur = cur->next) {
+		/* RxM can support higher inject size without any big
+		 * performance penalty even if app had requested lower value
+		 * in hints. App is still free to reduce this when opening an
+		 * endpoint. This overrides setting by ofi_alter_info */
+		cur->tx_attr->inject_size = rxm_eager_limit;
+
 		/* Remove the following caps if they are not requested as they
 		 * may affect performance in fast-path */
 		if (!hints) {
-			cur->caps &= ~(FI_DIRECTED_RECV | FI_SOURCE);
+			cur->caps &= ~(FI_DIRECTED_RECV | FI_SOURCE |
+				       FI_ATOMIC);
+			cur->tx_attr->caps &= ~FI_ATOMIC;
+			cur->rx_attr->caps &= ~FI_ATOMIC;
+			cur->domain_attr->data_progress = FI_PROGRESS_MANUAL;
 		} else {
 			if (!(hints->caps & FI_DIRECTED_RECV))
 				cur->caps &= ~FI_DIRECTED_RECV;
 			if (!(hints->caps & FI_SOURCE))
 				cur->caps &= ~FI_SOURCE;
+
+			if (hints->mode & FI_BUFFERED_RECV)
+				cur->mode |= FI_BUFFERED_RECV;
+
+			if (hints->caps & FI_ATOMIC) {
+				cur->tx_attr->msg_order &=
+					~(RXM_ATOMIC_UNSUPPORTED_MSG_ORDER);
+				cur->rx_attr->msg_order &=
+					~(RXM_ATOMIC_UNSUPPORTED_MSG_ORDER);
+				cur->ep_attr->max_order_raw_size = 0;
+				cur->ep_attr->max_order_war_size = 0;
+				cur->ep_attr->max_order_waw_size = 0;
+			} else {
+				cur->caps &= ~FI_ATOMIC;
+				cur->tx_attr->caps &= ~FI_ATOMIC;
+				cur->rx_attr->caps &= ~FI_ATOMIC;
+			}
+
+			if (!ofi_mr_local(hints)) {
+				cur->mode &= ~FI_LOCAL_MR;
+				cur->tx_attr->mode &= ~FI_LOCAL_MR;
+				cur->rx_attr->mode &= ~FI_LOCAL_MR;
+				cur->domain_attr->mr_mode &= ~FI_MR_LOCAL;
+			}
+
+			if (!hints->domain_attr ||
+			    hints->domain_attr->data_progress != FI_PROGRESS_AUTO)
+				cur->domain_attr->data_progress = FI_PROGRESS_MANUAL;
+
 			if (hints->ep_attr && hints->ep_attr->mem_tag_format &&
 			    (info->caps & FI_TAGGED)) {
 				FI_INFO(&rxm_prov, FI_LOG_CORE,
@@ -198,14 +266,36 @@ static void rxm_alter_info(const struct fi_info *hints, struct fi_info *info)
 					hints->ep_attr->mem_tag_format;
 			}
 		}
+		if (cur->domain_attr->data_progress == FI_PROGRESS_AUTO)
+			cur->domain_attr->threading = FI_THREAD_SAFE;
 	}
+}
+
+static int rxm_validate_atomic_hints(const struct fi_info *hints)
+{
+	if (!hints || !(hints->caps & FI_ATOMIC))
+		return 0;
+
+	if (hints->tx_attr && (hints->tx_attr->msg_order &
+			       RXM_ATOMIC_UNSUPPORTED_MSG_ORDER)) {
+		FI_INFO(&rxm_prov, FI_LOG_CORE,
+		        "Hints tx_attr msg_order not supported for atomics\n");
+		return -FI_EINVAL;
+	}
+	if (hints->rx_attr && (hints->rx_attr->msg_order &
+			       RXM_ATOMIC_UNSUPPORTED_MSG_ORDER)) {
+		FI_INFO(&rxm_prov, FI_LOG_CORE,
+		        "Hints rx_attr msg_order not supported for atomics\n");
+		return -FI_EINVAL;
+	}
+	return 0;
 }
 
 static int rxm_getinfo(uint32_t version, const char *node, const char *service,
 			uint64_t flags, const struct fi_info *hints,
 			struct fi_info **info)
 {
-	struct fi_info *cur, *dup;
+	struct fi_info *cur;
 	struct addrinfo *ai;
 	uint16_t port_save = 0;
 	int ret;
@@ -227,6 +317,9 @@ static int rxm_getinfo(uint32_t version, const char *node, const char *service,
 			ofi_addr_set_port(hints->src_addr, 0);
 		}
 	}
+	ret = rxm_validate_atomic_hints(hints);
+	if (ret)
+		return ret;
 
 	ret = ofix_getinfo(version, node, service, flags, &rxm_util_prov, hints,
 			   rxm_info_to_core, rxm_info_to_rxm, info);
@@ -241,33 +334,6 @@ static int rxm_getinfo(uint32_t version, const char *node, const char *service,
 	}
 
 	rxm_alter_info(hints, *info);
-
-	/* If app supports FI_MR_LOCAL, prioritize requiring it for
-	 * better performance. */
-	if (hints && hints->domain_attr &&
-	    (OFI_CHECK_MR_LOCAL(hints))) {
-		for (cur = *info; cur; cur = cur->next) {
-			if (!OFI_CHECK_MR_LOCAL(cur))
-				continue;
-			dup = fi_dupinfo(cur);
-			if (!dup) {
-				fi_freeinfo(*info);
-				return -FI_ENOMEM;
-			} 
-
-			dup->mode &= ~FI_LOCAL_MR;
-			dup->domain_attr->mr_mode &= ~FI_MR_LOCAL;
-
-			dup->next = cur->next;
-			cur->next = dup;
-			cur = dup;
-		}
-	} else {
-		for (cur = *info; cur; cur = cur->next) {
-			cur->mode &= ~FI_LOCAL_MR;
-			cur->domain_attr->mr_mode &= ~FI_MR_LOCAL;
-		}
-	}
 	return 0;
 }
 
@@ -280,7 +346,7 @@ static void rxm_fini(void)
 struct fi_provider rxm_prov = {
 	.name = OFI_UTIL_PREFIX "rxm",
 	.version = FI_VERSION(RXM_MAJOR_VERSION, RXM_MINOR_VERSION),
-	.fi_version = FI_VERSION(1, 6),
+	.fi_version = FI_VERSION(1, 8),
 	.getinfo = rxm_getinfo,
 	.fabric = rxm_fabric,
 	.cleanup = rxm_fini
@@ -288,23 +354,38 @@ struct fi_provider rxm_prov = {
 
 RXM_INI
 {
-	fi_param_define(&rxm_prov, "buffer_size", FI_PARAM_INT,
-			"Defines the transmit buffer size / inject size. Messages"
-			" of size less than this would be transmitted via an "
-			"eager protocol and those above would be transmitted "
-			"via a rendezvous protocol. Transmit data would be copied"
-			" up to this size (default: ~16k).");
+	fi_param_define(&rxm_prov, "buffer_size", FI_PARAM_SIZE_T,
+			"Defines the transmit buffer size / inject size "
+			"(default: 16 KB). Eager protocol would be used to "
+			"transmit messages of size less than eager limit "
+			"(FI_OFI_RXM_BUFFER_SIZE - RxM header size (%zu B)). "
+			"Any message whose size is greater than eager limit would"
+			" be transmitted via rendezvous or SAR "
+			"(Segmentation And Reassembly) protocol depending on "
+			"the value of FI_OFI_RXM_SAR_LIMIT). Also, transmit data "
+			" would be copied up to eager limit.",
+			sizeof(struct rxm_pkt));
 
 	fi_param_define(&rxm_prov, "comp_per_progress", FI_PARAM_INT,
 			"Defines the maximum number of MSG provider CQ entries "
 			"(default: 1) that would be read per progress "
 			"(RxM CQ read).");
 
-	fi_param_define(&rxm_prov, "defer_requests", FI_PARAM_BOOL,
-			"Defer requests when connection is not established "
-			"(default: false)\n");
+	fi_param_define(&rxm_prov, "sar_limit", FI_PARAM_SIZE_T,
+			"Set this environment variable to enable and control "
+			"RxM SAR (Segmentation And Reassembly) protocol "
+			"(default: 256 KB). This value should be set greater than "
+			" eager limit (FI_OFI_RXM_BUFFER_SIZE - RxM protocol "
+			"header size (%zu B)) for SAR to take effect. Messages "
+			"of size greater than this would be transmitted via "
+			"rendezvous protocol.", sizeof(struct rxm_pkt));
 
-	fi_param_get_bool(&rxm_prov, "defer_requests", &rxm_defer_requests);
+	fi_param_define(&rxm_prov, "use_srx", FI_PARAM_BOOL,
+			"Set this environment variable to control the RxM "
+			"receive path. If this variable set to 1 (default: 0), "
+			"the RxM uses Shared Receive Context. This mode improves "
+			"memory consumption, but it may increase small message "
+			"latency as a side-effect.");
 
 	fi_param_define(&rxm_prov, "tx_size", FI_PARAM_SIZE_T,
 			"Defines default tx context size (default: 1024).");
@@ -322,11 +403,21 @@ RXM_INI
 			"(default: 128). Setting this to 0 would get default "
 			"value defined by the MSG provider.");
 
+	fi_param_define(&rxm_prov, "cm_progress_interval", FI_PARAM_INT,
+			"Defines the number of microseconds to wait between "
+			"function calls to the connection management progression "
+			"functions during fi_cq_read calls. Higher values may "
+			"decrease noise during cq polling, but may result in "
+			"longer connection establishment times. (default: 10000).");
+
 	fi_param_get_size_t(&rxm_prov, "tx_size", &rxm_info.tx_attr->size);
 	fi_param_get_size_t(&rxm_prov, "rx_size", &rxm_info.rx_attr->size);
 	fi_param_get_size_t(&rxm_prov, "msg_tx_size", &rxm_msg_tx_size);
 	fi_param_get_size_t(&rxm_prov, "msg_rx_size", &rxm_msg_rx_size);
 	fi_param_get_size_t(NULL, "universe_size", &rxm_def_univ_size);
+	if (fi_param_get_int(&rxm_prov, "cm_progress_interval",
+				(int *) &rxm_cm_progress_interval))
+		rxm_cm_progress_interval = 10000;
 
 	if (rxm_init_info()) {
 		FI_WARN(&rxm_prov, FI_LOG_CORE, "Unable to initialize rxm_info\n");

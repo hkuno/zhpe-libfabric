@@ -36,33 +36,55 @@
 #define ZHPE_LOG_DBG(...) _ZHPE_LOG_DBG(FI_LOG_EP_DATA, __VA_ARGS__)
 #define ZHPE_LOG_ERROR(...) _ZHPE_LOG_ERROR(FI_LOG_EP_DATA, __VA_ARGS__)
 
-ssize_t zhpe_queue_rma_op(struct fid_ep *ep, const struct fi_msg_rma *msg,
-			  uint64_t flags, enum fi_op_type op_type)
+static int do_trigger_init(struct fid_ep *fid_ep,
+			   struct fi_triggered_context *tcontext,
+			   uint64_t flags, enum fi_op_type op_type,
+			   struct zhpe_trigger **trigger)
 {
-	struct zhpe_cntr *cntr;
-	struct zhpe_trigger *trigger;
-	struct zhpe_triggered_context *trigger_context;
-	struct zhpe_trigger_work *work;
-
-	trigger_context = (struct zhpe_triggered_context *) msg->context;
-	if ((flags & FI_INJECT) || !trigger_context ||
-	    ((trigger_context->event_type != FI_TRIGGER_THRESHOLD) &&
-	     (trigger_context->event_type != ZHPE_DEFERRED_WORK)))
+	if ((flags & FI_INJECT) || !tcontext ||
+	    tcontext->event_type != FI_TRIGGER_THRESHOLD ||
+	    !tcontext->trigger.threshold.cntr)
 		return -FI_EINVAL;
 
-	work = &trigger_context->trigger.work;
-	cntr = container_of(work->triggering_cntr, struct zhpe_cntr, cntr_fid);
-	if (atm_load_rlx(&cntr->value) >= work->threshold)
-		return 1;
-	work->completion_cntr = NULL;
-	flags = (flags & ~FI_TRIGGER) | ZHPE_TRIGGERED_OP;
-
-	trigger = calloc(1, sizeof(*trigger));
-	if (!trigger)
+	*trigger = calloc(1, sizeof(**trigger));
+	if (!*trigger)
 		return -FI_ENOMEM;
 
-	trigger->context = trigger_context;
-	trigger->threshold = work->threshold;
+	(*trigger)->threshold = tcontext->trigger.threshold;
+	(*trigger)->fid_ep = fid_ep;
+	(*trigger)->flags = (flags & ~FI_TRIGGER) | ZHPE_TRIGGERED_OP;
+	(*trigger)->op_type = op_type;
+
+	return 0;
+}
+
+static int do_trigger_queue(struct zhpe_trigger *trigger)
+{
+	int			ret = 1;
+	struct zhpe_cntr	*zcntr;
+
+	zcntr = fid2zcntr(&trigger->threshold.cntr->fid);
+	fastlock_acquire(&zcntr->trigger_lock);
+	if (OFI_LIKELY(zhpe_cntr_read(zcntr) < trigger->threshold.threshold)) {
+		dlist_insert_tail(&trigger->lentry, &zcntr->trigger_list);
+		ret = 0;
+	}
+	fastlock_release(&zcntr->trigger_lock);
+	if (OFI_UNLIKELY(ret))
+		free(trigger);
+
+	return ret;
+}
+
+ssize_t zhpe_queue_rma_op(struct fid_ep *fid_ep, const struct fi_msg_rma *msg,
+			  uint64_t flags, enum fi_op_type op_type)
+{
+	int			rc;
+	struct zhpe_trigger	*trigger;
+
+	rc = do_trigger_init(fid_ep, msg->context, flags, op_type, &trigger);
+	if (rc < 0)
+		return rc;
 
 	memcpy(&trigger->op.rma.msg, msg, sizeof(*msg));
 	trigger->op.rma.msg.msg_iov = &trigger->op.rma.msg_iov[0];
@@ -76,44 +98,18 @@ ssize_t zhpe_queue_rma_op(struct fid_ep *ep, const struct fi_msg_rma *msg,
 	memcpy(&trigger->op.rma.rma_iov[0], &msg->rma_iov[0],
 	       msg->rma_iov_count * sizeof(struct fi_rma_iov));
 
-	trigger->op_type = op_type;
-	trigger->ep = ep;
-	trigger->flags = flags;
-
-	fastlock_acquire(&cntr->trigger_lock);
-	dlist_insert_tail(&trigger->lentry, &cntr->trigger_list);
-	fastlock_release(&cntr->trigger_lock);
-	zhpe_cntr_check_trigger_list(cntr);
-	return 0;
+	return do_trigger_queue(trigger);
 }
 
-ssize_t zhpe_queue_msg_op(struct fid_ep *ep, const struct fi_msg *msg,
+ssize_t zhpe_queue_msg_op(struct fid_ep *fid_ep, const struct fi_msg *msg,
 			  uint64_t flags, enum fi_op_type op_type)
 {
-	struct zhpe_cntr *cntr;
-	struct zhpe_trigger *trigger;
-	struct zhpe_triggered_context *trigger_context;
-	struct zhpe_trigger_work *work;
+	int			rc;
+	struct zhpe_trigger	*trigger;
 
-	trigger_context = (struct zhpe_triggered_context *) msg->context;
-	if ((flags & FI_INJECT) || !trigger_context ||
-	    ((trigger_context->event_type != FI_TRIGGER_THRESHOLD) &&
-	     (trigger_context->event_type != ZHPE_DEFERRED_WORK)))
-		return -FI_EINVAL;
-
-	work = &trigger_context->trigger.work;
-	cntr = container_of(work->triggering_cntr, struct zhpe_cntr, cntr_fid);
-	if (atm_load_rlx(&cntr->value) >= work->threshold)
-		return 1;
-	work->completion_cntr = NULL;
-	flags = (flags & ~FI_TRIGGER) | ZHPE_TRIGGERED_OP;
-
-	trigger = calloc(1, sizeof(*trigger));
-	if (!trigger)
-		return -FI_ENOMEM;
-
-	trigger->context = trigger_context;
-	trigger->threshold = work->threshold;
+	rc = do_trigger_init(fid_ep, msg->context, flags, op_type, &trigger);
+	if (rc < 0)
+		return rc;
 
 	memcpy(&trigger->op.msg.msg, msg, sizeof(*msg));
 	trigger->op.msg.msg.msg_iov = &trigger->op.msg.msg_iov[0];
@@ -123,44 +119,19 @@ ssize_t zhpe_queue_msg_op(struct fid_ep *ep, const struct fi_msg *msg,
 	memcpy(&trigger->op.msg.desc[0], &msg->desc[0],
 	       msg->iov_count * sizeof(void *));
 
-	trigger->op_type = op_type;
-	trigger->ep = ep;
-	trigger->flags = flags;
-
-	fastlock_acquire(&cntr->trigger_lock);
-	dlist_insert_tail(&trigger->lentry, &cntr->trigger_list);
-	fastlock_release(&cntr->trigger_lock);
-	zhpe_cntr_check_trigger_list(cntr);
-	return 0;
+	return do_trigger_queue(trigger);
 }
 
-ssize_t zhpe_queue_tmsg_op(struct fid_ep *ep, const struct fi_msg_tagged *msg,
+ssize_t zhpe_queue_tmsg_op(struct fid_ep *fid_ep,
+			   const struct fi_msg_tagged *msg,
 			   uint64_t flags, enum fi_op_type op_type)
 {
-	struct zhpe_cntr *cntr;
-	struct zhpe_trigger *trigger;
-	struct zhpe_triggered_context *trigger_context;
-	struct zhpe_trigger_work *work;
+	int			rc;
+	struct zhpe_trigger	*trigger;
 
-	trigger_context = (struct zhpe_triggered_context *) msg->context;
-	if ((flags & FI_INJECT) || !trigger_context ||
-	    ((trigger_context->event_type != FI_TRIGGER_THRESHOLD) &&
-	     (trigger_context->event_type != ZHPE_DEFERRED_WORK)))
-		return -FI_EINVAL;
-
-	work = &trigger_context->trigger.work;
-	cntr = container_of(work->triggering_cntr, struct zhpe_cntr, cntr_fid);
-	if (atm_load_rlx(&cntr->value) >= work->threshold)
-		return 1;
-	work->completion_cntr = NULL;
-	flags = (flags & ~FI_TRIGGER) | ZHPE_TRIGGERED_OP;
-
-	trigger = calloc(1, sizeof(*trigger));
-	if (!trigger)
-		return -FI_ENOMEM;
-
-	trigger->context = trigger_context;
-	trigger->threshold = work->threshold;
+	rc = do_trigger_init(fid_ep, msg->context, flags, op_type, &trigger);
+	if (rc < 0)
+		return rc;
 
 	memcpy(&trigger->op.tmsg.msg, msg, sizeof(*msg));
 	trigger->op.tmsg.msg.msg_iov = &trigger->op.tmsg.msg_iov[0];
@@ -170,46 +141,23 @@ ssize_t zhpe_queue_tmsg_op(struct fid_ep *ep, const struct fi_msg_tagged *msg,
 	memcpy(&trigger->op.tmsg.desc[0], &msg->desc[0],
 	       msg->iov_count * sizeof(void *));
 
-	trigger->op_type = op_type;
-	trigger->ep = ep;
-	trigger->flags = flags;
 
-	fastlock_acquire(&cntr->trigger_lock);
-	dlist_insert_tail(&trigger->lentry, &cntr->trigger_list);
-	fastlock_release(&cntr->trigger_lock);
-	zhpe_cntr_check_trigger_list(cntr);
-	return 0;
+	return do_trigger_queue(trigger);
 }
 
-ssize_t zhpe_queue_atomic_op(struct fid_ep *ep, const struct fi_msg_atomic *msg,
-			     const struct fi_ioc *comparev, size_t compare_count,
+ssize_t zhpe_queue_atomic_op(struct fid_ep *fid_ep,
+			     const struct fi_msg_atomic *msg,
+			     const struct fi_ioc *comparev,
+			     size_t compare_count,
 			     struct fi_ioc *resultv, size_t result_count,
 			     uint64_t flags, enum fi_op_type op_type)
 {
-	struct zhpe_cntr *cntr;
-	struct zhpe_trigger *trigger;
-	struct zhpe_triggered_context *trigger_context;
-	struct zhpe_trigger_work *work;
+	int			rc;
+	struct zhpe_trigger	*trigger;
 
-	trigger_context = (struct zhpe_triggered_context *) msg->context;
-	if ((flags & FI_INJECT) || !trigger_context ||
-	    ((trigger_context->event_type != FI_TRIGGER_THRESHOLD) &&
-	     (trigger_context->event_type != ZHPE_DEFERRED_WORK)))
-		return -FI_EINVAL;
-
-	work = &trigger_context->trigger.work;
-	cntr = container_of(work->triggering_cntr, struct zhpe_cntr, cntr_fid);
-	if (atm_load_rlx(&cntr->value) >= work->threshold)
-		return 1;
-	work->completion_cntr = NULL;
-	flags = (flags & ~FI_TRIGGER) | ZHPE_TRIGGERED_OP;
-
-	trigger = calloc(1, sizeof(*trigger));
-	if (!trigger)
-		return -FI_ENOMEM;
-
-	trigger->context = trigger_context;
-	trigger->threshold = work->threshold;
+	rc = do_trigger_init(fid_ep, msg->context, flags, op_type, &trigger);
+	if (rc < 0)
+		return rc;
 
 	memcpy(&trigger->op.atomic.msg, msg, sizeof(*msg));
 	trigger->op.atomic.msg.msg_iov = &trigger->op.atomic.msg_iov[0];
@@ -239,43 +187,5 @@ ssize_t zhpe_queue_atomic_op(struct fid_ep *ep, const struct fi_msg_atomic *msg,
 		trigger->op.atomic.result_count = result_count;
 	}
 
-	trigger->op_type = op_type;
-	trigger->ep = ep;
-	trigger->flags = flags;
-
-	fastlock_acquire(&cntr->trigger_lock);
-	dlist_insert_tail(&trigger->lentry, &cntr->trigger_list);
-	fastlock_release(&cntr->trigger_lock);
-	zhpe_cntr_check_trigger_list(cntr);
-	return 0;
-}
-
-ssize_t zhpe_queue_cntr_op(struct fi_deferred_work *work, uint64_t flags)
-{
-	struct zhpe_cntr *cntr;
-	struct zhpe_trigger *trigger;
-
-	cntr = container_of(work->triggering_cntr, struct zhpe_cntr, cntr_fid);
-	if (atm_load_rlx(&cntr->value) >= work->threshold) {
-		if (work->op_type == FI_OP_CNTR_SET)
-			fi_cntr_set(work->op.cntr->cntr, work->op.cntr->value);
-		else
-			fi_cntr_add(work->op.cntr->cntr, work->op.cntr->value);
-		return 0;
-	}
-
-	trigger = calloc(1, sizeof(*trigger));
-	if (!trigger)
-		return -FI_ENOMEM;
-
-	trigger->context = (struct zhpe_triggered_context *) &work->context;
-	trigger->op_type = work->op_type;
-	trigger->threshold = work->threshold;
-	trigger->flags = flags;
-
-	fastlock_acquire(&cntr->trigger_lock);
-	dlist_insert_tail(&trigger->lentry, &cntr->trigger_list);
-	fastlock_release(&cntr->trigger_lock);
-	zhpe_cntr_check_trigger_list(cntr);
-	return 0;
+	return do_trigger_queue(trigger);
 }

@@ -136,8 +136,8 @@ static int smr_ep_cancel_recv(struct smr_ep *ep, struct smr_queue *queue,
 					 context);
 	if (entry) {
 		recv_entry = container_of(entry, struct smr_ep_entry, entry);
-		ret = ep->rx_comp(ep, (void *) recv_entry->context,
-				  recv_entry->flags | FI_RECV, 0,
+		ret = smr_complete_rx(ep, (void *) recv_entry->context, ofi_op_msg,
+				  recv_entry->flags, 0,
 				  NULL, (void *) recv_entry->addr,
 				  recv_entry->tag, 0, FI_ECANCELED);
 		freestack_push(ep->recv_fs, recv_entry);
@@ -237,8 +237,13 @@ void smr_generic_format(struct smr_cmd *cmd, fi_addr_t peer_id,
 			uint64_t op_flags)
 {
 	cmd->msg.hdr.op = op;
-	cmd->msg.hdr.op_flags = op_flags & FI_REMOTE_CQ_DATA ?
-				SMR_REMOTE_CQ_DATA : 0;
+	cmd->msg.hdr.op_flags = 0;
+
+	if (op_flags & FI_REMOTE_CQ_DATA)
+		cmd->msg.hdr.op_flags |= SMR_REMOTE_CQ_DATA;
+	if (op_flags & FI_COMPLETION)
+		cmd->msg.hdr.op_flags |= SMR_TX_COMPLETION;
+
 	if (op == ofi_op_tagged) {
 		cmd->msg.hdr.tag = tag;
 	} else if (op == ofi_op_atomic ||
@@ -312,31 +317,17 @@ static int smr_ep_close(struct fid *fid)
 
 static int smr_ep_bind_cq(struct smr_ep *ep, struct util_cq *cq, uint64_t flags)
 {
-	int ret = 0;
+	int ret;
 
-	if (flags & ~(FI_TRANSMIT | FI_RECV)) {
-		FI_WARN(&smr_prov, FI_LOG_EP_CTRL,
-			"unsupported flags\n");
-		return -FI_EBADFLAGS;
-	}
-
-	if (((flags & FI_TRANSMIT) && ep->util_ep.tx_cq) ||
-	    ((flags & FI_RECV) && ep->util_ep.rx_cq)) {
-		FI_WARN(&smr_prov, FI_LOG_EP_CTRL,
-			"duplicate CQ binding\n");
-		return -FI_EINVAL;
-	}
+	ret = ofi_ep_bind_cq(&ep->util_ep, cq, flags);
+	if (ret)
+		return ret;
 
 	if (flags & FI_TRANSMIT) {
-		ep->util_ep.tx_cq = cq;
-		ofi_atomic_inc32(&cq->ref);
 		ep->tx_comp = cq->wait ? smr_tx_comp_signal : smr_tx_comp;
 	}
 
 	if (flags & FI_RECV) {
-		ep->util_ep.rx_cq = cq;
-		ofi_atomic_inc32(&cq->ref);
-
 		if (cq->wait) {
 			ep->rx_comp = (cq->domain->info_domain_caps & FI_SOURCE) ?
 				      smr_rx_src_comp_signal :
@@ -376,6 +367,10 @@ static int smr_ep_bind(struct fid *ep_fid, struct fid *bfid, uint64_t flags)
 						      cq_fid.fid), flags);
 		break;
 	case FI_CLASS_EQ:
+		break;
+	case FI_CLASS_CNTR:
+		ret = ofi_ep_bind_cntr(&ep->util_ep, container_of(bfid,
+				struct util_cntr, cntr_fid.fid), flags);
 		break;
 	default:
 		FI_WARN(&smr_prov, FI_LOG_EP_CTRL,
@@ -434,7 +429,7 @@ static int smr_endpoint_name(char *name, char *addr, size_t addrlen,
 		return -FI_EINVAL;
 
 	start = smr_no_prefix((const char *) addr);
-	if (strstr(addr, SMR_PREFIX))
+	if (strstr(addr, SMR_PREFIX) || dom_idx || ep_idx)
 		snprintf(name, SMR_NAME_SIZE, "%s:%d:%d", start, dom_idx,
 			 ep_idx);
 	else
@@ -476,9 +471,9 @@ int smr_endpoint(struct fid_domain *domain, struct fi_info *info,
 	if (ret)
 		goto err1;
 
-	ep->recv_fs = smr_recv_fs_create(info->rx_attr->size);
-	ep->unexp_fs = smr_unexp_fs_create(info->rx_attr->size);
-	ep->pend_fs = smr_pend_fs_create(info->tx_attr->size);
+	ep->recv_fs = smr_recv_fs_create(info->rx_attr->size, NULL, NULL);
+	ep->unexp_fs = smr_unexp_fs_create(info->rx_attr->size, NULL, NULL);
+	ep->pend_fs = smr_pend_fs_create(info->tx_attr->size, NULL, NULL);
 	smr_init_queue(&ep->recv_queue, smr_match_msg);
 	smr_init_queue(&ep->trecv_queue, smr_match_tagged);
 	smr_init_queue(&ep->unexp_queue, smr_match_unexp);

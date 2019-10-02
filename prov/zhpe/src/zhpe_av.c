@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2014 Intel Corporation, Inc.  All rights reserved.
  * Copyright (c) 2016, Cisco Systems, Inc. All rights reserved.
- * Copyright (c) 2017-2018 Hewlett Packard Enterprise Development LP.  All rights reserved.
+ * Copyright (c) 2017-2019 Hewlett Packard Enterprise Development LP.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -137,8 +137,8 @@ static inline void zhpe_av_report_success(struct zhpe_av *av, void *context,
 	eq_entry.fid = &av->av_fid.fid;
 	eq_entry.context = context;
 	eq_entry.data = num_done;
-	zhpe_eq_report_event(av->eq, FI_AV_COMPLETE,
-			     &eq_entry, sizeof(eq_entry), flags);
+	zhpe_eq_report_event(&av->eq->util_eq, FI_AV_COMPLETE,
+			     &eq_entry, sizeof(eq_entry));
 }
 
 static inline void zhpe_av_report_error(struct zhpe_av *av,
@@ -147,7 +147,7 @@ static inline void zhpe_av_report_error(struct zhpe_av *av,
 	if (!av->eq)
 		return;
 
-	zhpe_eq_report_error(av->eq, &av->av_fid.fid,
+	zhpe_eq_report_error(&av->eq->util_eq, &av->av_fid.fid,
 			     context, index, err, -err, NULL, 0);
 }
 
@@ -285,21 +285,18 @@ static int zhpe_check_table_in(struct zhpe_av *_av, const void *vaddr,
 static int zhpe_av_insert(struct fid_av *av, const void *addr, size_t count,
 			  fi_addr_t *fi_addr, uint64_t flags, void *context)
 {
-	struct zhpe_av *_av;
-	_av = container_of(av, struct zhpe_av, av_fid);
+	struct zhpe_av		*_av = fid2zav(&av->fid);
 
-	return zhpe_check_table_in(_av, addr,
-				   fi_addr, count, flags, context);
+	return zhpe_check_table_in(_av, addr, fi_addr, count, flags, context);
 }
 
 static int zhpe_av_lookup(struct fid_av *av, fi_addr_t fi_addr, void *addr,
 			  size_t *addrlen)
 {
+	struct zhpe_av		*_av = fid2zav(&av->fid);
 	int index;
-	struct zhpe_av *_av;
 	struct zhpe_av_addr *av_addr;
 
-	_av = container_of(av, struct zhpe_av, av_fid);
 	index = ((uint64_t)fi_addr & _av->mask);
 	if (index >= (int)_av->table_hdr->size || index < 0) {
 		ZHPE_LOG_ERROR("requested address not inserted\n");
@@ -317,13 +314,13 @@ static int _zhpe_av_insertsvc(struct fid_av *av, const char *node,
 			      uint64_t flags, void *context)
 {
 	int			ret;
+	struct zhpe_av		*_av = fid2zav(&av->fid);
 	struct addrinfo		hints;
 	struct addrinfo		*result = NULL;
-	struct zhpe_av		*_av;
+	uint32_t		addr_format;
 
-	_av = container_of(av, struct zhpe_av, av_fid);
-
-	zhpe_getaddrinfo_hints_init(&hints, zhpe_sa_family(&_av->domain->info));
+	addr_format = _av->domain->util_domain.addr_format;
+	zhpe_getaddrinfo_hints_init(&hints, zhpe_sa_family(addr_format));
 	ret = zhpe_getaddrinfo(node, service, &hints, &result);
 	if (ret < 0) {
 		if (_av->eq) {
@@ -409,8 +406,8 @@ static int zhpe_av_insertsym(struct fid_av *av, const char *node,
 static int zhpe_av_remove(struct fid_av *av, fi_addr_t *fi_addr, size_t count,
 			  uint64_t flags)
 {
+	struct zhpe_av		*_av = fid2zav(&av->fid);
 	size_t i;
-	struct zhpe_av *_av;
 	struct zhpe_av_addr *av_addr;
 	struct dlist_entry *item;
 	struct fid_list_entry *fid_entry;
@@ -418,7 +415,6 @@ static int zhpe_av_remove(struct fid_av *av, fi_addr_t *fi_addr, size_t count,
 	struct zhpe_conn *conn;
 	uint16_t idx;
 
-	_av = container_of(av, struct zhpe_av, av_fid);
 	fastlock_acquire(&_av->list_lock);
 	dlist_foreach(&_av->ep_list, item) {
 		fid_entry = container_of(item, struct fid_list_entry, entry);
@@ -461,23 +457,21 @@ static const char *zhpe_av_straddr(struct fid_av *av, const void *addr,
 
 static int zhpe_av_bind(struct fid *fid, struct fid *bfid, uint64_t flags)
 {
-	struct zhpe_av *av;
-	struct zhpe_eq *eq;
+	struct zhpe_av		*zav = fid2zav(fid);
 
 	if (bfid->fclass != FI_CLASS_EQ)
 		return -FI_EINVAL;
 
-	av = container_of(fid, struct zhpe_av, av_fid.fid);
-	eq = container_of(bfid, struct zhpe_eq, eq.fid);
-	av->eq = eq;
+	zav->eq = fid2zeq(bfid);
+
 	return 0;
 }
 
 static int zhpe_av_close(struct fid *fid)
 {
-	struct zhpe_av *av;
+	struct zhpe_av		*av = fid2zav(fid);
 	int ret = 0;
-	av = container_of(fid, struct zhpe_av, av_fid.fid);
+
 	if (atm_load_rlx(&av->ref))
 		return -FI_EBUSY;
 
@@ -489,7 +483,7 @@ static int zhpe_av_close(struct fid *fid)
 			ZHPE_LOG_ERROR("unmap failed: %s\n", strerror(errno));
 	}
 
-	atm_dec(&av->domain->ref);
+	ofi_atomic_dec32(&av->domain->util_domain.ref);
 	fastlock_destroy(&av->list_lock);
 	free(av);
 	return 0;
@@ -558,9 +552,9 @@ int zhpe_av_open(struct fid_domain *domain, struct fi_av_attr *attr,
 	if (attr->type == FI_AV_UNSPEC)
 		attr->type = FI_AV_TABLE;
 
-	dom = container_of(domain, struct zhpe_domain, dom_fid);
-	if (dom->attr.av_type != FI_AV_UNSPEC &&
-	    dom->attr.av_type != attr->type)
+	dom = fid2zdom(&domain->fid);
+	if (dom->util_domain.av_type != FI_AV_UNSPEC &&
+	    dom->util_domain.av_type != attr->type)
 		return -FI_EINVAL;
 
 	_av = calloc(1, sizeof(*_av));
@@ -622,9 +616,7 @@ int zhpe_av_open(struct fid_domain *domain, struct fi_av_attr *attr,
 		goto err2;
 	}
 
-	atm_inc(&dom->ref);
-	_av->domain = dom;
-	switch (dom->info.addr_format) {
+	switch (dom->util_domain.addr_format) {
 
 	case FI_SOCKADDR_IN:
 		_av->addrlen = sizeof(struct sockaddr_in);
@@ -639,6 +631,8 @@ int zhpe_av_open(struct fid_domain *domain, struct fi_av_attr *attr,
 		ret = -FI_EINVAL;
 		goto err2;
 	}
+	_av->domain = dom;
+	ofi_atomic_inc32(&dom->util_domain.ref);
 	dlist_init(&_av->ep_list);
 	fastlock_init(&_av->list_lock);
 	_av->rx_ctx_bits = attr->rx_ctx_bits;

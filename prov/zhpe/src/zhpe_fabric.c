@@ -37,290 +37,34 @@
 #define ZHPE_LOG_DBG(...) _ZHPE_LOG_DBG(FI_LOG_FABRIC, __VA_ARGS__)
 #define ZHPE_LOG_ERROR(...) _ZHPE_LOG_ERROR(FI_LOG_FABRIC, __VA_ARGS__)
 
-int zhpe_pe_waittime = ZHPE_PE_WAITTIME;
-const char zhpe_fab_name[] = "zhpe";
-const char zhpe_dom_name[] = "zhpe";
-const char zhpe_prov_name[] = "zhpe";
-int zhpe_conn_retry = ZHPE_CM_DEF_RETRY;
-int zhpe_cm_def_map_sz = ZHPE_CMAP_DEF_SZ;
-int zhpe_av_def_sz = ZHPE_AV_DEF_SZ;
-int zhpe_cq_def_sz = ZHPE_CQ_DEF_SZ;
-int zhpe_eq_def_sz = ZHPE_EQ_DEF_SZ;
-char *zhpe_pe_affinity_str = NULL;
-size_t zhpe_ep_max_eager_sz = ZHPE_EP_MAX_EAGER_SZ;
-int zhpe_mr_cache_enable = ZHPE_MR_CACHE_ENABLE;
-int zhpe_mr_cache_merge_regions = ZHPE_MR_CACHE_MERGE_REGIONS;
-size_t zhpe_mr_cache_max_cnt = ZHPE_MR_CACHE_MAX_CNT;
-size_t zhpe_mr_cache_max_size = ZHPE_MR_CACHE_MAX_SIZE;
-
-const struct fi_fabric_attr zhpe_fabric_attr = {
-	.fabric = NULL,
-	.name = NULL,
-	.prov_name = NULL,
-	.prov_version = FI_VERSION(ZHPE_MAJOR_VERSION, ZHPE_MINOR_VERSION),
-};
-
-static DEFINE_LIST(zhpe_fab_list);
-static DEFINE_LIST(zhpe_dom_list);
-static fastlock_t zhpe_list_lock;
-static int read_default_params;
-
-void zhpe_dom_add_to_list(struct zhpe_domain *domain)
-{
-	fastlock_acquire(&zhpe_list_lock);
-	dlist_insert_tail(&domain->dom_lentry, &zhpe_dom_list);
-	fastlock_release(&zhpe_list_lock);
-}
-
-static inline int zhpe_dom_check_list_internal(struct zhpe_domain *domain)
-{
-	struct zhpe_domain	*dom_entry;
-
-	dlist_foreach_container(&zhpe_dom_list, struct zhpe_domain, dom_entry,
-				dom_lentry) {
-		if (dom_entry == domain)
-			return 1;
-	}
-	return 0;
-}
-
-int zhpe_dom_check_list(struct zhpe_domain *domain)
-{
-	int found;
-	fastlock_acquire(&zhpe_list_lock);
-	found = zhpe_dom_check_list_internal(domain);
-	fastlock_release(&zhpe_list_lock);
-	return found;
-}
-
-void zhpe_dom_remove_from_list(struct zhpe_domain *domain)
-{
-	fastlock_acquire(&zhpe_list_lock);
-	if (zhpe_dom_check_list_internal(domain))
-		dlist_remove(&domain->dom_lentry);
-
-	fastlock_release(&zhpe_list_lock);
-}
-
-struct zhpe_domain *zhpe_dom_list_head(void)
-{
-	struct zhpe_domain *domain;
-	fastlock_acquire(&zhpe_list_lock);
-	if (dlist_empty(&zhpe_dom_list)) {
-		domain = NULL;
-	} else {
-		domain = container_of(zhpe_dom_list.next,
-				      struct zhpe_domain, dom_lentry);
-	}
-	fastlock_release(&zhpe_list_lock);
-	return domain;
-}
-
-int zhpe_dom_check_manual_progress(struct zhpe_fabric *fabric)
-{
-	struct zhpe_domain	*dom_entry;
-
-	dlist_foreach_container(&zhpe_dom_list, struct zhpe_domain, dom_entry,
-				dom_lentry) {
-		if (dom_entry->fab == fabric &&
-		    dom_entry->progress_mode == FI_PROGRESS_MANUAL)
-			return 1;
-	}
-	return 0;
-}
-
-void zhpe_fab_add_to_list(struct zhpe_fabric *fabric)
-{
-	fastlock_acquire(&zhpe_list_lock);
-	dlist_insert_tail(&fabric->fab_lentry, &zhpe_fab_list);
-	fastlock_release(&zhpe_list_lock);
-}
-
-static inline int zhpe_fab_check_list_internal(struct zhpe_fabric *fabric)
-{
-	struct zhpe_fabric	*fab_entry;
-
-	dlist_foreach_container(&zhpe_fab_list, struct zhpe_fabric, fab_entry,
-				fab_lentry) {
-		if (fab_entry == fabric)
-			return 1;
-	}
-	return 0;
-}
-
-int zhpe_fab_check_list(struct zhpe_fabric *fabric)
-{
-	int found;
-	fastlock_acquire(&zhpe_list_lock);
-	found = zhpe_fab_check_list_internal(fabric);
-	fastlock_release(&zhpe_list_lock);
-	return found;
-}
-
-void zhpe_fab_remove_from_list(struct zhpe_fabric *fabric)
-{
-	fastlock_acquire(&zhpe_list_lock);
-	if (zhpe_fab_check_list_internal(fabric))
-		dlist_remove(&fabric->fab_lentry);
-
-	fastlock_release(&zhpe_list_lock);
-}
-
-struct zhpe_fabric *zhpe_fab_list_head(void)
-{
-	struct zhpe_fabric *fabric;
-	fastlock_acquire(&zhpe_list_lock);
-	if (dlist_empty(&zhpe_fab_list))
-		fabric = NULL;
-	else
-		fabric = container_of(zhpe_fab_list.next,
-				      struct zhpe_fabric, fab_lentry);
-	fastlock_release(&zhpe_list_lock);
-	return fabric;
-}
-
-int zhpe_verify_fabric_attr(struct fi_fabric_attr *attr)
-{
-	if (!attr)
-		return 0;
-
-	if (attr->prov_version) {
-		if (attr->prov_version !=
-		   FI_VERSION(ZHPE_MAJOR_VERSION, ZHPE_MINOR_VERSION))
-			return -FI_ENODATA;
-	}
-
-	return 0;
-}
-
-int zhpe_verify_info(uint32_t api_version, const struct fi_info *hints,
-		     uint64_t flags)
-{
-	int			ret = 0;
-	uint64_t		caps;
-	enum fi_ep_type		ep_type;
-	struct zhpe_domain	*domain;
-	struct zhpe_fabric	*fabric;
-	struct addrinfo		ai;
-	struct addrinfo		*rai;
-
-	if (!hints)
-		return 0;
-
-	ep_type = hints->ep_attr ? hints->ep_attr->type : FI_EP_UNSPEC;
-	switch (ep_type) {
-
-	/* FIXME: Debug FI_EP_MSG */
-	case FI_EP_MSG:
-		return -FI_ENODATA;
-#if 0
-		caps = ZHPE_EP_MSG_CAP;
-		ret = zhpe_msg_verify_ep_attr(hints->ep_attr,
-					      hints->tx_attr,
-					      hints->rx_attr);
-#endif
-		break;
-
-	case FI_EP_UNSPEC:
-		/* UNSPEC => RDM, for now. */
-	case FI_EP_RDM:
-		caps = ZHPE_EP_RDM_CAP;
-		ret = zhpe_rdm_verify_ep_attr(hints->ep_attr,
-					      hints->tx_attr,
-					      hints->rx_attr);
-		break;
-
-	default:
-		ret = -FI_ENODATA;
-		break;
-
-	}
-	if (ret < 0)
-		return ret;
-
-	if ((caps | hints->caps) != caps) {
-		ZHPE_LOG_DBG("Unsupported capabilities\n");
-		return -FI_ENODATA;
-	}
-
-	switch (hints->addr_format) {
-
-	case FI_FORMAT_UNSPEC:
-
-	case FI_SOCKADDR:
-		/* FIXME: Think about FI_SOCKADDR vs IPV6 some more. */
-	case FI_SOCKADDR_IN:
-		break;
-
-	case FI_SOCKADDR_IN6:
-		/* Are IPV6 addresses configured? */
-		zhpe_getaddrinfo_hints_init(&ai, AF_INET6);
-		ai.ai_flags |= AI_PASSIVE;
-		ret = zhpe_getaddrinfo(NULL, "0", &ai, &rai);
-		if (ret < 0)
-			/* No. */
-			return -FI_ENODATA;
-		freeaddrinfo(rai);
-		break;
-
-	default:
-		ZHPE_LOG_DBG("Unsupported address format\n");
-		return -FI_ENODATA;
-	}
-
-	if (hints->domain_attr && hints->domain_attr->domain) {
-		domain = container_of(hints->domain_attr->domain,
-				      struct zhpe_domain, dom_fid);
-		if (!zhpe_dom_check_list(domain)) {
-			ZHPE_LOG_DBG("no matching domain\n");
-			return -FI_ENODATA;
-		}
-	}
-	ret = zhpe_verify_domain_attr(api_version, hints);
-	if (ret < 0)
-		return ret;
-
-	if (hints->fabric_attr && hints->fabric_attr->fabric) {
-		fabric = container_of(hints->fabric_attr->fabric,
-				      struct zhpe_fabric, fab_fid);
-		if (!zhpe_fab_check_list(fabric)) {
-			ZHPE_LOG_DBG("no matching fabric\n");
-			return -FI_ENODATA;
-		}
-	}
-	ret = zhpe_verify_fabric_attr(hints->fabric_attr);
-	if (ret < 0)
-		return ret;
-
-	return 0;
-}
-
-static int zhpe_trywait(struct fid_fabric *fabric, struct fid **fids, int count)
-{
-	/* we're always ready to wait! */
-	return 0;
-}
+pthread_mutex_t zhpe_fabdom_close_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static struct fi_ops_fabric zhpe_fab_ops = {
-	.size = sizeof(struct fi_ops_fabric),
-	.domain = zhpe_domain,
-	.passive_ep = zhpe_msg_passive_ep,
-	.eq_open = zhpe_eq_open,
-	.wait_open = zhpe_wait_open,
-	.trywait = zhpe_trywait
+	.size			= sizeof(struct fi_ops_fabric),
+	.domain			= zhpe_domain,
+#ifdef NOTYET
+	.passive_ep		= zhpe_msg_passive_ep,
+#else
+	.passive_ep		= fi_no_passive_ep,
+#endif
+	.eq_open		= zhpe_eq_open,
+	.wait_open		= ofi_wait_fd_open,
+	.trywait		= ofi_trywait,
 };
 
 static int zhpe_fabric_close(fid_t fid)
 {
-	struct zhpe_fabric *fab;
-	fab = container_of(fid, struct zhpe_fabric, fab_fid.fid);
-	if (atm_load_rlx(&fab->ref))
-		return -FI_EBUSY;
+	int			ret;
+	struct zhpe_fabric	*zfab;
 
-	zhpe_fab_remove_from_list(fab);
-	fastlock_destroy(&fab->lock);
-	free(fab);
-	return 0;
+	zfab = fid2zfab(fid);
+	mutex_lock(&zhpe_fabdom_close_mutex);
+	ret = ofi_fabric_close(&zfab->util_fabric);
+	mutex_unlock(&zhpe_fabdom_close_mutex);
+	if (ret >= 0)
+		free(zfab);
+
+	return  ret;
 }
 
 static int zhpe_ext_lookup(const char *url, void **sa, size_t *sa_len)
@@ -380,8 +124,8 @@ static int mmap_get_rkey(struct fid_ep *ep, fi_addr_t fi_addr, uint64_t key,
 	int			ret = -FI_EINVAL;
 	int64_t			tindex = -1;
 	struct zhpe_key		zkey = { .key = key };
-	struct zhpe_ep		*zhpe_ep;
-	struct zhpe_ep_attr	*ep_attr;
+	struct zhpe_ep		*zep;
+	struct zhpe_ep_attr	*zep_attr;
 	struct zhpe_tx_ctx	*tx_ctx;
 	struct zhpe_conn	*conn;
 	struct zhpe_pe_entry	*pe_entry;
@@ -394,21 +138,21 @@ static int mmap_get_rkey(struct fid_ep *ep, fi_addr_t fi_addr, uint64_t key,
 	switch (ep->fid.fclass) {
 
 	case FI_CLASS_EP:
-		zhpe_ep = container_of(ep, struct zhpe_ep, ep);
-		tx_ctx = zhpe_ep->attr->tx_ctx;
-		ep_attr = zhpe_ep->attr;
+		zep = fid2zep(&ep->fid);
+		tx_ctx = zep->attr->tx_ctx;
+		zep_attr = zep->attr;
 		break;
 
 	case FI_CLASS_TX_CTX:
 		tx_ctx = container_of(ep, struct zhpe_tx_ctx, ctx);
-		ep_attr = tx_ctx->ep_attr;
+		zep_attr = tx_ctx->ep_attr;
 		break;
 
 	default:
 		goto done;
 	}
 
-	ret = zhpe_ep_get_conn(ep_attr, fi_addr, &conn);
+	ret = zhpe_ep_get_conn(zep_attr, fi_addr, &conn);
 	if (ret < 0)
 		goto done;
 	*rkey = zhpe_conn_rkey_get(conn, &zkey);
@@ -440,11 +184,12 @@ static int mmap_get_rkey(struct fid_ep *ep, fi_addr_t fi_addr, uint64_t key,
 		cval = atm_load_rlx(cstat);
 		if (!cval.completions)
 			break;
-		if (ep_attr->domain->progress_mode == FI_PROGRESS_AUTO) {
+		if (zep_attr->domain->util_domain.data_progress ==
+		    FI_PROGRESS_AUTO) {
 			sched_yield();
 			continue;
 		}
-		zhpe_pe_progress_tx_ctx(ep_attr->domain->pe, tx_ctx);
+		zhpe_pe_progress_tx_ctx(zep_attr->domain->pe, tx_ctx);
 	}
 	ret = cval.status;
 	if (ret < 0)
@@ -555,37 +300,37 @@ static int zhpe_ext_commit(struct fi_zhpe_mmap_desc *mmap_desc,
 				 addr, length, fence, invalidate, wait);
 }
 
-static int zhpe_ext_ep_counters(struct fid_ep *ep,
+static int zhpe_ext_ep_counters(struct fid_ep *fid_ep,
 				struct fi_zhpe_ep_counters *counters)
 {
 	int			ret = -FI_EINVAL;
-	struct zhpe_ep		*zhpe_ep;
-	struct zhpe_ep_attr	*ep_attr;
+	struct zhpe_ep		*zep;
+	struct zhpe_ep_attr	*zep_attr;
 	struct zhpe_tx_ctx	*tx_ctx;
 
-	if (!ep || !counters ||
+	if (!fid_ep || !counters ||
 	    counters->version != FI_ZHPE_EP_COUNTERS_VERSION ||
 	    counters->len != sizeof(*counters))
 		goto done;
 
-	switch (ep->fid.fclass) {
+	switch (fid_ep->fid.fclass) {
 
 	case FI_CLASS_EP:
-		zhpe_ep = container_of(ep, struct zhpe_ep, ep);
-		tx_ctx = zhpe_ep->attr->tx_ctx;
-		ep_attr = zhpe_ep->attr;
+		zep = fid2zep(&fid_ep->fid);
+		tx_ctx = zep->attr->tx_ctx;
+		zep_attr = zep->attr;
 		break;
 
 	case FI_CLASS_TX_CTX:
-		tx_ctx = container_of(ep, struct zhpe_tx_ctx, ctx);
-		ep_attr = tx_ctx->ep_attr;
+		tx_ctx = container_of(fid_ep, struct zhpe_tx_ctx, ctx);
+		zep_attr = tx_ctx->ep_attr;
 		break;
 
 	default:
 		goto done;
 	}
 
-	counters->hw_atomics = atm_load_rlx(&ep_attr->counters.hw_atomics);
+	counters->hw_atomics = atm_load_rlx(&zep_attr->counters.hw_atomics);
 	ret = 0;
  done:
 
@@ -627,282 +372,81 @@ static struct fi_ops zhpe_fab_fi_ops = {
 	.ops_open = zhpe_fabric_ops_open,
 };
 
-static void zhpe_read_default_params()
+int zhpe_fabric(struct fi_fabric_attr *attr, struct fid_fabric **fabric,
+		void *context)
 {
-	if (!read_default_params) {
-		fi_param_get_int(&zhpe_prov, "pe_waittime", &zhpe_pe_waittime);
-		fi_param_get_int(&zhpe_prov, "max_conn_retry",
-				 &zhpe_conn_retry);
-		fi_param_get_int(&zhpe_prov, "def_av_sz", &zhpe_av_def_sz);
-		fi_param_get_int(&zhpe_prov, "def_cq_sz", &zhpe_cq_def_sz);
-		fi_param_get_int(&zhpe_prov, "def_eq_sz", &zhpe_eq_def_sz);
-		if (fi_param_get_str(&zhpe_prov, "pe_affinity",
-				     &zhpe_pe_affinity_str) != FI_SUCCESS)
-			zhpe_pe_affinity_str = NULL;
-		fi_param_get_size_t(&zhpe_prov, "ep_max_eager_sz",
-				    &zhpe_ep_max_eager_sz);
-		fi_param_get_bool(&zhpe_prov, "mr_cache_enable",
-				  &zhpe_mr_cache_enable);
-		fi_param_get_bool(&zhpe_prov, "mr_cache_merge_regions",
-				  &zhpe_mr_cache_merge_regions);
-		fi_param_get_size_t(&zhpe_prov, "mr_cache_max_cnt",
-				    &zhpe_mr_cache_max_cnt);
-		fi_param_get_size_t(&zhpe_prov, "mr_cache_max_size",
-				    &zhpe_mr_cache_max_size);
+	int			ret = -FI_EINVAL;
+	struct zhpe_fabric	*zfab = NULL;
 
-		read_default_params = 1;
-	}
-}
+	if (!attr || !fabric)
+		goto done;
 
-static int zhpe_fabric(struct fi_fabric_attr *attr,
-		       struct fid_fabric **fabric, void *context)
-{
-	struct zhpe_fabric *fab;
+	ret = -FI_ENOMEM;
+	zfab = calloc(1, sizeof(*zfab));
+	if (!zfab)
+		goto done;
 
-	fab = calloc(1, sizeof(*fab));
-	if (!fab)
-		return -FI_ENOMEM;
-
-	zhpe_read_default_params();
-
-	fastlock_init(&fab->lock);
-	dlist_init(&fab->service_list);
-
-	fab->fab_fid.fid.fclass = FI_CLASS_FABRIC;
-	fab->fab_fid.fid.context = context;
-	fab->fab_fid.fid.ops = &zhpe_fab_fi_ops;
-	fab->fab_fid.ops = &zhpe_fab_ops;
-	*fabric = &fab->fab_fid;
-	zhpe_fab_add_to_list(fab);
-	return 0;
-}
-
-static int zhpe_fi_checkinfo(struct fi_info *info, const struct fi_info *hints)
-{
-	if (hints && hints->domain_attr && hints->domain_attr->name &&
-            strcmp(info->domain_attr->name, hints->domain_attr->name))
-		return -FI_ENODATA;
-
-	if (hints && hints->fabric_attr && hints->fabric_attr->name &&
-            strcmp(info->fabric_attr->name, hints->fabric_attr->name))
-		return -FI_ENODATA;
-
-	return 0;
-}
-
-static bool hints_addr_valid(const struct fi_info *hints,
-			     const void *addr, size_t addr_len)
-{
-	const union sockaddr_in46 *sa = addr;
-
-	if (hints->addr_format == FI_SOCKADDR_IN6) {
-		if (sa->sa_family != AF_INET6)
-			return false;
-	} else if (sa->sa_family != AF_INET)
-		return false;
-
-	return sockaddr_valid(addr, addr_len, true);
-}
-
-static int zhpe_ep_getinfo(uint32_t api_version, const char *node,
-			   const char *service, uint64_t flags,
-			   const struct fi_info *hints,
-			   enum fi_ep_type ep_type, struct fi_info **info)
-{
-	int			ret = 0;
-	struct addrinfo		*rai = NULL;
-	union sockaddr_in46	*src_addr = NULL;
-	union sockaddr_in46	*dest_addr = NULL;
-	struct addrinfo		ai;
-#if ENABLE_DEBUG
-	char			ntop[INET6_ADDRSTRLEN];
-#endif
-
-	zhpe_getaddrinfo_hints_init(&ai, zhpe_sa_family(hints));
-
-	if (flags & FI_NUMERICHOST)
-		ai.ai_flags |= AI_NUMERICHOST;
-
-	if (flags & FI_SOURCE) {
-		if (node || service) {
-			ai.ai_flags |= AI_PASSIVE;
-			ret = zhpe_getaddrinfo(node, service, &ai, &rai);
-			if (ret < 0)
-				return -FI_ENODATA;
-			src_addr = (void *)rai->ai_addr;
-		}
-	} else {
-		if (hints && hints->src_addr) {
-			if (!hints_addr_valid(hints, hints->src_addr,
-					      hints->src_addrlen))
-				return -FI_ENODATA;
-			src_addr = hints->src_addr;
-		}
-
-		if (node || service) {
-			ret = zhpe_getaddrinfo(node, service, &ai, &rai);
-			if (ret < 0)
-				return -FI_ENODATA;
-			dest_addr = (void *)rai->ai_addr;
-		} else  if (hints && hints->dest_addr) {
-			if (!hints_addr_valid(hints, hints->dest_addr,
-					      hints->dest_addrlen))
-				return -FI_ENODATA;
-			dest_addr = hints->dest_addr;
-		}
-		if (dest_addr && !src_addr) {
-			ai.ai_flags |= AI_PASSIVE;
-			ret = zhpe_getaddrinfo(NULL, "0", &ai, &rai);
-			if (ret < 0)
-				return -FI_ENODATA;
-			src_addr = (void *)rai->ai_addr;
-		}
-	}
-
-	if (src_addr)
-		ZHPE_LOG_DBG("src_addr: %s\n",
-			     sockaddr_ntop(src_addr, ntop, sizeof(ntop)));
-	if (dest_addr)
-		ZHPE_LOG_DBG("dest_addr: %s\n",
-			     sockaddr_ntop(dest_addr, ntop, sizeof(ntop)));
-
-	switch (ep_type) {
-	case FI_EP_MSG:
-		ret = zhpe_msg_fi_info(api_version, src_addr, dest_addr,
-				       hints, info);
-		break;
-	case FI_EP_RDM:
-		ret = zhpe_rdm_fi_info(api_version, src_addr, dest_addr,
-				       hints, info);
-		break;
-	default:
-		ret = -FI_ENODATA;
-		break;
-	}
-
-	if (rai)
-		freeaddrinfo(rai);
-
-	if (ret == 0)
-		return zhpe_fi_checkinfo(*info, hints);
-
-	return ret;
-}
-
-static inline int do_ep_getinfo(uint32_t api_version, const char *node,
-				const char *service, uint64_t flags,
-				const struct fi_info *hints,
-				struct fi_info **info, struct fi_info **tail,
-				enum fi_ep_type ep_type)
-{
-	int			ret;
-	struct fi_info		*cur;
-
-	ret = zhpe_ep_getinfo(api_version, node, service, flags,
-			      hints, ep_type,  &cur);
+	ret = ofi_fabric_init(&zhpe_prov, &zhpe_fabric_attr, attr,
+			      &zfab->util_fabric, context);
 	if (ret < 0)
 		goto done;
-	if (!*info)
-		*info = cur;
-	else
-		(*tail)->next = cur;
-	for (*tail = cur; (*tail)->next; *tail = (*tail)->next)
-		;
+
+	zfab->util_fabric.fabric_fid.fid.ops = &zhpe_fab_fi_ops;
+	zfab->util_fabric.fabric_fid.ops = &zhpe_fab_ops;
+	*fabric = &zfab->util_fabric.fabric_fid;
  done:
-	return ret;
-}
-
-static int zhpe_node_getinfo(uint32_t api_version, const char *node,
-			     const char *service,
-			     uint64_t flags, const struct fi_info *hints,
-			     struct fi_info **info, struct fi_info **tail)
-{
-	int			ret;
-	enum fi_ep_type		ep_type;
-
-	if (hints && hints->ep_attr) {
-		ep_type = hints->ep_attr->type;
-
-		switch (ep_type) {
-
-		case FI_EP_RDM:
-		case FI_EP_MSG:
-			ret = do_ep_getinfo(api_version, node, service, flags,
-					    hints, info, tail, ep_type);
-			goto done;
-
-		case FI_EP_UNSPEC:
-			break;
-
-		default:
-			ret = -FI_ENODATA;
-			goto done;
-		}
-	}
-	for (ep_type = FI_EP_MSG; ep_type <= FI_EP_RDM; ep_type++) {
-		ret = do_ep_getinfo(api_version, node, service, flags,
-				    hints, info, tail, ep_type);
-		if (ret < 0) {
-			if (ret == -FI_ENODATA)
-				continue;
-			goto done;
-		}
-	}
- done:
-	if (ret < 0) {
-		fi_freeinfo(*info);
-		*info = NULL;
-	}
-
-	return ret;
-}
-
-static int zhpe_getinfo(uint32_t api_version, const char *node,
-			const char *service,
-			uint64_t flags, const struct fi_info *hints,
-			struct fi_info **info)
-{
-	int			ret = 0;
-	struct fi_info		*tail;
-
-	ret = zhpeq_init(ZHPEQ_API_VERSION);
-	if (ret < 0) {
-		ZHPE_LOG_ERROR("zhpeq_init() returned error:%s\n",
-			       strerror(-ret));
-		return -FI_ENODATA;
-	}
-
-	*info = tail = NULL;
-
-	ret = zhpe_verify_info(api_version, hints, flags);
 	if (ret < 0)
-		return ret;
+		free(zfab);
+
+	return ret;
+}
+
+int zhpe_getinfo(uint32_t api_version, const char *node, const char *service,
+		 uint64_t flags, const struct fi_info *hints,
+		 struct fi_info **info)
+{
+	int			ret = -FI_ENODATA;
+	int			rc;
+
+	/*
+	 * info is not a chain of infos from other providers, it is
+	 * just a variable for us to return our infos in; util_getinfo()
+	 * will clobber it.
+	 */
+	rc = zhpeq_init(ZHPEQ_API_VERSION);
+	if (rc < 0) {
+		ZHPE_LOG_ERROR("zhpeq_init() returned error:%s\n",
+			       strerror(-rc));
+		goto done;
+	}
 
 	if (!(node ||
-	      (!(flags & FI_SOURCE) && hints && 
+	      (!(flags & FI_SOURCE) && hints &&
 	       (hints->src_addr || hints->dest_addr)))) {
 		flags |= FI_SOURCE;
 		if (!service)
 			service = "0";
-	}
+        }
 
-	return zhpe_node_getinfo(api_version, node, service, flags, hints,
-				 info, &tail);
+	mutex_lock(&zhpe_fabdom_close_mutex);
+	ret = util_getinfo(&zhpe_util_prov, api_version, node, service, flags,
+			  hints, info);
+	mutex_unlock(&zhpe_fabdom_close_mutex);
+	if (ret < 0)
+		goto done;
+
+	if ((*info)->src_addr)
+	     zhpe_straddr_dbg(FI_LOG_FABRIC, "src_addr", (*info)->src_addr);
+	if ((*info)->dest_addr)
+		zhpe_straddr_dbg(FI_LOG_FABRIC, "dst_addr", (*info)->dest_addr);
+ done:
+
+	return ret;
 }
 
-static void fi_zhpe_fini(void)
+void fi_zhpe_fini(void)
 {
-	fastlock_destroy(&zhpe_list_lock);
 }
-
-struct fi_provider zhpe_prov = {
-	.name = zhpe_prov_name,
-	.version = FI_VERSION(ZHPE_MAJOR_VERSION, ZHPE_MINOR_VERSION),
-	.fi_version = FI_VERSION(1, 6),
-	.getinfo = zhpe_getinfo,
-	.fabric = zhpe_fabric,
-	.cleanup = fi_zhpe_fini
-};
 
 ZHPE_INI
 {
@@ -944,16 +488,15 @@ ZHPE_INI
 	fi_param_define(&zhpe_prov, "mr_cache_max_size", FI_PARAM_SIZE_T,
 			"Maximum total size of cached registrations");
 
-#ifdef HAVE_ZHPE_STATS
-	fi_param_define(&zhpe_prov, "stats_dir", FI_PARAM_STRING,
-			"Enables simulator statistics collection into the"
-			" specified directory.");
-
-	fi_param_define(&zhpe_prov, "stats_unique", FI_PARAM_STRING,
-			"Uniquifier for filenames in stats directory.");
-#endif
-
-	fastlock_init(&zhpe_list_lock);
+	fi_param_get_int(&zhpe_prov, "pe_waittime", &zhpe_pe_waittime);
+	fi_param_get_int(&zhpe_prov, "max_conn_retry", &zhpe_conn_retry);
+	fi_param_get_int(&zhpe_prov, "def_av_sz", &zhpe_av_def_sz);
+	fi_param_get_int(&zhpe_prov, "def_cq_sz", &zhpe_cq_def_sz);
+	fi_param_get_int(&zhpe_prov, "def_eq_sz", &zhpe_eq_def_sz);
+	fi_param_get_str(&zhpe_prov, "pe_affinity", &zhpe_pe_affinity_str);
+	fi_param_get_size_t(&zhpe_prov, "ep_max_eager_sz",
+			    &zhpe_ep_max_eager_sz);
+	fi_param_get_bool(&zhpe_prov, "mr_cache_enable", &zhpe_mr_cache_enable);
 
 	return &zhpe_prov;
 }

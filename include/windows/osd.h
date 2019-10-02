@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2016 Intel Corporation.  All rights reserved.
  * Copyright (c) 2016 Cisco Systems, Inc.  All rights reserved.
+ * Copyright (c) 2018 Amazon.com, Inc. or its affiliates. All rights reserved.
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
  * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
@@ -18,8 +19,10 @@
 #include "config.h"
 
 #include <WinSock2.h>
+#include <Mswsock.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <process.h>
 #include <io.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -38,6 +41,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#define OFI_MAX_SOCKET_BUF_SIZE	INT_MAX
 
 /*
  * The following defines redefine the Windows Socket
@@ -257,7 +262,6 @@ do						\
 #define strdup _strdup
 #define strcasecmp _stricmp
 #define snprintf _snprintf
-#define getpid (int)GetCurrentProcessId
 #define sleep(x) Sleep(x * 1000)
 
 #define __PRI64_PREFIX "ll"
@@ -272,11 +276,15 @@ do						\
 #define ntohll _byteswap_uint64
 #define strncasecmp _strnicmp
 
+typedef int pid_t;
+#define getpid (int)GetCurrentProcessId
+
 int fd_set_nonblock(int fd);
 
 int socketpair(int af, int type, int protocol, int socks[2]);
 void sock_get_ip_addr_table(struct slist *addr_list);
 int ofi_getsockname(SOCKET fd, struct sockaddr *addr, socklen_t *len);
+int ofi_getpeername(SOCKET fd, struct sockaddr *addr, socklen_t *len);
 
 /*
  * Win32 error code should be passed as a parameter.
@@ -630,15 +638,22 @@ static inline int ffsll(long long val)
 	return 0;
 }
 
+static inline int vasprintf(char **ptr, const char *format, va_list args)
+{
+	int len = vsnprintf(0, 0, format, args);
+	*ptr = (char *)malloc(len + 1);
+	vsnprintf(*ptr, len + 1, format, args);
+	(*ptr)[len] = 0; /* to be sure that string is enclosed */
+	return len;
+}
+
 static inline int asprintf(char **ptr, const char *format, ...)
 {
 	va_list args;
-	va_start(args, format);
+	int len;
 
-	int len = vsnprintf(0, 0, format, args);
-	*ptr = (char*)malloc(len + 1);
-	vsnprintf(*ptr, len + 1, format, args);
-	(*ptr)[len] = 0; /* to be sure that string is enclosed */
+	va_start(args, format);
+	len = vasprintf(ptr, format, args);
 	va_end(args);
 
 	return len;
@@ -712,10 +727,11 @@ static inline ssize_t ofi_recv_socket(SOCKET fd, void *buf, size_t count,
 	return recv(fd, (char *)buf, (int)count, flags);
 }
 
-static inline ssize_t ofi_recvfrom_socket(SOCKET fd, const void *buf, size_t count, int flags,
-					  const struct sockaddr *to, socklen_t tolen)
+static inline ssize_t
+ofi_recvfrom_socket(SOCKET fd, void *buf, size_t count, int flags,
+		    struct sockaddr *from, socklen_t *fromlen)
 {
-	return sendto(fd, (const char*)buf, (int)count, flags, to, tolen);
+	return recvfrom(fd, (char*)buf, (int)count, flags, from, fromlen);
 }
 
 static inline ssize_t ofi_send_socket(SOCKET fd, const void *buf, size_t count,
@@ -724,14 +740,29 @@ static inline ssize_t ofi_send_socket(SOCKET fd, const void *buf, size_t count,
 	return send(fd, (const char*)buf, (int)count, flags);
 }
 
-static inline ssize_t ofi_sendto_socket(SOCKET fd, const void *buf, size_t count, int flags,
-					const struct sockaddr *to, socklen_t tolen)
+static inline ssize_t
+ofi_sendto_socket(SOCKET fd, const void *buf, size_t count, int flags,
+		  const struct sockaddr *to, socklen_t tolen)
 {
 	return sendto(fd, (const char*)buf, (int)count, flags, to, tolen);
 }
 
 ssize_t ofi_writev_socket(SOCKET fd, const struct iovec *iovec, size_t iov_cnt);
 ssize_t ofi_readv_socket(SOCKET fd, const struct iovec *iovec, size_t iov_cnt);
+ssize_t ofi_sendmsg_tcp(SOCKET fd, const struct msghdr *msg, int flags);
+ssize_t ofi_recvmsg_tcp(SOCKET fd, struct msghdr *msg, int flags);
+
+static inline ssize_t
+ofi_sendmsg_udp(SOCKET fd, const struct msghdr *msg, int flags)
+{
+	DWORD bytes;
+	int ret;
+
+	ret = WSASendMsg(fd, msg, flags, &bytes, NULL, NULL);
+	return ret ? ret : bytes;
+}
+
+ssize_t ofi_recvmsg_udp(SOCKET fd, struct msghdr *msg, int flags);
 
 static inline int ofi_shutdown(SOCKET socket, int how)
 {
@@ -800,7 +831,7 @@ static inline char * strndup(char const *src, size_t n)
 	return dst;
 }
 
-static inline int ofi_sysconf(int name)
+static inline long ofi_sysconf(int name)
 {
 	SYSTEM_INFO si;
 
@@ -817,6 +848,26 @@ static inline int ofi_sysconf(int name)
 
 int ofi_shm_unmap(struct util_shm *shm);
 
+static inline ssize_t ofi_get_hugepage_size(void)
+{
+	return -FI_ENOSYS;
+}
+
+static inline int ofi_alloc_hugepage_buf(void **memptr, size_t size)
+{
+	return -FI_ENOSYS;
+}
+
+static inline int ofi_free_hugepage_buf(void *memptr, size_t size)
+{
+	return -FI_ENOSYS;
+}
+
+static inline int ofi_hugepage_enabled(void)
+{
+	return 0;
+}
+
 static inline int ofi_is_loopback_addr(struct sockaddr *addr) {
 	return (addr->sa_family == AF_INET &&
 		((struct sockaddr_in *)addr)->sin_addr.s_addr == ntohl(INADDR_LOOPBACK)) ||
@@ -830,6 +881,8 @@ static inline int ofi_is_loopback_addr(struct sockaddr *addr) {
 		((struct sockaddr_in6 *)addr)->sin6_addr.u.Word[6] == 0 &&
 		((struct sockaddr_in6 *)addr)->sin6_addr.u.Word[7] == ntohs(1));
 }
+
+size_t ofi_ifaddr_get_speed(struct ifaddrs *ifa);
 
 /* complex operations implementation */
 

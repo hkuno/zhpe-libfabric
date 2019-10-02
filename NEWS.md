@@ -5,6 +5,437 @@ This file contains the main features as well as overviews of specific
 bug fixes (and other actions) for each version of Libfabric since
 version 1.0.
 
+v1.8.0, Fri Jun 28, 2019
+========================
+
+## Core
+
+- Reworked memory registration cache to use userfaultfd
+- Allow disabling atomic support as build option
+- Updated default provider priority
+- Define new data ordering bits to separate atomic from RMA ordering
+- Improved support for huge page allocations
+- Convert all python scripts to version 3
+- Add logging to report atomic implementation in use
+- Fix timeout calculation in util wait abstraction.
+- Fix hang when multiple threads wait on util counter.
+
+## EFA
+
+- New core provider for Amazon EC2 Elastic Fabric Adapter (EFA)
+
+## GNI
+
+- Fix handling of incorrect fi_addr_t value
+- Fix several problems when using FI_ADDR_STR format
+- Fix several problems when using multi-receive buffers
+- Fix problem with possible receive truncation
+- Fix possible overrunning of receive buffers
+- Implement fi_getopt/fi_setopt for scalable endpoints
+- Only generate FI_EADDRNOTAVAIL if FI_SOURCE_ERR enabled
+
+## MRAIL
+
+- Several performance enhancements and optimizations
+
+## PSM2
+
+- Disable some optional psm2 features due to instabilities
+- Work around possibly long delays in getaddrinfo()
+
+## RxD
+
+- Ensure that peers are initialized before sending data packets
+- Maintain a full posting of receive buffers to the DGRAM EP
+- Minor bug fixes and cleanups
+- Verify protocol versions and reject incompatible versions
+- Update and simplify protocol headers
+- Optimize packet initialization
+- Various improvements handling protocol messages
+- Remove pending_cnt tracking (moved to verbs provider)
+- Fix setting of mr_mode on getinfo
+- Handle error unpacking packet headers properly
+
+## RxM
+
+- Improved responsiveness to CM events with manual progress mode
+- Add proper versioning to CM data exchange protocol
+- Refactor how CQ and EQ errors are handled and reported
+- Minor code cleanups and bug fixes
+- Support atomic operations in auto progress mode
+- Fix high memory usage when a large number of RMA ops are posted without
+  FI_COMPLETION
+
+## SHM
+
+- Fix possible segfault
+- Fix smr_freestack_pop to properly remove entry from stack
+
+## TCP
+
+- Enable multi-recv support
+- Allow restricting tcp to specific port range for firewall purposes
+
+## Verbs
+
+- Add NIC info (fi_nic) in fi_info
+- Improved support for UD QPs over RoCE
+- Added CQ resource tracking to avoid CQ overrun on HFI1
+- Enable memory registration cache by default
+- Reduce unnecessary log message noise
+- Bug fixes for EQ trywait, QP creation attributes.
+
+## Fabtests
+
+- Add new test to test memory registration caching correctness
+- Fix segfault with fi_pingpong
+- Allow specifying flags as command line arguments
+- Add threading level option to ubertest
+- Enable support for all endpoint types with multi_recv test
+- Add new AV insertion unit test
+- Allow for out-of-band address exchange with in-band test synchronization
+- Check for and use exclusion files by default if found
+- Use regular expressions for test exclusion files
+- Have test scripts use full test names
+- Replace socket provider with tcp and udp for default testing
+
+v1.7.2, Fri Jun 14, 2019
+========================
+
+## Core
+
+- Rename variables that shadow global symbols
+- Set slist tail to NULL to handle iterators correctly
+- Add new locking to AV EP list to avoid potential deadlock
+- Add threadsafe AV implementation
+
+## GNI
+
+- Fix possible overrunning of receive buffers
+- Fix compile issue on CLE 7.0.UP01
+- Implement fi_getopt/fi_setopt for scalable endpoints
+- Only generate FI_EADDRNOTAVAIL if FI_SOURCE_ERR enabled
+
+## RxD
+
+- Align packet type declarations with debug prints
+- Track current unexpected messages per peer, rather than globally
+- Remove unneeded RXD_CANCELED flag
+- Remove unnecessary check of unexpected list
+- Support FI_CLAIM, FI_PEEK, and FI_DISCARD flags
+- Avoid double free on CQ error destruction path
+- Fix message windowing
+- Limit number of transfer entries that can be active
+- Use utility CQ calls to handle CQ overflow
+- Set correct opcde when completing read completions
+- Preset and fix tx and rx transfer flags
+- Fix segfault
+
+## RxM
+
+- Add missing serialization for RMA and atomics
+- Reject connection requests in shutdown state
+- Rework cmap and ep lock synchronization
+- Add CM events to improve debugging
+- Remove incorrect assertion
+- Progress EQ events from app thread to drive progress
+- Handle message segment ordering when buffering receives
+- Generate completions for claimed buffered messages
+- Minor other fixes and cleanups
+
+## TCP
+
+- Support FI_SELECTIVE_COMPLETION correctly
+- Fix transmit and delivery complete semantics
+- Verify fi_info when creating passive EP
+
+## Verbs
+
+- Remove XRC target QP from RDMA CM control
+- Fix XRC QP allocation failure return code
+- Fix EQ readerr locking
+- Add FI_ADDR_IB_UD to known address print format
+- Fix addressing return on fi_getifo for native IB addresses
+- Serialize access to EQ when destroying connections
+- Add serialization to XRC EQ/CM handling
+- Fix serialization between AV and cmap
+- Fix XRC connection tags
+- Remove racy fork support from provider
+- Minor other fixes
+
+## Fabtests
+
+- Exclude tests from OS X that require epoll support
+
+v1.7.1, Mon Apr 8, 2019
+========================
+
+## Core
+
+- Support layered provider names with FI_PROVIDER filter
+- Minor cleanups to man pages
+- Add missing header for FreeBSD support
+- Fix built-in atomic tests
+- Do not overwrite CFLAGS during build
+
+## Fabtests
+
+- Fix memory leaks in fi_getinfo_test
+- Fix memory leak in fi_av_xfer error paths
+- Fix memory leaks in fi_cm_data
+- Fix memory leak in fi_poll
+- Add test configuration and exclude files for shm
+
+## GNI
+
+- Fix setting supported tag mask
+- Fall back to normal allocations when huge page support is unavailable
+
+## PSM2
+
+- Inline address translation function for performance
+- Create tagged ops specialization for FI_AV_MAP
+- Bring back true FI_AV_MAP support under certain conditions
+- Use psm2_epaddr_to_epid() for epaddr to epid conversion
+- Add runtime parameter for connection timeout
+
+## MXM
+
+- Disable provider by default as it is not actively maintained
+
+## RxD
+
+- Fix completion generation
+- Use correct flags for *msg APIs
+- Return correct error code if Tx is unable to be accepted
+- Add missing EP attributes
+- Fix use after free error opening an endpoint
+
+## RxM
+
+- Avoid unnecessary fi_getinfo calls to avoid possible failures
+- Discard Rx buffers for closed EPs to avoid segfaults
+- Repost receive buffers to avoid possible fabric deadlock
+- Fix crash accessing invalid Tx CQ
+- Use correct flags for *msg APIs
+- Report available inject size, rather than reducing value based on user hints
+- Fix endpoint configuration checks when enabling endpoint
+- Keep eager protocol limit separate from inject size
+- Increment correct atomic counter
+- Discard CQ entries generated by canceled receives
+- Initialize maximum atomic payload size
+- Add connection event progress
+- Fix SAR protocol truncation error
+- Fix setting FI_MSG and fi_RMA caps
+
+## TCP
+
+- Fix synchronization verifying MRs
+- Remove duplicate Rx queue removal
+- Return internal buffers to correct buffer pools to avoid data corruption
+- Free internal buffer pools and fix memory leaks
+- Handle peer socket disconnects properly
+- Pass signals through to application threads
+- Cleanup pending events when closing endpoints
+- Only adjust endianness when peers' endianness mismatches
+- Optimize header sizes based on message types to improve performance
+
+## Sockets
+
+- Fix acquiring the same lock twice
+- Fix accessing an uninitialized pointer handling CM events
+
+## SHM
+
+- Add support for selective completions
+- Fix addressing
+- Set MR key size
+- Fix memory corruption and memory leak
+
+## Verbs
+
+- Cleanup from use of memory registration cache
+- Do not update minimum RNR timer for XRC initiator QPs
+- Fix possible CQ overrun issues with hfi1 and qib devices
+- Fix synchronization issue accessing MR cache from multiple threads
+- Fix double free in XRC accept path
+- Add missing include file
+- Make fi_getinfo call thread safe
+- Fix CQ busy issue in MPI finalize when using XRC
+- Return correct attribute values when XRC is enabled
+- Fix sending atomic response protocol message
+- Report flushed receive operations (reverts to behavior in 1.4 and earlier)
+- Fix segfault reading CQ error entries
+- Fix double free of XRC connection request data
+- Set FI_RX_CQ_DATA mode bit correctly
+
+v1.7.0, Mon Jan 7, 2019
+=======================
+
+The 1.7 release provides a few enhancements to the libfabric API.
+Notably, it extends the fi_info structure in order to report NIC
+attributes for domains that have a direct association with network
+hardware.  The NIC attributes include details about the device, the
+system bus it's attached to, and link state.  NIC attributes are
+automatically reported by the fi_info utility application.  See the
+fi_nic.3 man page for additional details.
+
+An experimental capability bit is added to optimize receive side
+processing.  This is known as variable messages, and targets applications
+that do now know what size message a peer with send prior to the
+message arriving.  Variable messages can be used to avoid receive
+side data copies and eliminate the need for applications to implement
+their own rendezvous protocol.  See the fi_msg.3 man page for details on
+variable messages and it's sister, buffered messages.
+
+Specific details on changes since the 1.6.2 release are outlined below.
+
+## Core
+
+- Add ability to report NIC details with fi_info data
+- Improve MR cache notification mechanisms
+- Set sockaddr address format correctly
+- Avoid possible null dereference in eq_read
+- Handle FI_PEEK in CQ/EQ readerr
+- Add debug messages to name server
+- Feature and performance enhancements added to internal buffer pool
+- Add support for huge pages
+- Decrease memory use for idle buffer pools
+- Refactor utility AV functionality
+- Generic counter support enhancements
+- Optimize EP and CQ locking based on application threading level
+- Enhance common support for EQ error handling
+- Add free/alloc memory notification hooks for MR cache support
+- Fix memory monitor unsubscribe handling
+- Add CQ fd wait support
+- Add CQ overflow protection
+- Enhance IPv6 addressing support for AVs
+- Enhancements to support for AV address lookup
+- Fixes for emulated epoll support
+- Allow layering of multiple utility providers
+- Minor bug fixes and optimization
+
+## Hook
+
+- Improved hooking infrastructure
+- Add support for installing multiple hooks
+- Support hooks provided by external libraries.
+
+## GNI
+
+- Fix CQ readfrom overwriting src_addr in case of multiple events
+- Signal wait set if error entry is added to CQ
+- Fix state data issue with SMSG buffers
+- Enhance and fix possible misuse of default authorization key
+- Add cancel support for SEP
+- Rework SEP setup
+- Suppress huge page counting for ARM
+- Fix incorrect check of FI_SYNC_ERR flag
+
+## MRAIL
+
+- Initial release of mrail provider. The current status is experimental: not all
+  features are supported and performance is not guaranteed.
+- Enables increased bandwidth for an underlying provider by utilizing multiple
+  network ports (rails).
+
+## NetDir
+
+- Fix crash in initialization code
+- Update references to NetworkDirect header packaged
+
+## PSM2
+
+- Requires PSM2 library version 10.2.260 or later
+- Clean up connection state in fi_av_remove
+- Use psm2_info_query to read HFI device info
+- Clean up CQ/counter poll list when endpoint is closed
+- Support shared address vector
+- Optimize CQ event conversion with psm2_mq_ipeek_dequeue_multi
+- Lock optimization for FI_THREAD_DOMAIN
+- Use new PSM2 fast path isend/irecv functions for large size RMA
+- Support building with latest PSM2 source code (version 11.2.68)
+- Support fabric direct
+
+## RxD
+
+- Initial release of RxD provider
+- Provides reliable datagram semantics over unreliable datagram EPs
+- Target is to improve scalability for very large clusters relative to RxM
+
+## RxM
+
+- Decrease memory use needed to maintain large number of connections
+- Set correct op_context and flags on CQ error completions
+- Fix file descriptor memory leaks
+- Introduce new protocol optimized for medium message transfers
+- Improve Rx software performance path
+- Use shared receive contexts if required by underlying provider
+- Handle addresses inserted multiple times into AV (for AV map)
+- Performance optimizations for single-thread applications
+- Rework deferred transmit processing
+- Separate and optimize eager and rendezvous protocol processing.
+- Fix passing incorrect addresses for AV insert/remove
+- Fix CM address handling
+- Fix race condition accessing connection handles
+- Simplify small RMA code path
+- Increment correct counter when processing FI_READ events
+- Dynamically grow the number of connections that can be supported
+- Fix padding in wire protocol structures
+- Report correct fi_addr when FI_SOURCE is requested
+- Fix truncating rendezvous messages
+- Fix use after free error in Rx buffer processing
+- Add support for manual progress
+- Make Tx/Rx queue sizes independent of MSG EP sizes
+- Decrease time needed to repost buffers to the MSG EP Rx queue.
+- Miscellaneous bug fixes
+
+## Sockets
+
+- Enable MSG EPs when user calls fi_accept
+- Fix fabric names to be underlying IP address
+- Add connection timeout environment variable.
+- Use size of addresses, not structures
+- Add debug messages to display selected addresses
+- Use loopback address in place of localhost
+- Simplify listen paths
+- Add support for IPv6
+- Code restructuring
+- Avoid unneeded address to string to address translations
+- Check length of iovec entries prior to access buffers
+- Fix segfault
+- Avoid acquiring nested spinlocks resulting in hangs
+- Fix use after free error in triggered op handling
+- New connection manager for MSG EPs to reduce number of threads
+- Avoid retrying recv operations if connection has been broken
+- Fixes for Windows socket support
+
+## TCP
+
+- Initial release of optimized socket based tcp provider
+- Supports MSG EPs, to be used in conjunction with RxM provider
+- Targets eventual replacement of sockets provider
+
+## Verbs
+
+- Remove RDM EP support.  Use RxM and RxD for RDM EPs.
+- Improve address handling and report in fi_getinfo
+- Handle FI_PEER when calling CQ/EQ readerr functions
+- Add support for XRC QPs.
+- Ignore destination address when allocating a PEP
+- Add workaround for i40iw incorrect return values when posting sends
+- Fix completion handling for FI_SELECTIVE_COMPLETION EP setting
+- Change format of fabric name to use hex instead of decimal values
+- Fix handling of err_data with EQ readerr
+- Report correct size of max_err_data
+- Fast path performance improvements
+- Improve progress under high system load
+- Optimize completion processing when handling hidden completions
+- Optimize RMA and MSG transfers by pre-formatting work requests
+- Remove locks based on application threading model
+- Add overflow support for CQ error events
+- Minor cleanups and bug fixes
+
 v1.6.2, Fri Sep 28, 2018
 ========================
 
@@ -13,6 +444,7 @@ v1.6.2, Fri Sep 28, 2018
 - Cleanup of debug messages
 
 ## GNI
+
 - Fix problems with Scalable Endpoint creation
 - Fix interoperability problem with HPC toolkit
 - Improve configuration check for kdreg
@@ -102,6 +534,7 @@ v1.6.1, Wed May 8, 2018
 
 - Fix use after free error handling triggered ops.
 
+
 v1.6.0, Wed Mar 14, 2018
 ========================
 
@@ -115,9 +548,9 @@ v1.6.0, Wed Mar 14, 2018
 - Add const to fi_getinfo() hints parameter
 - Improve use of epoll for better scalability
 - Fixes to generic name service
-- Implemented support of MR caching without merging of regions
 
 ## GNI
+
 - Fix a problem with the GNI waitset implementation
 - Enable use of XPMEM for intra node data transfers
 - Fix a problem with usage of Crays UDREG registration cache
@@ -211,7 +644,7 @@ v1.6.0, Wed Mar 14, 2018
 
 - Scalability enhancements
 - Fix issue associating a connection with an AV entry that could result in
-  application hangs
+   application hangs
 - Add support for new persistent memory capabilities
 - Fix fi_cq_signal to unblock threads waiting on cq sread calls
 - Fix epoll_wait loop handling to avoid out of memory errors

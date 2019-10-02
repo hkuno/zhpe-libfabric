@@ -36,7 +36,7 @@
 #define ZHPE_LOG_DBG(...) _ZHPE_LOG_DBG(FI_LOG_EP_DATA, __VA_ARGS__)
 #define ZHPE_LOG_ERROR(...) _ZHPE_LOG_ERROR(FI_LOG_EP_DATA, __VA_ARGS__)
 
-ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
+ssize_t zhpe_do_tx_atomic(struct fid_ep *fid_ep,
 			  const struct fi_msg_atomic *msg,
 			  const struct fi_ioc *comparev, void **compare_desc,
 			  size_t compare_count, struct fi_ioc *resultv,
@@ -55,8 +55,8 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 	struct zhpe_conn	*conn;
 	struct zhpe_tx_ctx	*tx_ctx;
 	uint64_t		op_flags;
-	struct zhpe_ep		*zhpe_ep;
-	struct zhpe_ep_attr	*ep_attr;
+	struct zhpe_ep		*zep;
+	struct zhpe_ep_attr	*zep_attr;
 	struct zhpe_mr		*zmr;
 	size_t			datasize;
 	void			*vaddr;
@@ -68,19 +68,21 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 	struct fi_rma_iov	rma_iov;
 	void			*result;
 
-	switch (ep->fid.fclass) {
+	switch (fid_ep->fid.fclass) {
 
 	case FI_CLASS_EP:
-		zhpe_ep = container_of(ep, struct zhpe_ep, ep);
-		tx_ctx = zhpe_ep->attr->tx_ctx;
-		ep_attr = zhpe_ep->attr;
-		op_flags = zhpe_ep->tx_attr.op_flags;
+		zep = fid2zep(&fid_ep->fid);
+		tx_ctx = zep->attr->tx_ctx;
+		zep_attr = zep->attr;
+		op_flags = zep->tx_attr.op_flags;
 		break;
+
 	case FI_CLASS_TX_CTX:
-		tx_ctx = container_of(ep, struct zhpe_tx_ctx, ctx);
-		ep_attr = tx_ctx->ep_attr;
+		tx_ctx = container_of(fid_ep, struct zhpe_tx_ctx, ctx);
+		zep_attr = tx_ctx->ep_attr;
 		op_flags = tx_ctx->attr.op_flags;
 		break;
+
 	default:
 		ZHPE_LOG_ERROR("Invalid EP type\n");
 		goto done;
@@ -162,6 +164,12 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 		goto done;
 	}
 
+	/*
+	 * The current version of the atomics fabtest does not set the
+	 * FI_READ permission unless the provider set FI_LOCAL/FI_MR_LOCAL
+	 * and we don't. So, if the descriptor is passed, don't check any
+	 * permissions flags and just do a bounds check.
+	 */
 	o64 = 0;
 	if (msg->op != FI_ATOMIC_READ) {
 		vaddr  = msg->msg_iov[0].addr;
@@ -171,7 +179,7 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 			zmr = NULL;
 		if (zmr) {
 			ret = zhpeq_lcl_key_access(zmr->kdata, vaddr, datasize,
-						   ZHPEQ_MR_PUT, &dontcare);
+						   0, &dontcare);
 			if (ret < 0)
 				goto done;
 		}
@@ -187,7 +195,7 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 			zmr = NULL;
 		if (zmr) {
 			ret = zhpeq_lcl_key_access(zmr->kdata, vaddr, datasize,
-						   ZHPEQ_MR_PUT, &dontcare);
+						   0, &dontcare);
 			if (ret < 0)
 				goto done;
 		}
@@ -202,8 +210,12 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 		else
 			zmr = NULL;
 		if (zmr) {
+			/*
+			 * The rdm_atomic fabtest only specifies FI_READ if
+			 * FI_LOCAL/FI_MR_LOCAL is set.
+			 */
 			ret = zhpeq_lcl_key_access(zmr->kdata, vaddr, datasize,
-						   ZHPEQ_MR_GET, &dontcare);
+						   0, &dontcare);
 			if (ret < 0)
 				goto done;
 		}
@@ -268,14 +280,14 @@ ssize_t zhpe_do_tx_atomic(struct fid_ep *ep,
 
 	/* FIXME: rearrange trigger logic */
 	if (flags & FI_TRIGGER) {
-		ret = zhpe_queue_atomic_op(ep, msg, comparev, compare_count,
+		ret = zhpe_queue_atomic_op(fid_ep, msg, comparev, compare_count,
 					   resultv, result_count, flags,
 					   FI_OP_ATOMIC);
 		if (ret != 1)
 			goto done;
 	}
 
-	ret = zhpe_ep_get_conn(ep_attr, msg->addr, &conn);
+	ret = zhpe_ep_get_conn(zep_attr, msg->addr, &conn);
 	if (ret < 0)
 		goto done;
 

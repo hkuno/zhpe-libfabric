@@ -133,6 +133,7 @@ struct fi_info {
 	struct fi_ep_attr     *ep_attr;
 	struct fi_domain_attr *domain_attr;
 	struct fi_fabric_attr *fabric_attr;
+	struct fid_nic        *nic;
 };
 ```
 
@@ -183,15 +184,15 @@ struct fi_info {
   that any returned address is only usable locally.
 
 *handle - provider context handle*
-: References a provider specific handle.  The use of this field
-  is operation specific.  Unless its use is described for a given operation,
-  the handle field must be NULL.  It is commonly used by applications
-  that make use of connection-oriented endpoints.  For other applications,
-  the field should usually be NULL.
-
-  This field is used when processing connection requests and
-  responses.  It is also used to inherit endpoint's attributes.
-  See fi_eq(3), fi_reject(3), and fi_endpoint(3) .
+: The use of this field is operation specific. If hints->handle is set to struct
+  fid_pep, the hints->handle will be copied to info->handle on output from
+  fi_getinfo.  Other values of hints->handle will be handled in a provider
+  specific manner.  The fi_info::handle field is also used by fi_endpoint()
+  and fi_reject() calls when processing connection requests or to inherit
+  another endpoint's attributes.  See [`fi_eq`(3)](fi_eq.3.html),
+  [`fi_reject`(3)](fi_reject.3.html), and
+  [`fi_endpoint`(3)](fi_endpoint.3.html).  The info->handle field will be
+  ignored by fi_dupinfo and fi_freeinfo.
 
 *tx_attr - transmit context attributes*
 : Optionally supplied transmit context attributes.  Transmit context
@@ -215,7 +216,7 @@ struct fi_info {
   hints, requested values of struct fi_ep_attr should be set.  On
   output, the actual endpoint attributes that can be provided will be
   returned.  Output values will be greater than or equal to requested
-  input values.  See fi_endpoint(3) for details.
+  input values.  See [`fi_endpoint`(3)](fi_endpoint.3.html) for details.
 
 *domain_attr - domain attributes*
 : Optionally supplied domain attributes.  Domain attributes may be
@@ -223,14 +224,21 @@ struct fi_info {
   hints, requested values of struct fi_domain_attr should be set.  On
   output, the actual domain attributes that can be provided will be
   returned.  Output values will be greater than or equal to requested
-  input values.  See fi_domain(3) for details.
+  input values.  See [`fi_domain`(3)](fi_domain.3.html) for details.
 
 *fabric_attr - fabric attributes*
 : Optionally supplied fabric attributes.  Fabric attributes may be
   specified and returned as part of fi_getinfo.  When provided as
   hints, requested values of struct fi_fabric_attr should be set.  On
   output, the actual fabric attributes that can be provided will be
-  returned.  See fi_fabric(3) for details.
+  returned.  See [`fi_fabric`(3)](fi_fabric.3.html) for details.
+
+*nic - network interface details*
+: Optional attributes related to the hardware NIC associated with
+  the specified fabric, domain, and endpoint data.  This field is
+  only valid for providers where the corresponding attributes are
+  closely associated with a hardware NIC.  See [`fi_nic`(3)]
+  (fi_nic.3.html) for details.
 
 # CAPABILITIES
 
@@ -402,6 +410,16 @@ additional optimizations.
   completion semantics.  This flag requires that FI_RMA be set.
   This capability is experimental.
 
+*FI_VARIABLE_MSG*
+
+: Requests that the provider must notify a receiver when a variable
+  length message is ready to be received prior to attempting to place
+  the data.  Such notification will include the size of the message and
+  any associated message tag (for FI_TAGGED).  See 'Variable Length
+  Messages' in fi_msg.3 for full details.  Variable length messages
+  are any messages larger than an endpoint configurable size.  This
+  flag requires that FI_MSG and/or FI_TAGGED be set.
+
 Capabilities may be grouped into two general categories: primary and
 secondary.  Primary capabilities must explicitly be requested by an
 application, and a provider must enable support for only those primary
@@ -413,7 +431,7 @@ would not compromise performance or security.
 
 Primary capabilities: FI_MSG, FI_RMA, FI_TAGGED, FI_ATOMIC, FI_MULTICAST,
 FI_NAMED_RX_CTX, FI_DIRECTED_RECV, FI_READ, FI_WRITE, FI_RECV, FI_SEND,
-FI_REMOTE_READ, and FI_REMOTE_WRITE.
+FI_REMOTE_READ, FI_REMOTE_WRITE, and FI_VARIABLE_MSG.
 
 Secondary capabilities: FI_MULTI_RECV, FI_SOURCE, FI_RMA_EVENT, FI_SHARED_AV,
 FI_TRIGGER, FI_FENCE, FI_LOCAL_COMM, FI_REMOTE_COMM, FI_SOURCE_ERR, FI_RMA_PMEM.
@@ -453,7 +471,7 @@ supported set of modes will be returned in the info structure(s).
   operation does not generate a completion (i.e. the endpoint was
   configured with FI_SELECTIVE_COMPLETION and the operation was not
   initiated with the FI_COMPLETION flag) then the context parameter is
-  ignored by the fabric provider.The structure is specified in 
+  ignored by the fabric provider.  The structure is specified in
   rdma/fabric.h.
 
 *FI_CONTEXT2*
@@ -537,13 +555,24 @@ supported set of modes will be returned in the info structure(s).
   completion flags which simply report the type of operation that
   completed (e.g. send or receive) may not be set.  However,
   completion flags that are used for remote notifications will still
-  be set when applicable.  See `fi_cq`(3) for details on which completion
-  flags are valid when this mode bit is enabled.
+  be set when applicable.  See [`fi_cq`(3)](fi_cq.3.html) for details on
+  which completion flags are valid when this mode bit is enabled.
 
 *FI_RESTRICTED_COMP*
 : This bit indicates that the application will only share completion queues
   and counters among endpoints, transmit contexts, and receive contexts that
   have the same set of capability flags.
+
+*FI_BUFFERED_RECV*
+: The buffered receive mode bit indicates that the provider owns the
+  data buffer(s) that are accessed by the networking layer for received
+  messages.  Typically, this implies that data must be copied from the
+  provider buffer into the application buffer.  Applications that can
+  handle message processing from network allocated data buffers can set
+  this mode bit to avoid copies.  For full details on application
+  requirements to support this mode, see the 'Buffered Receives' section
+  in [`fi_msg`(3)](fi_msg.3.html).  This mode bit applies to FI_MSG and
+  FI_TAGGED receive operations.
 
 # ADDRESSING FORMATS
 
@@ -556,7 +585,7 @@ field indicates the expected address format for these operations.
 A provider may support one or more of the following addressing
 formats.  In some cases, a selected addressing format may need to be
 translated or mapped into an address which is native to the
-fabric.  See `fi_av`(3).
+fabric.  See [`fi_av`(3)](fi_av.3.html).
 
 *FI_FORMAT_UNSPEC*
 : FI_FORMAT_UNSPEC indicates that a provider specific address format
@@ -685,4 +714,5 @@ Multiple threads may call
 
 [`fi_open`(3)](fi_open.3.html),
 [`fi_endpoint`(3)](fi_endpoint.3.html),
-[`fi_domain`(3)](fi_domain.3.html)
+[`fi_domain`(3)](fi_domain.3.html),
+[`fi_nic`(3)](fi_nic.3.html)

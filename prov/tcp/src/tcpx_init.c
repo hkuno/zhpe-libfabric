@@ -39,27 +39,37 @@
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <ofi_util.h>
+#include <stdlib.h>
 
-/* TODO: merge with sock_get_list_of_addr() - sock_fabric.c */
 #if HAVE_GETIFADDRS
 static void tcpx_getinfo_ifs(struct fi_info **info)
 {
-	struct ifaddrs *ifaddrs, *ifa;
-	struct fi_info *head, *tail, *cur, *loopback;
+	struct fi_info *head = NULL, *tail = NULL, *cur;
+	struct slist addr_list;
 	size_t addrlen;
 	uint32_t addr_format;
-	int ret;
+	struct slist_entry *entry, *prev;
+	struct ofi_addr_list_entry *addr_entry;
 
-	ret = ofi_getifaddrs(&ifaddrs);
-	if (ret)
-		return;
+	slist_init(&addr_list);
 
-	head = tail = loopback = NULL;
-	for (ifa = ifaddrs; ifa != NULL; ifa = ifa->ifa_next) {
-		if (ifa->ifa_addr == NULL || !(ifa->ifa_flags & IFF_UP))
-			continue;
+	ofi_get_list_of_addr(&tcpx_prov, "iface", &addr_list);
 
-		switch (ifa->ifa_addr->sa_family) {
+	(void) prev; /* Makes compiler happy */
+	slist_foreach(&addr_list, entry, prev) {
+		addr_entry = container_of(entry, struct ofi_addr_list_entry, entry);
+
+		cur = fi_dupinfo(*info);
+		if (!cur)
+			break;
+
+		if (!head)
+			head = cur;
+		else
+			tail->next = cur;
+		tail = cur;
+
+		switch (addr_entry->ipaddr.sin.sin_family) {
 		case AF_INET:
 			addrlen = sizeof(struct sockaddr_in);
 			addr_format = FI_SOCKADDR_IN;
@@ -72,22 +82,7 @@ static void tcpx_getinfo_ifs(struct fi_info **info)
 			continue;
 		}
 
-		cur = fi_dupinfo(*info);
-		if (!cur)
-			break;
-
-		if (!ofi_is_loopback_addr(ifa->ifa_addr)) {
-			if (!head)
-				head = cur;
-			else
-				tail->next = cur;
-			tail = cur;
-		} else {
-			cur->next = loopback;
-			loopback = cur;
-		}
-
-		cur->src_addr = mem_dup(ifa->ifa_addr, addrlen);
+		cur->src_addr = mem_dup(&addr_entry->ipaddr.sa, addrlen);
 		if (cur->src_addr) {
 			cur->src_addrlen = addrlen;
 			cur->addr_format = addr_format;
@@ -96,29 +91,18 @@ static void tcpx_getinfo_ifs(struct fi_info **info)
 		util_set_fabric_domain(&tcpx_prov, cur);
 		*/
 	}
-	freeifaddrs(ifaddrs);
 
-	if (head || loopback) {
-		if (!head) { /* loopback interface only? */
-			head = loopback;
-		} else {
-			/* append loopback interfaces to tail */
-			assert(tail);
-			assert(!tail->next);
-			tail->next = loopback;
-		}
-
-		fi_freeinfo(*info);
-		*info = head;
-	}
+	ofi_free_list_of_addr(&addr_list);
+	fi_freeinfo(*info);
+	*info = head;
 }
 #else
 #define tcpx_getinfo_ifs(info) do{ } while(0)
 #endif
 
 static int tcpx_getinfo(uint32_t version, const char *node, const char *service,
-			 uint64_t flags, const struct fi_info *hints,
-			 struct fi_info **info)
+			uint64_t flags, const struct fi_info *hints,
+			struct fi_info **info)
 {
 	int ret;
 
@@ -133,6 +117,31 @@ static int tcpx_getinfo(uint32_t version, const char *node, const char *service,
 	return 0;
 }
 
+struct tcpx_port_range port_range = {
+	.low  = 0,
+	.high = 0,
+};
+
+static int tcpx_init_env(void)
+{
+	srand(getpid());
+
+	fi_param_get_int(&tcpx_prov, "port_high_range", &port_range.high);
+	fi_param_get_int(&tcpx_prov, "port_low_range", &port_range.low);
+
+	if (port_range.high > TCPX_PORT_MAX_RANGE) {
+		port_range.high = TCPX_PORT_MAX_RANGE;
+	}
+	if (port_range.low < 0 || port_range.high < 0 ||
+	    port_range.low > port_range.high) {
+		FI_WARN(&tcpx_prov, FI_LOG_EP_CTRL,"User provided "
+			"port range invalid. Ignoring. \n");
+		port_range.low  = 0;
+		port_range.high = 0;
+	}
+	return 0;
+}
+
 static void fi_tcp_fini(void)
 {
 	/* empty as of now */
@@ -141,7 +150,7 @@ static void fi_tcp_fini(void)
 struct fi_provider tcpx_prov = {
 	.name = "tcp",
 	.version = FI_VERSION(TCPX_MAJOR_VERSION,TCPX_MINOR_VERSION),
-	.fi_version = FI_VERSION(1, 6),
+	.fi_version = FI_VERSION(1, 8),
 	.getinfo = tcpx_getinfo,
 	.fabric = tcpx_create_fabric,
 	.cleanup = fi_tcp_fini,
@@ -149,5 +158,21 @@ struct fi_provider tcpx_prov = {
 
 TCP_INI
 {
+#if HAVE_TCP_DL
+	ofi_pmem_init();
+#endif
+	fi_param_define(&tcpx_prov, "iface", FI_PARAM_STRING,
+			"Specify interface name");
+
+	fi_param_define(&tcpx_prov,"port_low_range", FI_PARAM_INT,
+			"define port low range");
+
+	fi_param_define(&tcpx_prov,"port_high_range", FI_PARAM_INT,
+			"define port high range");
+
+	if (tcpx_init_env()) {
+		FI_WARN(&tcpx_prov, FI_LOG_EP_CTRL,"Invalid info\n");
+		return NULL;
+	}
 	return &tcpx_prov;
 }

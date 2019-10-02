@@ -83,7 +83,7 @@ int zhpe_check_user_rma(const struct fi_rma_iov *urma, size_t urma_cnt,
 	return ret;
 }
 
-static inline ssize_t do_rma_msg(struct fid_ep *ep,
+static inline ssize_t do_rma_msg(struct fid_ep *fid_ep,
 				 const struct fi_msg_rma *msg,
 				 uint64_t flags)
 {
@@ -94,24 +94,24 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 	struct zhpe_tx_ctx	*tx_ctx;
 	uint64_t		rma_len;
 	uint64_t		op_flags;
-	struct zhpe_ep		*zhpe_ep;
-	struct zhpe_ep_attr	*ep_attr;
+	struct zhpe_ep		*zep;
+	struct zhpe_ep_attr	*zep_attr;
 	struct zhpe_msg_hdr	ohdr;
 
 	zhpe_stats_start(zhpe_stats_subid(RMA, 0));
 
-	switch (ep->fid.fclass) {
+	switch (fid_ep->fid.fclass) {
 
 	case FI_CLASS_EP:
-		zhpe_ep = container_of(ep, struct zhpe_ep, ep);
-		tx_ctx = zhpe_ep->attr->tx_ctx;
-		ep_attr = zhpe_ep->attr;
-		op_flags = zhpe_ep->tx_attr.op_flags;
+		zep = fid2zep(&fid_ep->fid);
+		tx_ctx = zep->attr->tx_ctx;
+		zep_attr = zep->attr;
+		op_flags = zep->tx_attr.op_flags;
 		break;
 
 	case FI_CLASS_TX_CTX:
-		tx_ctx = container_of(ep, struct zhpe_tx_ctx, ctx);
-		ep_attr = tx_ctx->ep_attr;
+		tx_ctx = container_of(fid_ep, struct zhpe_tx_ctx, ctx);
+		zep_attr = tx_ctx->ep_attr;
 		op_flags = tx_ctx->attr.op_flags;
 		break;
 
@@ -166,7 +166,7 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 	}
 
 	if (flags & FI_TRIGGER) {
-		ret = zhpe_queue_rma_op(ep, msg, flags,
+		ret = zhpe_queue_rma_op(fid_ep, msg, flags,
 					((flags & FI_READ) ?
 					 FI_OP_READ : FI_OP_WRITE));
 		if (ret != 1)
@@ -174,7 +174,7 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 	}
 
 	zhpe_stats_start(zhpe_stats_subid(RMA, 10));
-	ret = zhpe_ep_get_conn(ep_attr, msg->addr, &conn);
+	ret = zhpe_ep_get_conn(zep_attr, msg->addr, &conn);
 	zhpe_stats_stop(zhpe_stats_subid(RMA, 10));
 	if (ret < 0)
 		goto done;
@@ -229,7 +229,7 @@ static inline ssize_t do_rma_msg(struct fid_ep *ep,
 		zhpe_stats_stop(zhpe_stats_subid(RMA, 40));
 	} else if (pe_entry->lstate.missing) {
 		zhpe_stats_start(zhpe_stats_subid(RMA, 50));
-		ret = zhpe_mr_reg_int_iov(ep_attr->domain, &pe_entry->lstate);
+		ret = zhpe_mr_reg_int_iov(zep_attr->domain, &pe_entry->lstate);
 		zhpe_stats_stop(zhpe_stats_subid(RMA, 50));
 		if (ret < 0)
 			goto done;

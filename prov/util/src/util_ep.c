@@ -46,15 +46,19 @@ int ofi_ep_bind_cq(struct util_ep *ep, struct util_cq *cq, uint64_t flags)
 
 	if (flags & FI_TRANSMIT) {
 		ep->tx_cq = cq;
-		if (!(flags & FI_SELECTIVE_COMPLETION))
+		if (!(flags & FI_SELECTIVE_COMPLETION)) {
 			ep->tx_op_flags |= FI_COMPLETION;
+			ep->tx_msg_flags = FI_COMPLETION;
+		}
 		ofi_atomic_inc32(&cq->ref);
 	}
 
 	if (flags & FI_RECV) {
 		ep->rx_cq = cq;
-		if (!(flags & FI_SELECTIVE_COMPLETION))
+		if (!(flags & FI_SELECTIVE_COMPLETION)) {
 			ep->rx_op_flags |= FI_COMPLETION;
+			ep->rx_msg_flags = FI_COMPLETION;
+		}
 		ofi_atomic_inc32(&cq->ref);
 	}
 
@@ -87,9 +91,9 @@ int ofi_ep_bind_av(struct util_ep *util_ep, struct util_av *av)
 	util_ep->av = av;
 	ofi_atomic_inc32(&av->ref);
 
-	fastlock_acquire(&av->lock);
+	fastlock_acquire(&av->ep_list_lock);
 	dlist_insert_tail(&util_ep->av_entry, &av->ep_list);
-	fastlock_release(&av->lock);
+	fastlock_release(&av->ep_list_lock);
 
 	return 0;
 }
@@ -116,31 +120,37 @@ int ofi_ep_bind_cntr(struct util_ep *ep, struct util_cntr *cntr, uint64_t flags)
 
 	if (flags & FI_TRANSMIT) {
 		ep->tx_cntr = cntr;
+		ep->tx_cntr_inc = ofi_cntr_inc;
 		ofi_atomic_inc32(&cntr->ref);
 	}
 
 	if (flags & FI_RECV) {
 		ep->rx_cntr = cntr;
+		ep->rx_cntr_inc = ofi_cntr_inc;
 		ofi_atomic_inc32(&cntr->ref);
 	}
 
 	if (flags & FI_READ) {
 		ep->rd_cntr = cntr;
+		ep->rd_cntr_inc = ofi_cntr_inc;
 		ofi_atomic_inc32(&cntr->ref);
 	}
 
 	if (flags & FI_WRITE) {
 		ep->wr_cntr = cntr;
+		ep->wr_cntr_inc = ofi_cntr_inc;
 		ofi_atomic_inc32(&cntr->ref);
 	}
 
 	if (flags & FI_REMOTE_READ) {
 		ep->rem_rd_cntr = cntr;
+		ep->rem_rd_cntr_inc = ofi_cntr_inc;
 		ofi_atomic_inc32(&cntr->ref);
 	}
 
 	if (flags & FI_REMOTE_WRITE) {
 		ep->rem_wr_cntr = cntr;
+		ep->rem_wr_cntr_inc = ofi_cntr_inc;
 		ofi_atomic_inc32(&cntr->ref);
 	}
 
@@ -206,17 +216,35 @@ int ofi_endpoint_init(struct fid_domain *domain, const struct util_prov *util_pr
 	ep->progress = progress;
 	ep->tx_op_flags = info->tx_attr->op_flags;
 	ep->rx_op_flags = info->rx_attr->op_flags;
+	ep->tx_msg_flags = 0;
+	ep->rx_msg_flags = 0;
+	ep->inject_op_flags =
+		((info->tx_attr->op_flags &
+		  ~(FI_COMPLETION | FI_INJECT_COMPLETE |
+		    FI_TRANSMIT_COMPLETE | FI_DELIVERY_COMPLETE)) | FI_INJECT);
+	ep->tx_cntr_inc 	= ofi_cntr_inc_noop;
+	ep->rx_cntr_inc 	= ofi_cntr_inc_noop;
+	ep->rd_cntr_inc 	= ofi_cntr_inc_noop;
+	ep->wr_cntr_inc 	= ofi_cntr_inc_noop;
+	ep->rem_rd_cntr_inc 	= ofi_cntr_inc_noop;
+	ep->rem_wr_cntr_inc 	= ofi_cntr_inc_noop;
+	ep->type = info->ep_attr->type;
 	ofi_atomic_inc32(&util_domain->ref);
 	if (util_domain->eq)
 		ofi_ep_bind_eq(ep, util_domain->eq);
 	fastlock_init(&ep->lock);
+	if (ep->domain->threading != FI_THREAD_SAFE) {
+		ep->lock_acquire = ofi_fastlock_acquire_noop;
+		ep->lock_release = ofi_fastlock_release_noop;
+	} else {
+		ep->lock_acquire = ofi_fastlock_acquire;
+		ep->lock_release = ofi_fastlock_release;
+	}
 	return 0;
 }
 
 int ofi_endpoint_close(struct util_ep *util_ep)
 {
-	fastlock_destroy(&util_ep->lock);
-
 	if (util_ep->tx_cq) {
 		fid_list_remove(&util_ep->tx_cq->ep_list,
 				&util_ep->tx_cq->ep_list_lock,
@@ -274,9 +302,9 @@ int ofi_endpoint_close(struct util_ep *util_ep)
 	}
 
 	if (util_ep->av) {
-		fastlock_acquire(&util_ep->av->lock);
+		fastlock_acquire(&util_ep->av->ep_list_lock);
 		dlist_remove(&util_ep->av_entry);
-		fastlock_release(&util_ep->av->lock);
+		fastlock_release(&util_ep->av->ep_list_lock);
 
 		ofi_atomic_dec32(&util_ep->av->ref);
 	}
@@ -284,5 +312,6 @@ int ofi_endpoint_close(struct util_ep *util_ep)
 	if (util_ep->eq)
 		ofi_atomic_dec32(&util_ep->eq->ref);
 	ofi_atomic_dec32(&util_ep->domain->ref);
+	fastlock_destroy(&util_ep->lock);
 	return 0;
 }

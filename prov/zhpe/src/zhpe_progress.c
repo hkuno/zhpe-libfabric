@@ -61,24 +61,12 @@ static void zhpe_pe_report_complete(struct zhpe_cqe *zcqe,
 				    int32_t err, uint64_t rem)
 {
 	struct zhpe_comp	*comp = zcqe->comp;
-	struct zhpe_cq		*cq;
-	struct fid_cq		*cq_fid;
-	struct zhpe_eq		*eq;
-	struct zhpe_cntr	*cntr;
-	struct fid_cntr		*cntr_fid;
+	struct zhpe_cq		*zcq;
+	struct fid_cq		*fid_cq;
+	struct zhpe_eq		*zeq;
+	struct zhpe_cntr	*zcntr;
 	uint8_t			event;
 	int			rc;
-
-	struct zhpe_triggered_context *trigger_context;
-
-	if (OFI_UNLIKELY(zcqe->cqe.flags & ZHPE_TRIGGERED_OP)) {
-		trigger_context = zcqe->cqe.op_context;
-		cntr_fid = trigger_context->trigger.work.completion_cntr;
-		if (cntr_fid) {
-			fi_cntr_add(cntr_fid, 1);
-			return;
-		}
-	}
 
 	if (zcqe->cqe.flags & ZHPE_NO_COMPLETION)
 		return;
@@ -87,66 +75,77 @@ static void zhpe_pe_report_complete(struct zhpe_cqe *zcqe,
 				   FI_REMOTE_READ | FI_REMOTE_WRITE)) {
 
 	case FI_SEND:
-		cq = comp->send_cq;
+		zcq = comp->send_cq;
 		event = comp->send_cq_event;
-		cntr = zcqe->comp->send_cntr;
+		zcntr = zcqe->comp->send_cntr;
 		break;
 
 	case FI_RECV:
-		cq = comp->recv_cq;
+		zcq = comp->recv_cq;
 		event = comp->recv_cq_event;
-		cntr = zcqe->comp->recv_cntr;
+		zcntr = zcqe->comp->recv_cntr;
 		break;
 
 	case FI_READ:
-		cq = comp->send_cq;
+		zcq = comp->send_cq;
 		event = comp->send_cq_event;
-		cntr = zcqe->comp->read_cntr;
+		zcntr = zcqe->comp->read_cntr;
 		break;
 
 	case FI_WRITE:
-		cq = comp->send_cq;
+		zcq = comp->send_cq;
 		event = comp->send_cq_event;
-		cntr = zcqe->comp->write_cntr;
+		zcntr = zcqe->comp->write_cntr;
 		break;
 
 	case FI_REMOTE_READ:
-		cq = NULL;
+		zcq = NULL;
 		event = 0;
-		cntr = zcqe->comp->rem_read_cntr;
+		zcntr = zcqe->comp->rem_read_cntr;
 		break;
 
 	case FI_REMOTE_WRITE:
-		cq = comp->recv_cq;
+		if (zcqe->cqe.flags & FI_REMOTE_CQ_DATA)
+			zcq = comp->recv_cq;
+		else
+			zcq = NULL;
 		event = 0;
-		cntr = zcqe->comp->rem_write_cntr;
+		zcntr = zcqe->comp->rem_write_cntr;
 		break;
 
 	default:
+		if (zcqe->cqe.flags & FI_REMOTE_CQ_DATA) {
+			zcq = comp->recv_cq;
+			event = 0;
+			zcntr = NULL;
+			break;
+		}
 		ZHPE_LOG_ERROR("Unexpected flags 0x%Lx\n",
 			       (ullong)zcqe->cqe.flags);
 		abort();
 	}
 	if (OFI_UNLIKELY(err < 0)) {
-		if (cntr)
-			fi_cntr_adderr(&cntr->cntr_fid, 1);
-		if (cq)
-			zhpe_cq_report_error(cq, &zcqe->cqe, rem, -err, -err,
-					     NULL, 0);
+		if (zcntr)
+			fi_cntr_adderr(&zcntr->util_cntr.cntr_fid, 1);
+		if (zcq)
+			zhpe_cq_report_error(&zcq->util_cq, &zcqe->cqe, rem,
+					     -err, err, NULL, 0);
 		return;
 	}
-	if (cntr)
-		zhpe_cntr_inc(cntr);
-	if (cq && (!event || (zcqe->cqe.flags & FI_COMPLETION))) {
-		rc = cq->report_completion(cq, zcqe->addr,   &zcqe->cqe);
+	if (zcntr)
+		zhpe_cntr_inc(zcntr);
+	if (zcq && (!event || (zcqe->cqe.flags & FI_COMPLETION))) {
+		rc = zhpe_cq_report_success(&zcq->util_cq, &zcqe->cqe);
 		if (rc < 0) {
 			ZHPE_LOG_ERROR("Failed to report completion %p: %d\n",
 				       zcqe, rc);
-			eq = comp->eq;
-			cq_fid = &cq->cq_fid;
-			if (eq)
-				zhpe_eq_report_error(eq, &cq_fid->fid,
-						     cq_fid->fid.context, 0,
+			zeq = comp->eq;
+			fid_cq = &zcq->util_cq.cq_fid;
+			if (zeq)
+				zhpe_eq_report_error(&zeq->util_eq,
+						     &fid_cq->fid,
+						     zcqe->cqe.op_context,
+						     zcqe->cqe.data,
 						     FI_ENOSPC, 0, NULL, 0);
 		}
 	}
@@ -619,9 +618,6 @@ static void zhpe_pe_rx_handle_writedata(struct zhpe_conn *conn,
 	zcqe.cqe.flags = (be64toh(zpay->writedata.flags) &
 			  (FI_REMOTE_READ | FI_REMOTE_WRITE |
 			   FI_REMOTE_CQ_DATA | FI_RMA | FI_ATOMIC));
-	if ((zcqe.cqe.flags & (FI_REMOTE_WRITE | FI_REMOTE_CQ_DATA)) ==
-	     FI_REMOTE_CQ_DATA)
-	    zcqe.cqe.flags |= FI_REMOTE_WRITE;
 	zcqe.cqe.data = be64toh(zpay->writedata.cq_data);
 	zhpe_pe_report_complete(&zcqe, 0, 0);
 }
@@ -1134,7 +1130,7 @@ zhpe_pe_tx_rma(struct zhpe_pe_entry *pe_entry,
 	} else
 		rc = zhpe_iov_op(&pe_entry->pe_root,
 				 &pe_entry->lstate, &pe_entry->rstate,
-				 ZHPE_EP_MAX_IO_BYTES, ZHPE_EP_MAX_IO_OPS,
+				 ZHPE_SEG_MAX_BYTES, ZHPE_SEG_MAX_OPS,
 				 ((pe_entry->flags & FI_READ) ?
 				  zhpe_iov_op_get : zhpe_iov_op_put),
 				 &pe_entry->rem);
@@ -1184,7 +1180,7 @@ void zhpe_pe_tx_handle_atomic(struct zhpe_pe_root *pe_root,
 {
 	struct zhpe_pe_entry	*pe_entry =
 		container_of(pe_root, struct zhpe_pe_entry, pe_root);
-	int			rc;
+	int			rc MAYBE_UNUSED;
 
 	if (tx_update_compstat(pe_entry, tx_cqe_status(zq_cqe)))
 		goto done;
@@ -1572,7 +1568,7 @@ static int pe_work_queue(struct zhpe_pe *pe, zhpeu_worker worker, void *data)
 	struct zhpeu_work	work;
 	bool			do_auto;
 
-	do_auto = (pe->domain->progress_mode == FI_PROGRESS_AUTO);
+	do_auto = (pe->domain->util_domain.data_progress == FI_PROGRESS_AUTO);
 	zhpeu_work_init(&work);
 	zhpeu_work_queue(&pe->work_head, &work, worker, data,
 			 true, true, !do_auto);
@@ -1756,7 +1752,7 @@ struct zhpe_pe *zhpe_pe_init(struct zhpe_domain *domain)
 		pe->progress_rx = zhpe_pe_progress_rx_ctx_unlocked;
 	}
 
-	if (domain->progress_mode == FI_PROGRESS_AUTO) {
+	if (domain->util_domain.data_progress == FI_PROGRESS_AUTO) {
 		atm_store(&pe->do_progress, 1);
 		if (pthread_create(&pe->progress_thread, NULL,
 				   zhpe_pe_progress_thread, (void *)pe)) {
@@ -1777,7 +1773,7 @@ void zhpe_pe_finalize(struct zhpe_pe *pe)
 	assert(dlist_empty(&pe->queue_list));
 	assert(dlist_empty(&pe->rx_list));
 
-	if (pe->domain->progress_mode == FI_PROGRESS_AUTO) {
+	if (pe->domain->util_domain.data_progress == FI_PROGRESS_AUTO) {
 		atm_store_rlx(&pe->do_progress, 0);
 		zhpe_pe_signal(pe);
 		pthread_join(pe->progress_thread, NULL);

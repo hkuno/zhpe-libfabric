@@ -65,32 +65,11 @@
 #include <sys/time.h>
 #include <sys/types.h>
 
-#include <rdma/fabric.h>
-#include <rdma/fi_atomic.h>
-#include <rdma/fi_cm.h>
-#include <rdma/fi_domain.h>
-#include <rdma/fi_endpoint.h>
-#include <rdma/fi_eq.h>
-#include <rdma/fi_errno.h>
-#include <rdma/fi_rma.h>
-#include <rdma/fi_tagged.h>
-#include <rdma/fi_trigger.h>
-
-#include <rdma/providers/fi_log.h>
-
-#include <rbtree.h>
-#include <ofi_prov.h>
-
-#include <ofi.h>
 #include <ofi_atomic.h>
-#include <ofi_enosys.h>
-#include <ofi_file.h>
-#include <ofi_indexer.h>
 #include <ofi_iov.h>
-#include <ofi_list.h>
-#include <ofi_osd.h>
-#include <ofi_rbuf.h>
+#include <ofi_prov.h>
 #include <ofi_util.h>
+#include <rdma/providers/fi_log.h>
 
 #include <zhpeq.h>
 #include <zhpeq_util.h>
@@ -99,73 +78,72 @@
 
 #include <zhpe_stats.h>
 
-/* Type checking container_of */
-#ifdef container_of
-#undef container_of
-#endif
-#define container_of(ptr, type, member)				\
-({								\
-	typeof( ((type *)0)->member ) *_ptr = (ptr);		\
-	(type *)((char *)_ptr - offsetof(type,member));		\
-})
-
 #define _ZHPE_LOG_DBG(subsys, ...) FI_DBG(&zhpe_prov, subsys, __VA_ARGS__)
 #define _ZHPE_LOG_INFO(subsys, ...) FI_INFO(&zhpe_prov, subsys, __VA_ARGS__)
 #define _ZHPE_LOG_ERROR(subsys, ...) FI_WARN(&zhpe_prov, subsys, __VA_ARGS__)
 
+void zhpe_straddr_log(const char *func, uint line, enum fi_log_level level,
+		       enum fi_log_subsys subsys, const char *str,
+		       const void *addr);
+
+char *zhpe_straddr(char *buf, size_t *len,
+		   uint32_t addr_format, const void *addr);
+
+char *zhpe_astraddr(uint32_t addr_format, const void *addr);
+
+#define _zhpe_straddr_log(...)					\
+	zhpe_straddr_log(__func__, __LINE__, __VA_ARGS__)
+
 #ifdef ENABLE_DEBUG
+#define zhpe_straddr_dbg(...)					\
+	_zhpe_straddr_log(FI_LOG_DEBUG, __VA_ARGS__)
 void gdb_hook(void);
+#else
+#define zhpe_straddr_log_dbg(_subsys, ...)
 #endif
 
-static inline int zhpe_sa_family(const struct fi_info *info)
+static inline int zhpe_sa_family(uint32_t addr_format)
 {
-	if (info) {
-		switch (info->addr_format) {
+	switch (addr_format) {
 
-		case FI_SOCKADDR_IN:
-			return AF_INET;
+	case FI_SOCKADDR_IN:
+		return AF_INET;
 
-		case FI_SOCKADDR_IN6:
-			return AF_INET6;
+	case FI_SOCKADDR_IN6:
+		return AF_INET6;
 
-		case FI_SOCKADDR:
-		case FI_FORMAT_UNSPEC:
-			return AF_UNSPEC;
+	case FI_SOCKADDR:
+	case FI_FORMAT_UNSPEC:
+		return AF_UNSPEC;
 
-		default:
-			assert(0);
-		}
+	default:
+		abort();
 	}
-
-	return AF_UNSPEC;
 }
 
-extern const char zhpe_fab_name[];
-extern const char zhpe_dom_name[];
-extern const char zhpe_prov_name[];
-extern struct fi_provider zhpe_prov;
-extern int zhpe_pe_waittime;
-extern int zhpe_conn_retry;
-extern int zhpe_cm_def_map_sz;
-extern int zhpe_av_def_sz;
-extern int zhpe_cq_def_sz;
-extern int zhpe_eq_def_sz;
-extern char *zhpe_pe_affinity_str;
-extern size_t zhpe_ep_max_eager_sz;
-extern int zhpe_mr_cache_enable;
-extern int zhpe_mr_cache_merge_regions;
-extern size_t zhpe_mr_cache_max_cnt;
-extern size_t zhpe_mr_cache_max_size;
-extern const struct fi_domain_attr zhpe_domain_attr;
-extern const struct fi_fabric_attr zhpe_fabric_attr;
-extern struct fi_ops_msg zhpe_ep_msg_ops_locked;
-extern struct fi_ops_tagged zhpe_ep_tagged_locked;
-extern struct fi_ops_msg zhpe_ep_msg_ops_unlocked;
-extern struct fi_ops_tagged zhpe_ep_tagged_unlocked;
-extern struct fi_ops_rma zhpe_ep_rma;
-extern struct fi_ops_atomic zhpe_ep_atomic;
-extern char *zhpe_stats_dir;
-extern char *zhpe_stats_unique;
+extern int			zhpe_pe_waittime;
+extern int			zhpe_conn_retry;
+extern int			zhpe_cm_def_map_sz;
+extern int			zhpe_av_def_sz;
+extern int			zhpe_cq_def_sz;
+extern int			zhpe_eq_def_sz;
+extern char			*zhpe_pe_affinity_str;
+extern size_t			zhpe_ep_max_eager_sz;
+extern int			zhpe_mr_cache_enable;
+
+extern struct fi_fabric_attr	zhpe_fabric_attr;
+extern struct fi_domain_attr	zhpe_domain_attr;
+extern struct fi_info		zhpe_info_msg;
+extern struct fi_info		zhpe_info_rdm;
+extern struct fi_provider	zhpe_prov;
+extern struct util_prov		zhpe_util_prov;
+
+extern struct fi_ops_msg	zhpe_ep_msg_ops_locked;
+extern struct fi_ops_tagged	zhpe_ep_tagged_locked;
+extern struct fi_ops_msg	zhpe_ep_msg_ops_unlocked;
+extern struct fi_ops_tagged	zhpe_ep_tagged_unlocked;
+extern struct fi_ops_rma	zhpe_ep_rma;
+extern struct fi_ops_atomic	zhpe_ep_atomic;
 
 /* For the moment, we're going to assume these will always use locks. */
 extern struct fi_ops_cm zhpe_ep_cm_ops;
@@ -184,58 +162,16 @@ static inline void *zhpe_mremap(void *old_address, size_t old_size,
 	return mremap(old_address, old_size, new_size, 0);
 #endif
 }
-#define ZHPE_EP_MAX_INJECT_SZ	(40)
-#define ZHPE_EP_MAX_EAGER_SZ	(16 * 1024)
-#define ZHPE_EP_DEF_BUFF_RECV	(1024 * 1024)
-#define ZHPE_EP_MAX_ORDER_RAW_SZ (0)
-#define ZHPE_EP_MAX_ORDER_WAR_SZ (0)
-#define ZHPE_EP_MAX_ORDER_WAW_SZ (0)
-#define ZHPE_EP_MEM_TAG_FMT	FI_TAG_GENERIC
-#define ZHPE_EP_MAX_EP_CNT	(128)
-#define ZHPE_EP_MAX_CQ_CNT	(32)
-#define ZHPE_EP_MAX_CNTR_CNT	(128)
-#define ZHPE_EP_MAX_TX_CNT	(16)
-#define ZHPE_EP_MAX_RX_CNT	(16)
-#define ZHPE_EP_MAX_IOV_LIMIT	(1)
-#define ZHPE_EP_MAX_IOV_LEN	(1ULL << 31)
-#define ZHPE_EP_MAX_MSG_SZ	(ZHPE_EP_MAX_IOV_LEN * ZHPE_EP_MAX_IOV_LIMIT)
-#define ZHPE_EP_TX_SZ		(4096)
-#define ZHPE_EP_RX_SZ		(256)
-#define ZHPE_EP_MIN_MULTI_RECV	(64)
-#define ZHPE_EP_MAX_ATOMIC_SZ	(8)
+
+#define ZHPE_EP_MAX_CM_DATA_SZ  (256)
 #define ZHPE_EP_MAX_CTX_BITS	(16)
-#define ZHPE_EP_MSG_PREFIX_SZ	(0)
-#define ZHPE_EP_MAX_IO_BYTES	(16UL * 1024 * 1024)
-#define ZHPE_EP_MAX_IO_OPS	(2)
-#define ZHPE_DOMAIN_MR_CNT	(65535)
-#define ZHPE_DOMAIN_CAP		(FI_LOCAL_COMM | FI_REMOTE_COMM)
-#define ZHPE_DOMAIN_MODE	(0)
+#define ZHPE_EP_MAX_IOV_LEN	(1ULL << 31)
+#define ZHPE_EP_MAX_IOV_LIMIT	(1)
+#define ZHPE_EP_MAX_RETRY	(5)
+#define ZHPE_EP_MIN_MULTI_RECV	(64)
 
-#define ZHPE_PE_POLL_TIMEOUT (100000)
-#define ZHPE_PE_WAITTIME (10)
-
-#define ZHPE_EQ_DEF_SZ (1<<8)
-#define ZHPE_CQ_DEF_SZ (1<<8)
-#define ZHPE_AV_DEF_SZ (1<<8)
-#define ZHPE_CMAP_DEF_SZ (1<<10)
-
-#define ZHPE_KEY_SIZE (sizeof(uint64_t))
-#define ZHPE_CQ_DATA_SIZE (sizeof(uint64_t))
-#define ZHPE_TAG_SIZE (sizeof(uint64_t))
-#define ZHPE_MAX_NETWORK_ADDR_SZ (35)
-
-#define ZHPE_PEP_LISTENER_TIMEOUT (10000)
-#define ZHPE_CM_COMM_TIMEOUT (2000)
-#define ZHPE_EP_MAX_RETRY (5)
-#define ZHPE_EP_MAX_CM_DATA_SZ (256)
-#define ZHPE_CM_DEF_BACKLOG (128)
-#define ZHPE_CM_DEF_RETRY (5)
-#define ZHPE_CM_CONN_IN_PROGRESS ((struct zhpe_conn *)(0x1L))
-
-#define ZHPE_MR_CACHE_ENABLE		(true)
-#define ZHPE_MR_CACHE_MERGE_REGIONS	(false)
-#define ZHPE_MR_CACHE_MAX_CNT		(4096)
-#define ZHPE_MR_CACHE_MAX_SIZE		(0)
+#define ZHPE_SEG_MAX_BYTES	(16UL * 1024 * 1024)
+#define ZHPE_SEG_MAX_OPS	(2)
 
 enum {
 	ZHPE_CONN_ACTION_NEW,
@@ -250,33 +186,11 @@ enum {
 	ZHPE_CONN_STATE_READY,
 };
 
-#define ZHPE_EP_RDM_PRI_CAP (FI_MSG | FI_TAGGED | FI_RMA | FI_ATOMICS | \
-			 FI_NAMED_RX_CTX | \
-			 FI_DIRECTED_RECV | \
-			 FI_READ | FI_WRITE | FI_RECV | FI_SEND | \
-			 FI_REMOTE_READ | FI_REMOTE_WRITE)
-
-#define ZHPE_EP_RDM_SEC_CAP (FI_MULTI_RECV | FI_SOURCE | FI_RMA_EVENT | \
-			 FI_SHARED_AV | FI_FENCE | FI_TRIGGER)
-
-#define ZHPE_EP_RDM_CAP (ZHPE_EP_RDM_PRI_CAP | ZHPE_EP_RDM_SEC_CAP)
-
-#define ZHPE_EP_MSG_PRI_CAP ZHPE_EP_RDM_PRI_CAP
-
-#define ZHPE_EP_MSG_SEC_CAP ZHPE_EP_RDM_SEC_CAP
-
-#define ZHPE_EP_MSG_CAP (ZHPE_EP_MSG_PRI_CAP | ZHPE_EP_MSG_SEC_CAP)
-
-#define ZHPE_EP_MSG_ORDER	(FI_ORDER_SAS)
-
-#define ZHPE_EP_COMP_ORDER	(FI_ORDER_NONE)
-
 #define ZHPE_EP_CQ_FLAGS (FI_SEND | FI_TRANSMIT | FI_RECV | \
 			FI_SELECTIVE_COMPLETION)
 #define ZHPE_EP_CNTR_FLAGS (FI_SEND | FI_RECV | FI_READ | \
 			FI_WRITE | FI_REMOTE_READ | FI_REMOTE_WRITE)
 
-#define ZHPE_MODE		(0)
 #define ZHPE_NO_COMPLETION	(1ULL << 60)
 #define ZHPE_USE_OP_FLAGS	(1ULL << 61)
 #define ZHPE_TRIGGERED_OP	(1ULL << 62)
@@ -293,18 +207,26 @@ enum {
 	ZHPE_SIGNAL_WR_FD
 };
 
-#define ZHPE_MAJOR_VERSION 1
-#define ZHPE_MINOR_VERSION 0
-
-#define ZHPE_WIRE_PROTO_VERSION (1)
-
 struct zhpe_fabric {
-	struct fid_fabric	fab_fid;
-	int32_t			ref;
-	struct dlist_entry	service_list;
-	struct dlist_entry	fab_lentry;
-	fastlock_t		lock;
+	struct util_fabric	util_fabric;
 };
+
+static inline struct zhpe_fabric *fid2zfab(struct fid *fid)
+{
+	assert(fid->fclass == FI_CLASS_FABRIC);
+	return container_of(fid, struct zhpe_fabric,
+			    util_fabric.fabric_fid.fid);
+}
+
+static inline struct zhpe_fabric *ufab2zfab(struct util_fabric *fab)
+{
+	return container_of(fab, struct zhpe_fabric, util_fabric);
+}
+
+static inline uint32_t zfab_api_version(struct zhpe_fabric *zfab)
+{
+	return zfab->util_fabric.fabric_fid.api_version;
+}
 
 #define ZHPE_RING_ENTRY_LEN		((size_t)64)
 
@@ -485,70 +407,47 @@ struct zhpe_conn {
 };
 
 struct zhpe_domain {
-	struct fid_domain	dom_fid;
-	struct fi_info		info;
-	struct fi_domain_attr	attr;
-	struct zhpe_fabric	*fab;
-	fastlock_t		lock;
-	int32_t			ref;
+	struct util_domain	util_domain;
+	struct zhpeq_dom	*zqdom;
 
-	struct zhpe_eq		*eq;
-	struct zhpe_eq		*mr_eq;
-
-	enum fi_progress	progress_mode;
+	fastlock_t		*mr_lock;
 	RbtHandle		mr_tree;
 	uint64_t		mr_user_key;
 	uint64_t		mr_zhpe_key;
 	struct zhpe_pe		*pe;
-	struct dlist_entry	dom_lentry;
-	struct zhpeq_dom	*zdom;
 
-	int			(*reg_int)(struct zhpe_domain *domain,
+	int			(*reg_int)(struct zhpe_domain *zdom,
 					   const void *buf, size_t len,
 					   uint64_t access, uint32_t qaccess,
 					   struct fid_mr **mr);
-	struct util_domain	util_domain;
 	struct ofi_mr_cache	cache;
-	fastlock_t		cache_lock;
-	struct ofi_mem_monitor	monitor;
-	uint64_t		monitor_events;
-	uint64_t		*monitor_eventsp;
-	int			monitor_fd;
 	bool			cache_inited;
+	bool			mr_events;
 };
 
-/* move to fi_trigger.h when removing experimental tag from work queues */
-enum {
-	ZHPE_DEFERRED_WORK = FI_TRIGGER_THRESHOLD + 1
-};
+static inline struct zhpe_domain *fid2zdom(struct fid *fid)
+{
+	assert(fid->fclass == FI_CLASS_DOMAIN);
+	return container_of(fid, struct zhpe_domain,
+			    util_domain.domain_fid.fid);
+}
 
-/* move to fi_trigger.h when removing experimental tag from work queues */
-/* Overlay with fi_trigger_threshold and within fi_trigger_context */
-struct zhpe_trigger_work {
-	struct fid_cntr		*triggering_cntr;
-	size_t			threshold;
-	struct fid_cntr		*completion_cntr;
-};
+static inline struct zhpe_domain *udom2zdom(struct util_domain *dom)
+{
+	return container_of(dom, struct zhpe_domain, util_domain);
+}
 
-/* must overlay fi_triggered_context */
-struct zhpe_triggered_context {
-	int					event_type;
-	union {
-		struct fi_trigger_threshold	threshold;
-		struct zhpe_trigger_work	work;
-		void				*internal[3];
-	} trigger;
-};
+static inline struct zhpe_fabric *zdom2zfab(struct zhpe_domain *zdom)
+{
+	return ufab2zfab(zdom->util_domain.fabric);
+}
 
 struct zhpe_trigger {
-	enum fi_op_type op_type;
-	bool lock;
-	size_t threshold;
-	struct dlist_entry lentry;
-
-	struct zhpe_triggered_context *context;
-	struct fid_ep *ep;
-	uint64_t flags;
+	struct dlist_entry	lentry;
+	struct fi_trigger_threshold threshold;
+	struct fid_ep		*fid_ep;
+	uint64_t		flags;
+	enum fi_op_type		op_type;
 
 	union {
 		struct {
@@ -586,49 +485,62 @@ struct zhpe_trigger {
 };
 
 struct zhpe_cntr {
-	struct fid_cntr		cntr_fid;
-	struct zhpe_domain	*domain;
-	uint32_t		value;
-	int32_t			ref;
-	uint32_t		err_cnt;
-	uint32_t		last_read_val;
-	pthread_cond_t 		cond;
-	pthread_mutex_t		mut;
-	struct fi_cntr_attr	attr;
-
-	struct dlist_entry	rx_list;
-	struct dlist_entry	tx_list;
-	fastlock_t		list_lock;
+	struct util_cntr	util_cntr;
 
 	fastlock_t		trigger_lock;
 	struct dlist_entry	trigger_list;
 
-	struct fid_wait		*waitset;
-	int			signal;
-	uint32_t		num_waiting;
-	int			err_flag;
+	/* Keep until we integrate util_ep. */
+	fastlock_t		list_lock;
+	struct dlist_entry	ep_list;
+	struct dlist_entry	rx_list;
+	struct dlist_entry	tx_list;
 };
+
+static inline struct zhpe_cntr *fid2zcntr(struct fid *fid)
+{
+	assert(fid->fclass == FI_CLASS_CNTR);
+	return container_of(fid, struct zhpe_cntr, util_cntr.cntr_fid.fid);
+}
+
+static inline struct zhpe_cntr *ucntr2zcntr(struct util_cntr *cntr)
+{
+	return container_of(cntr, struct zhpe_cntr, util_cntr);
+}
+
+static inline struct zhpe_domain *zcntr2zdom(struct zhpe_cntr *zcntr)
+{
+	return udom2zdom(zcntr->util_cntr.domain);
+}
 
 struct zhpe_mr_ops {
 	struct fi_ops		fi_ops;
-	void			(*freeme)(void *ptr);
+	void			(*get)(struct zhpe_mr *zmr);
 	int			(*put)(struct zhpe_mr *zmr);
 };
 
 struct zhpe_mr {
 	struct fid_mr		mr_fid;
-	struct zhpe_domain	*domain;
+	struct zhpe_domain	*zdom;
 	uint64_t		flags;
 	struct zhpeq_key_data	*kdata;
 	struct dlist_entry	kexp_list;
 	struct zhpe_key		zkey;
 	int32_t			use_count;
+	struct ofi_mr_entry	*entry;
+	struct zhpe_mr		*next;
 };
 
-struct zhpe_mr_cached {
-	struct zhpe_mr		zmr;
-	struct ofi_mr_entry	*entry;
-};
+static inline struct zhpe_mr *fid2zmr(struct fid *fid)
+{
+	assert(fid->fclass == FI_CLASS_MR);
+	return container_of(fid, struct zhpe_mr, mr_fid.fid);
+}
+
+static inline struct zhpe_mr_ops *zmr2zops(struct zhpe_mr *zmr)
+{
+	return container_of(zmr->mr_fid.fid.ops, struct zhpe_mr_ops, fi_ops);
+}
 
 struct zhpe_av_addr {
 	union sockaddr_in46	addr;
@@ -657,30 +569,16 @@ struct zhpe_av {
 	fastlock_t list_lock;
 };
 
-struct zhpe_fid_list {
-	struct dlist_entry lentry;
-	struct fid *fid;
-};
+static inline struct zhpe_av *fid2zav(struct fid *fid)
+{
+	assert(fid->fclass == FI_CLASS_AV);
+	return container_of(fid, struct zhpe_av, av_fid.fid);
+}
 
-struct zhpe_poll {
-	struct fid_poll poll_fid;
-	struct zhpe_domain *domain;
-	struct dlist_entry fid_list;
-};
-
-struct zhpe_wait {
-	struct fid_wait wait_fid;
-	struct zhpe_fabric *fab;
-	struct dlist_entry fid_list;
-	enum fi_wait_obj type;
-	union {
-		int fd[2];
-		struct zhpe_mutex_cond {
-			pthread_mutex_t	mutex;
-			pthread_cond_t	cond;
-		} mutex_cond;
-	} wobj;
-};
+static inline struct zhpe_domain *zav2zdom(struct zhpe_av *zav)
+{
+	return zav->domain;
+}
 
 #define ZHPE_MSG_TRANSMIT_COMPLETE	(0x01)
 #define ZHPE_MSG_DELIVERY_COMPLETE	(0x02)
@@ -809,35 +707,25 @@ static inline void zhpe_ziov_to_zkey(struct zhpe_iov *ziov,
 #define ZHPE_MR_ACCESS_ALL \
 	(FI_READ|FI_WRITE|FI_REMOTE_READ|FI_REMOTE_WRITE|FI_SEND|FI_RECV)
 
-struct zhpe_eq_entry {
-	uint32_t type;
-	size_t len;
-	uint64_t flags;
-	struct dlist_entry lentry;
-	char event[0];
-};
-
-struct zhpe_eq_err_data_entry {
-	struct dlist_entry lentry;
-	int do_free;
-	char err_data[];
-};
-
 struct zhpe_eq {
-	struct fid_eq eq;
-	struct fi_eq_attr attr;
-	struct zhpe_fabric *zhpe_fab;
-
-	struct dlistfd_head list;
-	struct dlistfd_head err_list;
-	struct dlist_entry err_data_list;
-	fastlock_t lock;
-
-	struct fid_wait *waitset;
-	int signal;
-	int wait_fd;
-	char service[NI_MAXSERV];
+	struct util_eq		util_eq;
 };
+
+static inline struct zhpe_eq *fid2zeq(struct fid *fid)
+{
+	assert(fid->fclass == FI_CLASS_EQ);
+	return container_of(fid, struct zhpe_eq, util_eq.eq_fid.fid);
+}
+
+static inline struct zhpe_eq *ueq2zeq(struct util_eq *eq)
+{
+	return container_of(eq, struct zhpe_eq, util_eq);
+}
+
+static inline struct zhpe_fabric *zeq2zfab(struct zhpe_eq *zeq)
+{
+	return ufab2zfab(zeq->util_eq.fabric);
+}
 
 struct zhpe_comp {
 	uint8_t send_cq_event;
@@ -930,8 +818,18 @@ struct zhpe_ep {
 	struct fi_tx_attr tx_attr;
 	struct fi_rx_attr rx_attr;
 	struct zhpe_ep_attr *attr;
-	int is_alias;
 };
+
+static inline struct zhpe_ep *fid2zep(struct fid *fid)
+{
+	assert(fid->fclass == FI_CLASS_EP);
+	return container_of(fid, struct zhpe_ep, ep.fid);
+}
+
+static inline struct zhpe_domain *zep2zdom(struct zhpe_ep *zep)
+{
+	return zep->attr->domain;
+}
 
 struct zhpe_pep {
 	struct fid_pep		pep;
@@ -967,7 +865,7 @@ enum zhpe_rx_state {
 struct zhpe_rx_entry_free {
 	struct zhpe_rx_ctx	*rx_ctx;
 	struct zhpeu_atm_list_ptr rx_fifo_list;
-	struct util_buf_pool	*rx_entry_pool;
+	struct ofi_bufpool	*rx_entry_pool;
 };
 
 struct zhpe_rx_entry {
@@ -1148,40 +1046,31 @@ struct zhpe_pe {
 	bool			do_progress;
 };
 
-typedef int (*zhpe_cq_report_fn) (struct zhpe_cq *cq, fi_addr_t addr,
-				  struct fi_cq_tagged_entry *tcqe);
-
-struct zhpe_cq_overflow_entry_t {
-	size_t len;
-	fi_addr_t addr;
-	struct dlist_entry lentry;
-	char cq_entry[0];
-};
-
 struct zhpe_cq {
-	struct fid_cq cq_fid;
-	struct zhpe_domain *domain;
-	ssize_t cq_entry_size;
-	int32_t ref;
-	struct fi_cq_attr attr;
+	struct util_cq		util_cq;
 
-	struct ofi_ringbuf addr_rb;
-	struct ofi_ringbuffd cq_rbfd;
-	struct ofi_ringbuf cqerr_rb;
-	struct dlist_entry overflow_list;
-	fastlock_t lock;
-	fastlock_t list_lock;
-
-	struct fid_wait *waitset;
-	int signal;
-	uint32_t signaled;
-
-	struct dlist_entry ep_list;
-	struct dlist_entry rx_list;
-	struct dlist_entry tx_list;
-
-	zhpe_cq_report_fn report_completion;
+	/* Keep until we integrate util_ep. */
+	fastlock_t		list_lock;
+	struct dlist_entry	ep_list;
+	struct dlist_entry	rx_list;
+	struct dlist_entry	tx_list;
 };
+
+static inline struct zhpe_cq *fid2zcq(struct fid *fid)
+{
+	assert(fid->fclass == FI_CLASS_CQ);
+	return container_of(fid, struct zhpe_cq, util_cq.cq_fid.fid);
+}
+
+static inline struct zhpe_cq *ucq2zcq(struct util_cq *cq)
+{
+	return container_of(cq, struct zhpe_cq, util_cq);
+}
+
+static inline struct zhpe_domain *zcq2zdom(struct zhpe_cq *zcq)
+{
+	return udom2zdom(zcq->util_cq.domain);
+}
 
 struct zhpe_conn_hdr {
 	uint8_t type;
@@ -1225,65 +1114,25 @@ struct zhpe_host_list_entry {
 	struct slist_entry entry;
 };
 
-int zhpe_verify_info(uint32_t api_version, const struct fi_info *hints,
-		     uint64_t flags);
-int zhpe_verify_fabric_attr(struct fi_fabric_attr *attr);
-int zhpe_verify_domain_attr(uint32_t api_version, const struct fi_info *info);
+extern pthread_mutex_t zhpe_fabdom_close_mutex;
 
-int zhpe_rdm_verify_ep_attr(struct fi_ep_attr *ep_attr,
-			    struct fi_tx_attr *tx_attr,
-			    struct fi_rx_attr *rx_attr);
-int zhpe_msg_verify_ep_attr(struct fi_ep_attr *ep_attr,
-			    struct fi_tx_attr *tx_attr,
-			    struct fi_rx_attr *rx_attr);
-
-struct fi_info *zhpe_fi_info(uint32_t api_version,
-			     const struct fi_info *hints,
-			     const union sockaddr_in46 *src_addr,
-			     const union sockaddr_in46 *dest_addr,
-			     uint64_t caps, uint64_t mode,
-			     const struct fi_ep_attr *ep_attr,
-			     const struct fi_tx_attr *tx_attr,
-			     const struct fi_rx_attr *rx_attr);
-int zhpe_msg_fi_info(uint32_t api_version, const union sockaddr_in46 *src_addr,
-		     const union sockaddr_in46 *dest_addr,
-		     const struct fi_info *hints, struct fi_info **info);
-int zhpe_rdm_fi_info(uint32_t api_version, const union sockaddr_in46 *src_addr,
-		     const union sockaddr_in46 *dest_addr,
-		     const struct fi_info *hints, struct fi_info **info);
-void free_fi_info(struct fi_info *info);
-
-int zhpe_msg_getinfo(uint32_t api_version, const char *node,
-		     const char *service, uint64_t flags,
-		     struct fi_info *hints, struct fi_info **info);
+void fi_zhpe_fini(void);
+int zhpe_getinfo(uint32_t api_version, const char *node, const char *service,
+		 uint64_t flags, const struct fi_info *hints,
+		 struct fi_info **info);
+int zhpe_fabric(struct fi_fabric_attr *attr, struct fid_fabric **fabric,
+		void *context);
 
 int zhpe_domain(struct fid_fabric *fabric, struct fi_info *info,
 		struct fid_domain **dom, void *context);
-void zhpe_dom_add_to_list(struct zhpe_domain *domain);
-int zhpe_dom_check_list(struct zhpe_domain *domain);
-void zhpe_dom_remove_from_list(struct zhpe_domain *domain);
-struct zhpe_domain *zhpe_dom_list_head(void);
-int zhpe_dom_check_manual_progress(struct zhpe_fabric *fabric);
+
 int zhpe_query_atomic(struct fid_domain *domain,
 		      enum fi_datatype datatype, enum fi_op op,
 		      struct fi_atomic_attr *attr, uint64_t flags);
 
-void zhpe_fab_add_to_list(struct zhpe_fabric *fabric);
-int zhpe_fab_check_list(struct zhpe_fabric *fabric);
-void zhpe_fab_remove_from_list(struct zhpe_fabric *fabric);
-struct zhpe_fabric *zhpe_fab_list_head(void);
-
-int zhpe_alloc_endpoint(struct fid_domain *domain, struct fi_info *info,
+int zhpe_alloc_endpoint(struct zhpe_domain *zhpe_dom,
+			struct fi_info *prov_info, struct fi_info *info,
 			struct zhpe_ep **ep, void *context, size_t fclass);
-int zhpe_rdm_ep(struct fid_domain *domain, struct fi_info *info,
-		struct fid_ep **ep, void *context);
-int zhpe_rdm_sep(struct fid_domain *domain, struct fi_info *info,
-		 struct fid_ep **sep, void *context);
-
-int zhpe_msg_ep(struct fid_domain *domain, struct fi_info *info,
-		struct fid_ep **ep, void *context);
-int zhpe_msg_sep(struct fid_domain *domain, struct fi_info *info,
-		 struct fid_ep **sep, void *context);
 int zhpe_msg_passive_ep(struct fid_fabric *fabric, struct fi_info *info,
 			struct fid_pep **pep, void *context);
 int zhpe_ep_enable(struct fid_ep *ep);
@@ -1291,36 +1140,40 @@ int zhpe_ep_disable(struct fid_ep *ep);
 
 int zhpe_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr,
 		 struct fid_cq **cq, void *context);
-int zhpe_cq_report_error(struct zhpe_cq *cq, struct fi_cq_tagged_entry *entry,
-			 size_t olen, int err, int prov_errno, void *err_data,
-			 size_t err_data_size);
-int zhpe_cq_progress(struct zhpe_cq *cq);
+int zhpe_cq_report_success(struct util_cq *cq, struct fi_cq_tagged_entry *tcqe);
+int zhpe_cq_report_error(struct util_cq *cq, struct fi_cq_tagged_entry *tcqe,
+			 size_t olen, int err, int prov_err,
+			 const void *err_data, size_t err_data_size);
 void zhpe_cq_add_tx_ctx(struct zhpe_cq *cq, struct zhpe_tx_ctx *tx_ctx);
 void zhpe_cq_remove_tx_ctx(struct zhpe_cq *cq, struct zhpe_tx_ctx *tx_ctx);
 void zhpe_cq_add_rx_ctx(struct zhpe_cq *cq, struct zhpe_rx_ctx *rx_ctx);
 void zhpe_cq_remove_rx_ctx(struct zhpe_cq *cq, struct zhpe_rx_ctx *rx_ctx);
 
 
-int zhpe_eq_open(struct fid_fabric *fabric, struct fi_eq_attr *attr,
-		struct fid_eq **eq, void *context);
-ssize_t zhpe_eq_report_event(struct zhpe_eq *zhpe_eq, uint32_t event,
-			     const void *buf, size_t len, uint64_t flags);
-ssize_t zhpe_eq_report_error(struct zhpe_eq *zhpe_eq, fid_t fid, void *context,
+int zhpe_eq_open(struct fid_fabric *fabric_fid, struct fi_eq_attr *attr,
+		 struct fid_eq **eq_fid, void *context);
+ssize_t zhpe_eq_report_event(struct util_eq *eq, uint32_t event,
+			     const void *buf, size_t len);
+ssize_t zhpe_eq_report_error(struct util_eq *eq, fid_t fid, void *context,
 			     uint64_t data, int err, int prov_errno,
 			     void *err_data, size_t err_data_size);
-int zhpe_eq_openwait(struct zhpe_eq *eq, const char *service);
 
-int zhpe_cntr_open(struct fid_domain *domain, struct fi_cntr_attr *attr,
-		   struct fid_cntr **cntr, void *context);
-void zhpe_cntr_inc(struct zhpe_cntr *cntr);
-int zhpe_cntr_progress(struct zhpe_cntr *cntr);
+int zhpe_cntr_open(struct fid_domain *domain_fid, struct fi_cntr_attr *attr,
+		   struct fid_cntr **cntr_fid, void *context);
+static inline void zhpe_cntr_inc(struct zhpe_cntr *zcntr)
+{
+	ofi_cntr_inc(&zcntr->util_cntr);
+}
+static inline uint64_t zhpe_cntr_read(struct zhpe_cntr *zcntr)
+{
+	return ofi_atomic_get64(&zcntr->util_cntr.cnt);
+}
 void zhpe_cntr_add_tx_ctx(struct zhpe_cntr *cntr, struct zhpe_tx_ctx *tx_ctx);
 void zhpe_cntr_remove_tx_ctx(struct zhpe_cntr *cntr,
 			     struct zhpe_tx_ctx *tx_ctx);
 void zhpe_cntr_add_rx_ctx(struct zhpe_cntr *cntr, struct zhpe_rx_ctx *rx_ctx);
 void zhpe_cntr_remove_rx_ctx(struct zhpe_cntr *cntr,
 			     struct zhpe_rx_ctx *rx_ctx);
-
 
 struct zhpe_rx_ctx *
 zhpe_rx_ctx_alloc(const struct fi_rx_attr *attr, void *context,
@@ -1331,15 +1184,6 @@ void zhpe_rx_ctx_free(struct zhpe_rx_ctx *rx_ctx);
 struct zhpe_tx_ctx *zhpe_tx_ctx_alloc(const struct fi_tx_attr *attr,
 				      void *context);
 void zhpe_tx_ctx_free(struct zhpe_tx_ctx *tx_ctx);
-
-int zhpe_poll_open(struct fid_domain *domain, struct fi_poll_attr *attr,
-		   struct fid_poll **pollset);
-int zhpe_wait_open(struct fid_fabric *fabric, struct fi_wait_attr *attr,
-		   struct fid_wait **waitset);
-void zhpe_wait_signal(struct fid_wait *wait_fid);
-int zhpe_wait_get_obj(struct fid_wait *fid, void *arg);
-int zhpe_wait_close(fid_t fid);
-
 
 int zhpe_av_open(struct fid_domain *domain, struct fi_av_attr *attr,
 		 struct fid_av **av, void *context);
@@ -1573,14 +1417,10 @@ static inline int64_t zhpe_tx_reserve(struct zhpe_tx *ztx, uint8_t pe_flags)
 
 static inline int zhpe_mr_put(struct zhpe_mr *zmr)
 {
-	struct zhpe_mr_ops	*zmr_ops;
-
 	if (!zmr)
 		return 0;
 
-	zmr_ops = container_of(zmr->mr_fid.fid.ops, struct zhpe_mr_ops, fi_ops);
-
-	return zmr_ops->put(zmr);
+	return zmr2zops(zmr)->put(zmr);
 }
 
 static inline void zhpe_tx_put(struct zhpe_tx *ztx)
@@ -1682,8 +1522,8 @@ static inline void *
 zhpe_pay_ptr(struct zhpe_conn *conn, struct zhpe_msg_hdr *zhdr,
 	     size_t off, size_t alignment)
 {
-	off += fi_get_aligned_sz(sizeof(*zhdr), sizeof(int));
-	off = fi_get_aligned_sz(off, alignment);
+	off += ofi_get_aligned_size(sizeof(*zhdr), sizeof(int));
+	off = ofi_get_aligned_size(off, alignment);
 
 	return (char *)zhdr + off;
 }
@@ -2035,7 +1875,7 @@ struct zhpe_mr *zhpe_mr_find(struct zhpe_domain *domain,
 
 static inline void zhpe_mr_get(struct zhpe_mr *zmr)
 {
-	atm_inc(&zmr->use_count);
+	zmr2zops(zmr)->get(zmr);
 }
 
 int zhpe_conn_key_export(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
@@ -2081,7 +1921,7 @@ zhpe_rx_new_entry(struct zhpe_rx_entry_free *rx_free)
 	if (OFI_LIKELY(!!next))
 		ret = container_of(next, struct zhpe_rx_entry, rx_match_next);
 	else
-		ret = util_buf_alloc(rx_free->rx_entry_pool);
+		ret = ofi_buf_alloc(rx_free->rx_entry_pool);
 	if (!ret)
 		goto done;
 	_ZHPE_LOG_DBG(FI_LOG_EP_DATA,
@@ -2096,6 +1936,7 @@ zhpe_rx_new_entry(struct zhpe_rx_entry_free *rx_free)
 	zhpe_iov_state_init(&ret->lstate, &zhpe_iov_state_ziovl_ops, ret->liov);
 	dlist_init(&ret->lentry);
  done:
+
 	return ret;
 }
 
@@ -2138,10 +1979,21 @@ static inline uint8_t zhpe_get_rx_id(struct zhpe_tx_ctx *tx_ctx,
 
 }
 
-static inline bool zhpe_needs_locking(struct zhpe_domain *domain)
+static inline bool zhpe_needs_locking(struct zhpe_domain *zdom)
 {
-	return (domain->attr.threading != FI_THREAD_COMPLETION ||
-		domain->progress_mode == FI_PROGRESS_AUTO);
+	if (zdom->util_domain.data_progress == FI_PROGRESS_AUTO)
+		return true;
+
+	switch (zdom->util_domain.threading) {
+
+	case FI_THREAD_COMPLETION:
+	case FI_THREAD_DOMAIN:
+		return false;
+
+	default:
+
+		return true;
+	}
 }
 
 int zhpe_mr_cache_init(struct zhpe_domain *domain);

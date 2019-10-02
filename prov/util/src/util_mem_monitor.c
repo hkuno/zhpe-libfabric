@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2017 Cray Inc. All rights reserved.
- * Copyright (c) 2017 Intel Inc. All rights reserved.
+ * Copyright (c) 2017-2019 Intel Inc. All rights reserved.
+ * Copyright (c) 2019 Amazon.com, Inc. or its affiliates. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -33,125 +34,353 @@
 
 #include <ofi_mr.h>
 
+static struct ofi_uffd uffd;
+struct ofi_mem_monitor *uffd_monitor = &uffd.monitor;
 
-void ofi_monitor_init(struct ofi_mem_monitor *monitor)
+struct ofi_mem_monitor *default_monitor;
+
+
+/*
+ * Initialize all available memory monitors
+ */
+void ofi_monitor_init(void)
 {
-	ofi_atomic_initialize32(&monitor->refcnt, 0);
+	fastlock_init(&uffd_monitor->lock);
+	dlist_init(&uffd_monitor->list);
+
+	fastlock_init(&memhooks_monitor->lock);
+	dlist_init(&memhooks_monitor->list);
+
+#if HAVE_UFFD_UNMAP
+        default_monitor = uffd_monitor;
+#elif defined(HAVE_ELF_H) && defined(HAVE_SYS_AUXV_H)
+        default_monitor = memhooks_monitor;
+#else
+        default_monitor = NULL;
+#endif
+
+	fi_param_define(NULL, "mr_cache_max_size", FI_PARAM_SIZE_T,
+			"Defines the total number of bytes for all memory"
+			" regions that may be tracked by the MR cache."
+			" Setting this will reduce the amount of memory"
+			" not actively in use that may be registered."
+			" (default: 0 no limit is enforced)");
+	fi_param_define(NULL, "mr_cache_max_count", FI_PARAM_SIZE_T,
+			"Defines the total number of memory regions that"
+			" may be store in the cache.  Setting this will"
+			" reduce the number of registered regions, regardless"
+			" of their size, stored in the cache.  Setting this"
+			" to zero will disable MR caching.  (default: 1024)");
+	fi_param_define(NULL, "mr_cache_merge_regions", FI_PARAM_BOOL,
+			"If set to true, overlapping or adjacent memory"
+			" regions will be combined into a single, larger"
+			" region.  Merging regions can reduce the cache"
+			" memory footprint, but can negatively impact"
+			" performance in some situations.  (default: false)");
+	fi_param_define(NULL, "mr_cache_monitor", FI_PARAM_STRING,
+			"Define a default memory registration monitor."
+			" The monitor checks for virtual to physical memory"
+			" address changes.  Options are: userfaultfd, memhooks"
+			" and disabled.  Userfaultfd is a Linux kernel feature."
+			" Memhooks operates by intercepting memory allocation"
+			" and free calls.  Userfaultfd is the default if"
+			" available on the system. 'disabled' option disables"
+			" memory caching.");
+
+	fi_param_get_size_t(NULL, "mr_cache_max_size", &cache_params.max_size);
+	fi_param_get_size_t(NULL, "mr_cache_max_count", &cache_params.max_cnt);
+	fi_param_get_bool(NULL, "mr_cache_merge_regions",
+			  &cache_params.merge_regions);
+	fi_param_get_str(NULL, "mr_cache_monitor", &cache_params.monitor);
+
+	if (!cache_params.max_size)
+		cache_params.max_size = SIZE_MAX;
+
+	if (cache_params.monitor != NULL) {
+		if (!strcmp(cache_params.monitor, "userfaultfd") &&
+		    default_monitor == uffd_monitor)
+			default_monitor = uffd_monitor;
+		else if (!strcmp(cache_params.monitor, "memhooks"))
+			default_monitor = memhooks_monitor;
+		else if (!strcmp(cache_params.monitor, "disabled"))
+			default_monitor = NULL;
+	}
 }
 
-void ofi_monitor_cleanup(struct ofi_mem_monitor *monitor)
+void ofi_monitor_cleanup(void)
 {
-	assert(ofi_atomic_get32(&monitor->refcnt) == 0);
+	assert(dlist_empty(&uffd_monitor->list));
+	fastlock_destroy(&uffd_monitor->lock);
+
+	assert(dlist_empty(&memhooks_monitor->list));
+	fastlock_destroy(&memhooks_monitor->lock);
 }
 
-void ofi_monitor_add_queue(struct ofi_mem_monitor *monitor,
-			   struct ofi_notification_queue *nq)
+int ofi_monitor_add_cache(struct ofi_mem_monitor *monitor,
+			  struct ofi_mr_cache *cache)
 {
-	fastlock_init(&nq->lock);
-	dlist_init(&nq->list);
-	fastlock_acquire(&nq->lock);
-	nq->refcnt = 0;
-	fastlock_release(&nq->lock);
+	int ret = 0;
 
-	nq->monitor = monitor;
-	ofi_atomic_inc32(&monitor->refcnt);
+	if (!monitor)
+		return -FI_ENOSYS;
+
+	fastlock_acquire(&monitor->lock);
+	if (dlist_empty(&monitor->list)) {
+		if (monitor == uffd_monitor)
+			ret = ofi_uffd_init();
+		else if (monitor == memhooks_monitor)
+			ret = ofi_memhooks_init();
+		else
+			ret = -FI_ENOSYS;
+
+		if (ret)
+			goto out;
+	}
+	cache->monitor = monitor;
+	dlist_insert_tail(&cache->notify_entry, &monitor->list);
+out:
+	fastlock_release(&monitor->lock);
+	return ret;
 }
 
-void ofi_monitor_del_queue(struct ofi_notification_queue *nq)
+void ofi_monitor_del_cache(struct ofi_mr_cache *cache)
 {
-	assert(dlist_empty(&nq->list) && (nq->refcnt == 0));
-	ofi_atomic_dec32(&nq->monitor->refcnt);
-	fastlock_destroy(&nq->lock);
+	struct ofi_mem_monitor *monitor = cache->monitor;
+
+	assert(monitor);
+	fastlock_acquire(&monitor->lock);
+	dlist_remove(&cache->notify_entry);
+
+	if (dlist_empty(&monitor->list)) {
+		if (monitor == uffd_monitor)
+			ofi_uffd_cleanup();
+		else if (monitor == memhooks_monitor)
+			ofi_memhooks_cleanup();
+	}
+
+	fastlock_release(&monitor->lock);
 }
 
-int ofi_monitor_subscribe(struct ofi_notification_queue *nq,
-			  void *addr, size_t len,
-			  struct ofi_subscription *subscription)
+/* Must be called holding monitor lock */
+void ofi_monitor_notify(struct ofi_mem_monitor *monitor,
+			const void *addr, size_t len)
+{
+	struct ofi_mr_cache *cache;
+
+	dlist_foreach_container(&monitor->list, struct ofi_mr_cache,
+				cache, notify_entry) {
+		ofi_mr_cache_notify(cache, addr, len);
+	}
+}
+
+int ofi_monitor_subscribe(struct ofi_mem_monitor *monitor,
+			  const void *addr, size_t len)
 {
 	int ret;
 
 	FI_DBG(&core_prov, FI_LOG_MR,
-	       "subscribing addr=%p len=%zu subscription=%p nq=%p\n",
-	       addr, len, subscription, nq);
+	       "subscribing addr=%p len=%zu\n", addr, len);
 
-	/* Ensure the subscription is initialized before we can get events */
-	dlist_init(&subscription->entry);
-
-	subscription->nq = nq;
-	subscription->addr = addr;
-	subscription->len = len;
-	fastlock_acquire(&nq->lock);
-	nq->refcnt++;
-	fastlock_release(&nq->lock);
-
-	ret = nq->monitor->subscribe(nq->monitor, addr, len, subscription);
+	ret = monitor->subscribe(monitor, addr, len);
 	if (OFI_UNLIKELY(ret)) {
 		FI_WARN(&core_prov, FI_LOG_MR,
-			"Failed (ret = %d) to monitor addr=%p len=%zu",
+			"Failed (ret = %d) to monitor addr=%p len=%zu\n",
 			ret, addr, len);
-		fastlock_acquire(&nq->lock);
-		nq->refcnt--;
-		fastlock_release(&nq->lock);
 	}
 	return ret;
 }
 
-void ofi_monitor_unsubscribe(struct ofi_subscription *subscription)
+void ofi_monitor_unsubscribe(struct ofi_mem_monitor *monitor,
+			     const void *addr, size_t len)
 {
 	FI_DBG(&core_prov, FI_LOG_MR,
-	       "unsubscribing addr=%p len=%zu subscription=%p\n",
-	       subscription->addr, subscription->len, subscription);
-	subscription->nq->monitor->unsubscribe(subscription->nq->monitor,
-					       subscription->addr,
-					       subscription->len,
-					       subscription);
-	fastlock_acquire(&subscription->nq->lock);
-	dlist_init(&subscription->entry);
-	subscription->nq->refcnt--;
-	fastlock_release(&subscription->nq->lock);
+	       "unsubscribing addr=%p len=%zu\n", addr, len);
+	monitor->unsubscribe(monitor, addr, len);
 }
 
-static void util_monitor_read_events(struct ofi_mem_monitor *monitor)
-{
-	struct ofi_subscription *subscription;
+#if HAVE_UFFD_UNMAP
 
-	do {
-		subscription = monitor->get_event(monitor);
-		if (!subscription) {
-			FI_DBG(&core_prov, FI_LOG_MR,
-			       "no more events to be read\n");
+#include <poll.h>
+#include <sys/syscall.h>
+#include <sys/ioctl.h>
+#include <linux/userfaultfd.h>
+
+
+static void *ofi_uffd_handler(void *arg)
+{
+	struct uffd_msg msg;
+	struct pollfd fds;
+	int ret;
+
+	fds.fd = uffd.fd;
+	fds.events = POLLIN;
+	for (;;) {
+		ret = poll(&fds, 1, -1);
+		if (ret != 1)
 			break;
+
+		fastlock_acquire(&uffd.monitor.lock);
+		ret = read(uffd.fd, &msg, sizeof(msg));
+		if (ret != sizeof(msg)) {
+			fastlock_release(&uffd.monitor.lock);
+			if (errno != EAGAIN)
+				break;
+			continue;
 		}
 
-		FI_DBG(&core_prov, FI_LOG_MR,
-		       "found event, context=%p, addr=%p, len=%zu nq=%p\n",
-		       subscription, subscription->addr,
-		       subscription->len, subscription->nq);
-
-		fastlock_acquire(&subscription->nq->lock);
-		if (dlist_empty(&subscription->entry))
-			dlist_insert_tail(&subscription->entry,
-					   &subscription->nq->list);
-		fastlock_release(&subscription->nq->lock);
-	} while (1);
-}
-
-struct ofi_subscription *ofi_monitor_get_event(struct ofi_notification_queue *nq)
-{
-	struct ofi_subscription *subscription;
-
-	util_monitor_read_events(nq->monitor);
-
-	fastlock_acquire(&nq->lock);
-	if (!dlist_empty(&nq->list)) {
-		dlist_pop_front(&nq->list, struct ofi_subscription,
-				subscription, entry);
-		/* needed to protect against double insertions */
-		dlist_init(&subscription->entry);
-	} else {
-		subscription = NULL;
+		switch (msg.event) {
+		case UFFD_EVENT_REMOVE:
+		case UFFD_EVENT_UNMAP:
+			ofi_monitor_notify(&uffd.monitor,
+				(void *) (uintptr_t) msg.arg.remove.start,
+				(size_t) (msg.arg.remove.end -
+					  msg.arg.remove.start));
+			break;
+		case UFFD_EVENT_REMAP:
+			ofi_monitor_notify(&uffd.monitor,
+				(void *) (uintptr_t) msg.arg.remap.from,
+				(size_t) msg.arg.remap.len);
+			break;
+		default:
+			FI_WARN(&core_prov, FI_LOG_MR,
+				"Unhandled uffd event %d\n", msg.event);
+			break;
+		}
+		fastlock_release(&uffd.monitor.lock);
 	}
-	fastlock_release(&nq->lock);
-
-	return subscription;
+	return NULL;
 }
+
+static int ofi_uffd_register(const void *addr, size_t len, size_t page_size)
+{
+	struct uffdio_register reg;
+	int ret;
+
+	reg.range.start = (uint64_t) (uintptr_t)
+			  ofi_get_page_start(addr, page_size);
+	reg.range.len = ofi_get_page_bytes(addr, len, page_size);
+	reg.mode = UFFDIO_REGISTER_MODE_MISSING;
+	ret = ioctl(uffd.fd, UFFDIO_REGISTER, &reg);
+	if (ret < 0) {
+		if (errno != EINVAL) {
+			FI_WARN(&core_prov, FI_LOG_MR,
+				"ioctl/uffd_unreg: %s\n", strerror(errno));
+		}
+		return -errno;
+	}
+	return 0;
+}
+
+static int ofi_uffd_subscribe(struct ofi_mem_monitor *monitor,
+			      const void *addr, size_t len)
+{
+	int i;
+
+	assert(monitor == &uffd.monitor);
+	for (i = 0; i < num_page_sizes; i++) {
+		if (!ofi_uffd_register(addr, len, page_sizes[i]))
+			return 0;
+	}
+	return -FI_EFAULT;
+}
+
+static int ofi_uffd_unregister(const void *addr, size_t len, size_t page_size)
+{
+	struct uffdio_range range;
+	int ret;
+
+	range.start = (uint64_t) (uintptr_t)
+		      ofi_get_page_start(addr, page_size);
+	range.len = ofi_get_page_bytes(addr, len, page_size);
+	ret = ioctl(uffd.fd, UFFDIO_UNREGISTER, &range);
+	if (ret < 0) {
+		if (errno != EINVAL) {
+			FI_WARN(&core_prov, FI_LOG_MR,
+				"ioctl/uffd_unreg: %s\n", strerror(errno));
+		}
+		return -errno;
+	}
+	return 0;
+}
+
+/* May be called from mr cache notifier callback */
+static void ofi_uffd_unsubscribe(struct ofi_mem_monitor *monitor,
+				 const void *addr, size_t len)
+{
+	int i;
+
+	assert(monitor == &uffd.monitor);
+	for (i = 0; i < num_page_sizes; i++) {
+		if (!ofi_uffd_unregister(addr, len, page_sizes[i]))
+			break;
+	}
+}
+
+int ofi_uffd_init(void)
+{
+	struct uffdio_api api;
+	int ret;
+
+	uffd.monitor.subscribe = ofi_uffd_subscribe;
+	uffd.monitor.unsubscribe = ofi_uffd_unsubscribe;
+
+	if (!num_page_sizes)
+		return -FI_ENODATA;
+
+	uffd.fd = syscall(__NR_userfaultfd, O_CLOEXEC | O_NONBLOCK);
+	if (uffd.fd < 0) {
+		FI_WARN(&core_prov, FI_LOG_MR,
+			"syscall/userfaultfd %s\n", strerror(errno));
+		return -errno;
+	}
+
+	api.api = UFFD_API;
+	api.features = UFFD_FEATURE_EVENT_UNMAP | UFFD_FEATURE_EVENT_REMOVE |
+		       UFFD_FEATURE_EVENT_REMAP;
+	ret = ioctl(uffd.fd, UFFDIO_API, &api);
+	if (ret < 0) {
+		FI_WARN(&core_prov, FI_LOG_MR,
+			"ioctl/uffdio: %s\n", strerror(errno));
+		ret = -errno;
+		goto closefd;
+	}
+
+	if (api.api != UFFD_API) {
+		FI_WARN(&core_prov, FI_LOG_MR, "uffd features not supported\n");
+		ret = -FI_ENOSYS;
+		goto closefd;
+	}
+
+	ret = pthread_create(&uffd.thread, NULL, ofi_uffd_handler, &uffd);
+	if (ret) {
+		FI_WARN(&core_prov, FI_LOG_MR,
+			"failed to create handler thread %s\n", strerror(ret));
+		ret = -ret;
+		goto closefd;
+	}
+	return 0;
+
+closefd:
+	close(uffd.fd);
+	return ret;
+}
+
+void ofi_uffd_cleanup(void)
+{
+	pthread_cancel(uffd.thread);
+	pthread_join(uffd.thread, NULL);
+	close(uffd.fd);
+}
+
+#else /* HAVE_UFFD_UNMAP */
+
+int ofi_uffd_init(void)
+{
+	return -FI_ENOSYS;
+}
+
+void ofi_uffd_cleanup(void)
+{
+}
+
+#endif /* HAVE_UFFD_UNMAP */

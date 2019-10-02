@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2013-2014 Intel Corporation. All rights reserved.
  * Copyright (c) 2016 Cisco Systems, Inc. All rights reserved.
- * Copyright (c) 2017-2018 Hewlett Packard Enterprise Development LP.  All rights reserved.
+ * Copyright (c) 2017-2019 Hewlett Packard Enterprise Development LP.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -78,7 +78,7 @@ static int zhpe_ctx_close(struct fid *fid)
 		tx_ctx = container_of(fid, struct zhpe_tx_ctx, ctx.fid);
 		zhpe_pe_remove_tx_ctx(tx_ctx);
 		atm_dec(&tx_ctx->ep_attr->num_tx_ctx);
-		atm_dec(&tx_ctx->domain->ref);
+		ofi_atomic_dec32(&tx_ctx->domain->util_domain.ref);
 		zhpe_tx_ctx_close(tx_ctx);
 		zhpe_tx_ctx_free(tx_ctx);
 		break;
@@ -87,7 +87,7 @@ static int zhpe_ctx_close(struct fid *fid)
 		rx_ctx = container_of(fid, struct zhpe_rx_ctx, ctx.fid);
 		zhpe_pe_remove_rx_ctx(rx_ctx);
 		atm_dec(&rx_ctx->ep_attr->num_rx_ctx);
-		atm_dec(&rx_ctx->domain->ref);
+		ofi_atomic_dec32(&rx_ctx->domain->util_domain.ref);
 		zhpe_rx_ctx_close(rx_ctx);
 		zhpe_rx_ctx_free(rx_ctx);
 		break;
@@ -101,38 +101,38 @@ static int zhpe_ctx_close(struct fid *fid)
 
 static int zhpe_ctx_bind_cq(struct fid *fid, struct fid *bfid, uint64_t flags)
 {
-	struct zhpe_cq *zhpe_cq;
-	struct zhpe_tx_ctx *tx_ctx;
-	struct zhpe_rx_ctx *rx_ctx;
+	struct zhpe_cq		*zcq;
+	struct zhpe_tx_ctx	*tx_ctx;
+	struct zhpe_rx_ctx	*rx_ctx;
 
 	if ((flags | ZHPE_EP_CQ_FLAGS) != ZHPE_EP_CQ_FLAGS) {
 		ZHPE_LOG_ERROR("Invalid cq flag\n");
 		return -FI_EINVAL;
 	}
 
-	zhpe_cq = container_of(bfid, struct zhpe_cq, cq_fid.fid);
+	zcq = container_of(bfid, struct zhpe_cq, util_cq.cq_fid.fid);
 
 	switch (fid->fclass) {
 
 	case FI_CLASS_TX_CTX:
 		tx_ctx = container_of(fid, struct zhpe_tx_ctx, ctx.fid);
 		if (flags & FI_SEND) {
-			tx_ctx->comp.send_cq = zhpe_cq;
+			tx_ctx->comp.send_cq = zcq;
 			if (flags & FI_SELECTIVE_COMPLETION)
 				tx_ctx->comp.send_cq_event = 1;
 		}
-		zhpe_cq_add_tx_ctx(zhpe_cq, tx_ctx);
+		zhpe_cq_add_tx_ctx(zcq, tx_ctx);
 		break;
 
 	case FI_CLASS_RX_CTX:
 		rx_ctx = container_of(fid, struct zhpe_rx_ctx, ctx.fid);
 		if (flags & FI_RECV) {
-			rx_ctx->comp.recv_cq = zhpe_cq;
+			rx_ctx->comp.recv_cq = zcq;
 			if (flags & FI_SELECTIVE_COMPLETION)
 				rx_ctx->comp.recv_cq_event = 1;
 		}
 
-		zhpe_cq_add_rx_ctx(zhpe_cq, rx_ctx);
+		zhpe_cq_add_rx_ctx(zcq, rx_ctx);
 		break;
 
 	default:
@@ -146,52 +146,52 @@ static int zhpe_ctx_bind_cq(struct fid *fid, struct fid *bfid, uint64_t flags)
 static int zhpe_ctx_bind_cntr(struct fid *fid, struct fid *bfid,
 			      uint64_t flags)
 {
-	struct zhpe_cntr *cntr;
-	struct zhpe_tx_ctx *tx_ctx;
-	struct zhpe_rx_ctx *rx_ctx;
+	struct zhpe_cntr	*zcntr;
+	struct zhpe_tx_ctx	*tx_ctx;
+	struct zhpe_rx_ctx	*rx_ctx;
 
-	if ((flags | ZHPE_EP_CNTR_FLAGS) != ZHPE_EP_CNTR_FLAGS) {
+	if (flags & ~ZHPE_EP_CNTR_FLAGS) {
 		ZHPE_LOG_ERROR("Invalid cntr flag\n");
 		return -FI_EINVAL;
 	}
 
-	cntr = container_of(bfid, struct zhpe_cntr, cntr_fid.fid);
+	zcntr = container_of(bfid, struct zhpe_cntr, util_cntr.cntr_fid.fid);
 
 	switch (fid->fclass) {
 
 	case FI_CLASS_TX_CTX:
 		tx_ctx = container_of(fid, struct zhpe_tx_ctx, ctx.fid);
 		if (flags & FI_SEND) {
-			tx_ctx->comp.send_cntr = cntr;
-			zhpe_cntr_add_tx_ctx(cntr, tx_ctx);
+			tx_ctx->comp.send_cntr = zcntr;
+			zhpe_cntr_add_tx_ctx(zcntr, tx_ctx);
 		}
 
 		if (flags & FI_READ) {
-			tx_ctx->comp.read_cntr = cntr;
-			zhpe_cntr_add_tx_ctx(cntr, tx_ctx);
+			tx_ctx->comp.read_cntr = zcntr;
+			zhpe_cntr_add_tx_ctx(zcntr, tx_ctx);
 		}
 
 		if (flags & FI_WRITE) {
-			tx_ctx->comp.write_cntr = cntr;
-			zhpe_cntr_add_tx_ctx(cntr, tx_ctx);
+			tx_ctx->comp.write_cntr = zcntr;
+			zhpe_cntr_add_tx_ctx(zcntr, tx_ctx);
 		}
 		break;
 
 	case FI_CLASS_RX_CTX:
 		rx_ctx = container_of(fid, struct zhpe_rx_ctx, ctx.fid);
 		if (flags & FI_RECV) {
-			rx_ctx->comp.recv_cntr = cntr;
-			zhpe_cntr_add_rx_ctx(cntr, rx_ctx);
+			rx_ctx->comp.recv_cntr = zcntr;
+			zhpe_cntr_add_rx_ctx(zcntr, rx_ctx);
 		}
 
 		if (flags & FI_REMOTE_READ) {
-			rx_ctx->comp.rem_read_cntr = cntr;
-			zhpe_cntr_add_rx_ctx(cntr, rx_ctx);
+			rx_ctx->comp.rem_read_cntr = zcntr;
+			zhpe_cntr_add_rx_ctx(zcntr, rx_ctx);
 		}
 
 		if (flags & FI_REMOTE_WRITE) {
-			rx_ctx->comp.rem_write_cntr = cntr;
-			zhpe_cntr_add_rx_ctx(cntr, rx_ctx);
+			rx_ctx->comp.rem_write_cntr = zcntr;
+			zhpe_cntr_add_rx_ctx(zcntr, rx_ctx);
 		}
 		break;
 
@@ -205,6 +205,7 @@ static int zhpe_ctx_bind_cntr(struct fid *fid, struct fid *bfid,
 static int zhpe_ctx_bind(struct fid *fid, struct fid *bfid, uint64_t flags)
 {
 	switch (bfid->fclass) {
+
 	case FI_CLASS_CQ:
 		return zhpe_ctx_bind_cq(fid, bfid, flags);
 
@@ -533,34 +534,6 @@ struct fi_ops_ep zhpe_ctx_ep_ops = {
 	.tx_size_left = zhpe_tx_size_left,
 };
 
-static int zhpe_eq_fid_match(struct dlist_entry *entry, const void *arg)
-{
-	struct zhpe_eq_entry *zhpe_eq_entry;
-	struct fi_eq_entry *eq_entry;
-	fid_t fid = (fid_t)arg;
-
-	zhpe_eq_entry = container_of(entry, struct zhpe_eq_entry, lentry);
-	/* fi_eq_entry, fi_eq_cm_entry and fi_eq_err_entry all
-	 * have fid_t as first member */
-	eq_entry = (struct fi_eq_entry *)zhpe_eq_entry->event;
-	return (fid == eq_entry->fid);
-}
-
-static void zhpe_ep_clear_eq_list(struct dlistfd_head *list,
-				  struct fid_ep *ep_fid)
-{
-	struct dlist_entry *entry;
-
-	while (!dlistfd_empty(list)) {
-		entry = dlist_remove_first_match(&list->list,
-						 zhpe_eq_fid_match, ep_fid);
-		if (!entry)
-			break;
-		dlistfd_reset(list);
-		free(container_of(entry, struct zhpe_eq_entry, lentry));
-	}
-}
-
 static int zhpe_ep_close(struct fid *fid)
 {
 	struct zhpe_ep *zhpe_ep;
@@ -579,10 +552,6 @@ static int zhpe_ep_close(struct fid *fid)
 		return -FI_EINVAL;
 	}
 
-	if (zhpe_ep->is_alias) {
-		atm_dec(&zhpe_ep->attr->ref);
-		return 0;
-	}
 	if (atm_load_rlx(&zhpe_ep->attr->ref) ||
 	    atm_load_rlx(&zhpe_ep->attr->num_rx_ctx) ||
 	    atm_load_rlx(&zhpe_ep->attr->num_tx_ctx))
@@ -626,16 +595,8 @@ static int zhpe_ep_close(struct fid *fid)
 
 	fastlock_destroy(&zhpe_ep->attr->cm.lock);
 
-	if (zhpe_ep->attr->eq) {
-		fastlock_acquire(&zhpe_ep->attr->eq->lock);
-		zhpe_ep_clear_eq_list(&zhpe_ep->attr->eq->list,
-				      &zhpe_ep->ep);
-		/* Any err_data if present would be freed by
-		 * zhpe_eq_clean_err_data_list when EQ is closed */
-		zhpe_ep_clear_eq_list(&zhpe_ep->attr->eq->err_list,
-				      &zhpe_ep->ep);
-		fastlock_release(&zhpe_ep->attr->eq->lock);
-	}
+	if (zhpe_ep->attr->eq)
+		ofi_atomic_dec32(&zhpe_ep->attr->eq->util_eq.ref);
 
 	if (zhpe_ep->attr->fclass != FI_CLASS_SEP) {
 		zhpe_pe_remove_tx_ctx(zhpe_ep->attr->tx_array[0]);
@@ -656,7 +617,7 @@ static int zhpe_ep_close(struct fid *fid)
 	free(zhpe_ep->attr->tx_array);
 	free(zhpe_ep->attr->rx_array);
 
-	atm_dec(&zhpe_ep->attr->domain->ref);
+	ofi_atomic_dec32(&zep2zdom(zhpe_ep)->util_domain.ref);
 
 	free(zhpe_ep->attr);
 	free(zhpe_ep);
@@ -666,27 +627,28 @@ static int zhpe_ep_close(struct fid *fid)
 
 static int zhpe_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags)
 {
-	int ret;
-	size_t i;
-	struct zhpe_ep *ep;
-	struct zhpe_eq *eq;
-	struct zhpe_cq *cq;
-	struct zhpe_av *av;
-	struct zhpe_cntr *cntr;
-	struct zhpe_tx_ctx *tx_ctx;
-	struct zhpe_rx_ctx *rx_ctx;
+	int			rc;
+	size_t			i;
+	struct zhpe_ep		*zep;
+	struct zhpe_eq		*zeq;
+	struct zhpe_cq		*zcq;
+	struct zhpe_av		*zav;
+	struct zhpe_cntr	*zcntr;
+	struct zhpe_tx_ctx	*tx_ctx;
+	struct zhpe_rx_ctx	*rx_ctx;
 
-	ret = ofi_ep_bind_valid(&zhpe_prov, bfid, flags);
-	if (ret)
-		return ret;
+	rc = ofi_ep_bind_valid(&zhpe_prov, bfid, flags);
+	if (rc < 0)
+		return rc;
 
 	switch (fid->fclass) {
+
 	case FI_CLASS_EP:
-		ep = container_of(fid, struct zhpe_ep, ep.fid);
+		zep = fid2zep(fid);
 		break;
 
 	case FI_CLASS_SEP:
-		ep = container_of(fid, struct zhpe_ep, ep.fid);
+		zep = fid2zep(fid);
 		break;
 
 	default:
@@ -694,103 +656,106 @@ static int zhpe_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags)
 	}
 
 	switch (bfid->fclass) {
+
 	case FI_CLASS_EQ:
-		eq = container_of(bfid, struct zhpe_eq, eq.fid);
-		ep->attr->eq = eq;
+		zeq = fid2zeq(bfid);
+		zep->attr->eq = zeq;
+		ofi_atomic_inc32(&zeq->util_eq.ref);
 		break;
 
 	case FI_CLASS_MR:
-		return 0;
+		return -FI_ENOSYS;
 
 	case FI_CLASS_CQ:
-		cq = container_of(bfid, struct zhpe_cq, cq_fid.fid);
-		if (ep->attr->domain != cq->domain)
+		zcq = fid2zcq(bfid);
+		if (zep2zdom(zep) != zcq2zdom(zcq))
 			return -FI_EINVAL;
 
 		if (flags & FI_SEND) {
-			for (i = 0; i < ep->attr->ep_attr.tx_ctx_cnt; i++) {
-				tx_ctx = ep->attr->tx_array[i];
+			for (i = 0; i < zep->attr->ep_attr.tx_ctx_cnt; i++) {
+				tx_ctx = zep->attr->tx_array[i];
 
 				if (!tx_ctx)
 					continue;
 
-				ret = zhpe_ctx_bind_cq(&tx_ctx->ctx.fid, bfid,
-						       flags);
-				if (ret)
-					return ret;
+				rc = zhpe_ctx_bind_cq(&tx_ctx->ctx.fid, bfid,
+						      flags);
+				if (rc < 0)
+					return rc;
 			}
 		}
 
 		if (flags & FI_RECV) {
-			for (i = 0; i < ep->attr->ep_attr.rx_ctx_cnt; i++) {
-				rx_ctx = ep->attr->rx_array[i];
+			for (i = 0; i < zep->attr->ep_attr.rx_ctx_cnt; i++) {
+				rx_ctx = zep->attr->rx_array[i];
 
 				if (!rx_ctx)
 					continue;
 
-				ret = zhpe_ctx_bind_cq(&rx_ctx->ctx.fid, bfid, flags);
-				if (ret)
-					return ret;
+				rc = zhpe_ctx_bind_cq(&rx_ctx->ctx.fid, bfid,
+						      flags);
+				if (rc < 0)
+					return rc;
 			}
 		}
 		break;
 
 	case FI_CLASS_CNTR:
-		cntr = container_of(bfid, struct zhpe_cntr, cntr_fid.fid);
-		if (ep->attr->domain != cntr->domain)
+		zcntr = fid2zcntr(bfid);
+		if (zep2zdom(zep) != zcntr2zdom(zcntr))
 			return -FI_EINVAL;
 
 		if (flags & (FI_SEND | FI_WRITE | FI_READ)) {
-			for (i = 0; i < ep->attr->ep_attr.tx_ctx_cnt; i++) {
-				tx_ctx = ep->attr->tx_array[i];
+			for (i = 0; i < zep->attr->ep_attr.tx_ctx_cnt; i++) {
+				tx_ctx = zep->attr->tx_array[i];
 
 				if (!tx_ctx)
 					continue;
 
-				ret = zhpe_ctx_bind_cntr(&tx_ctx->ctx.fid,
-							 bfid, flags);
-				if (ret)
-					return ret;
+				rc = zhpe_ctx_bind_cntr(&tx_ctx->ctx.fid,
+							bfid, flags);
+				if (rc < 0)
+					return rc;
 			}
 		}
 
 		if (flags & (FI_RECV | FI_REMOTE_READ | FI_REMOTE_WRITE)) {
-			for (i = 0; i < ep->attr->ep_attr.rx_ctx_cnt; i++) {
-				rx_ctx = ep->attr->rx_array[i];
+			for (i = 0; i < zep->attr->ep_attr.rx_ctx_cnt; i++) {
+				rx_ctx = zep->attr->rx_array[i];
 
 				if (!rx_ctx)
 					continue;
 
-				ret = zhpe_ctx_bind_cntr(&rx_ctx->ctx.fid,
-							 bfid, flags);
-				if (ret)
-					return ret;
+				rc = zhpe_ctx_bind_cntr(&rx_ctx->ctx.fid,
+							bfid, flags);
+				if (rc < 0)
+					return rc;
 			}
 		}
 		break;
 
 	case FI_CLASS_AV:
-		av = container_of(bfid, struct zhpe_av, av_fid.fid);
-		if (ep->attr->domain != av->domain)
+		zav = fid2zav(bfid);
+		if (zep2zdom(zep) != zav2zdom(zav))
 			return -FI_EINVAL;
 
-		ep->attr->av = av;
-		atm_inc(&av->ref);
+		zep->attr->av = zav;
+		atm_inc(&zav->ref);
 
-		for (i = 0; i < ep->attr->ep_attr.tx_ctx_cnt; i++) {
-			if (ep->attr->tx_array[i])
-				ep->attr->tx_array[i]->av = av;
+		for (i = 0; i < zep->attr->ep_attr.tx_ctx_cnt; i++) {
+			if (zep->attr->tx_array[i])
+				zep->attr->tx_array[i]->av = zav;
 		}
 
-		for (i = 0; i < ep->attr->ep_attr.rx_ctx_cnt; i++) {
-			if (ep->attr->rx_array[i])
-				ep->attr->rx_array[i]->av = av;
+		for (i = 0; i < zep->attr->ep_attr.rx_ctx_cnt; i++) {
+			if (zep->attr->rx_array[i])
+				zep->attr->rx_array[i]->av = zav;
 		}
-		ret = fid_list_insert(&av->ep_list, &av->list_lock,
-				      &ep->ep.fid);
-		if (ret) {
+		rc = fid_list_insert(&zav->ep_list, &zav->list_lock,
+				      &zep->ep.fid);
+		if (rc < 0) {
 			ZHPE_LOG_ERROR("Error in adding fid in the EP list\n");
-			return ret;
+			return rc;
 		}
 		break;
 
@@ -805,10 +770,10 @@ static int zhpe_ep_control(struct fid *fid, int command, void *arg)
 {
 	int ret;
 	struct fid_ep *ep_fid;
-	struct fi_alias *alias;
-	struct zhpe_ep *zhpe_ep, *new_ep;
+	struct zhpe_ep *zhpe_ep;
 
 	switch (fid->fclass) {
+
 	case FI_CLASS_EP:
 		zhpe_ep = container_of(fid, struct zhpe_ep, ep.fid);
 		break;
@@ -822,29 +787,6 @@ static int zhpe_ep_control(struct fid *fid, int command, void *arg)
 	}
 
 	switch (command) {
-
-	case FI_ALIAS:
-		alias = (struct fi_alias *)arg;
-		new_ep = calloc_cachealigned(1, sizeof(*new_ep));
-		if (!new_ep)
-			return -FI_ENOMEM;
-
-		memcpy(&new_ep->tx_attr, &zhpe_ep->tx_attr,
-		       sizeof(struct fi_tx_attr));
-		memcpy(&new_ep->rx_attr, &zhpe_ep->rx_attr,
-		       sizeof(struct fi_rx_attr));
-		ret = zhpe_setopflags(&new_ep->tx_attr, &new_ep->rx_attr,
-				       alias->flags);
-		if (ret) {
-			free(new_ep);
-			return -FI_EINVAL;
-		}
-		new_ep->attr = zhpe_ep->attr;
-		new_ep->is_alias = 1;
-		memcpy(&new_ep->ep, &zhpe_ep->ep, sizeof(struct fid_ep));
-		*alias->fid = &new_ep->ep.fid;
-		atm_inc(&new_ep->attr->ref);
-		break;
 
 	case FI_GETOPSFLAG:
 		ret = zhpe_getopflags(&zhpe_ep->tx_attr, &zhpe_ep->rx_attr,
@@ -865,7 +807,7 @@ static int zhpe_ep_control(struct fid *fid, int command, void *arg)
 		return zhpe_ep_enable(ep_fid);
 
 	default:
-		return -FI_EINVAL;
+		return -FI_ENOSYS;
 	}
 
 	return 0;
@@ -1034,7 +976,7 @@ static int zhpe_ep_tx_ctx(struct fid_ep *ep, int index,
 	*tx_ep = &tx_ctx->ctx;
 	zhpe_ep->attr->tx_array[index] = tx_ctx;
 	atm_inc(&zhpe_ep->attr->num_tx_ctx);
-	atm_inc(&zhpe_ep->attr->domain->ref);
+	ofi_atomic_inc32(&zep2zdom(zhpe_ep)->util_domain.ref);
 	return 0;
 }
 
@@ -1080,7 +1022,7 @@ static int zhpe_ep_rx_ctx(struct fid_ep *ep, int index,
 	*rx_ep = &rx_ctx->ctx;
 	zhpe_ep->attr->rx_array[index] = rx_ctx;
 	atm_inc(&zhpe_ep->attr->num_rx_ctx);
-	atm_inc(&zhpe_ep->attr->domain->ref);
+	ofi_atomic_inc32(&zhpe_ep->attr->domain->util_domain.ref);
 
 	return 0;
 }
@@ -1096,242 +1038,14 @@ struct fi_ops_ep zhpe_ep_ops = {
 	.tx_size_left = zhpe_tx_size_left,
 };
 
-static void zhpe_set_fabric_attr(void *src_addr,
-				 const struct fi_fabric_attr *hint_attr,
-				 struct fi_fabric_attr *attr)
-{
-	struct zhpe_fabric *fabric;
-
-	*attr = zhpe_fabric_attr;
-	if (hint_attr && hint_attr->fabric) {
-		attr->fabric = hint_attr->fabric;
-	} else {
-		fabric = zhpe_fab_list_head();
-		attr->fabric = fabric ? &fabric->fab_fid : NULL;
-	}
-
-	attr->name = strdup(zhpe_fab_name);
-	attr->prov_name = NULL;
-}
-
-static void zhpe_set_domain_attr(uint32_t api_version, void *src_addr,
-				 const struct fi_domain_attr *hint_attr,
-				 struct fi_info *info)
-{
-	struct fi_domain_attr	*attr = info->domain_attr;
-	struct zhpe_domain *domain;
-
-	domain = zhpe_dom_list_head();
-	attr->domain = domain ? &domain->dom_fid : NULL;
-	if (!hint_attr) {
-		*attr = zhpe_domain_attr;
-		if (FI_VERSION_LT(api_version, FI_VERSION(1, 5)))
-			attr->mr_mode = FI_MR_BASIC;
-		else
-			attr->mr_mode |= FI_MR_LOCAL;
-		goto out;
-	}
-
-	if (hint_attr->domain) {
-		domain = container_of(hint_attr->domain,
-				      struct zhpe_domain, dom_fid);
-		*attr = domain->attr;
-		attr->domain = hint_attr->domain;
-		goto out;
-	}
-
-	*attr = *hint_attr;
-	if (FI_VERSION_LT(api_version, FI_VERSION(1, 5)))
-		attr->mr_mode = FI_MR_BASIC;
-	else if (attr->mr_mode != FI_MR_BASIC)
-		attr->mr_mode &= (OFI_MR_BASIC_MAP | FI_MR_LOCAL);
-
-	if (!attr->caps)
-		attr->caps = zhpe_domain_attr.caps;
-
-	attr->mode &= zhpe_domain_attr.mode;
-
-	if (attr->threading == FI_THREAD_UNSPEC)
-		attr->threading = zhpe_domain_attr.threading;
-	if (attr->control_progress == FI_PROGRESS_UNSPEC)
-		attr->control_progress = zhpe_domain_attr.control_progress;
-	if (attr->data_progress == FI_PROGRESS_UNSPEC)
-		attr->data_progress = zhpe_domain_attr.data_progress;
-
-	if (attr->cq_cnt == 0)
-		attr->cq_cnt = zhpe_domain_attr.cq_cnt;
-	if (attr->ep_cnt == 0)
-		attr->ep_cnt = zhpe_domain_attr.ep_cnt;
-	if (attr->tx_ctx_cnt == 0)
-		attr->tx_ctx_cnt = zhpe_domain_attr.tx_ctx_cnt;
-	if (attr->rx_ctx_cnt == 0)
-		attr->rx_ctx_cnt = zhpe_domain_attr.rx_ctx_cnt;
-	if (attr->max_ep_tx_ctx == 0)
-		attr->max_ep_tx_ctx = zhpe_domain_attr.max_ep_tx_ctx;
-	if (attr->max_ep_rx_ctx == 0)
-		attr->max_ep_rx_ctx = zhpe_domain_attr.max_ep_rx_ctx;
-	if (attr->cntr_cnt == 0)
-		attr->cntr_cnt = zhpe_domain_attr.cntr_cnt;
-	if (attr->mr_iov_limit == 0)
-		attr->mr_iov_limit = zhpe_domain_attr.mr_iov_limit;
-
-	attr->mr_key_size = zhpe_domain_attr.mr_key_size;
-	attr->cq_data_size = zhpe_domain_attr.cq_data_size;
-	attr->resource_mgmt = zhpe_domain_attr.resource_mgmt;
-out:
-	/* reverse lookup interface from node and assign it as domain name */
-	attr->name = strdup(zhpe_fab_name);
-}
-
-#define SET_EQUAL(_ptrname, _field)					\
-do {									\
-	info->_ptrname->_field = _ptrname->_field;			\
-} while (0)
-
-#define CHECK_SET_EQUAL(_ptrname, _field, _value)			\
-do {									\
-	if (info->_ptrname->_field == _value)				\
-		SET_EQUAL(_ptrname, _field);				\
-} while (0)
-
-struct fi_info *zhpe_fi_info(uint32_t version,
-			     const struct fi_info *hints,
-			     const union sockaddr_in46 *src_addr,
-			     const union sockaddr_in46 *dest_addr,
-			     uint64_t caps, uint64_t mode,
-			     const struct fi_ep_attr *ep_attr,
-			     const struct fi_tx_attr *tx_attr,
-			     const struct fi_rx_attr *rx_attr)
-{
-	struct fi_info		*info;
-
-
-	info = fi_allocinfo();
-	if (!info)
-		return NULL;
-
-	if (src_addr) {
-		info->src_addrlen = sockaddr_len(src_addr);
-		info->src_addr = sockaddr_dup(src_addr);
-		if (!info->src_addr)
-			goto err;
-	}
-
-	if (dest_addr) {
-		info->dest_addrlen = sockaddr_len(dest_addr);
-		info->dest_addr = sockaddr_dup(dest_addr);
-		if (!info->dest_addr)
-			goto err;
-	}
-
-	if (hints) {
-		info->mode = hints->mode;
-		if (hints->addr_format == FI_SOCKADDR_IN6)
-			info->addr_format = FI_SOCKADDR_IN6;
-		else
-			info->addr_format = FI_SOCKADDR_IN;
-
-		if (hints->caps)
-			info->caps = hints->caps;
-
-		if (hints->ep_attr)
-			*info->ep_attr = *hints->ep_attr;
-
-		SET_EQUAL(ep_attr, type);
-		if (info->ep_attr->protocol == FI_PROTO_UNSPEC) {
-			SET_EQUAL(ep_attr, protocol);
-			SET_EQUAL(ep_attr, protocol_version);
-		}
-		CHECK_SET_EQUAL(ep_attr, max_msg_size, 0);
-		CHECK_SET_EQUAL(ep_attr, msg_prefix_size, 0);
-		CHECK_SET_EQUAL(ep_attr, max_order_raw_size, 0);
-		CHECK_SET_EQUAL(ep_attr, max_order_war_size, 0);
-		CHECK_SET_EQUAL(ep_attr, max_order_waw_size, 0);
-		CHECK_SET_EQUAL(ep_attr, mem_tag_format, 0);
-		CHECK_SET_EQUAL(ep_attr, tx_ctx_cnt, 0);
-		CHECK_SET_EQUAL(ep_attr, rx_ctx_cnt, 0);
-		CHECK_SET_EQUAL(ep_attr, auth_key_size, 0);
-		CHECK_SET_EQUAL(ep_attr, auth_key, NULL);
-
-		if (hints->tx_attr)
-			*info->tx_attr = *hints->tx_attr;
-
-		CHECK_SET_EQUAL(tx_attr, op_flags, 0);
-		CHECK_SET_EQUAL(tx_attr, msg_order, FI_ORDER_NONE);
-		CHECK_SET_EQUAL(tx_attr, comp_order, FI_ORDER_NONE);
-		CHECK_SET_EQUAL(tx_attr, inject_size, 0);
-		CHECK_SET_EQUAL(tx_attr, size, 0);
-		CHECK_SET_EQUAL(tx_attr, iov_limit, 0);
-		CHECK_SET_EQUAL(tx_attr, rma_iov_limit, 0);
-
-		if (hints->rx_attr)
-			*info->rx_attr = *hints->rx_attr;
-
-		CHECK_SET_EQUAL(rx_attr, op_flags, 0);
-		CHECK_SET_EQUAL(rx_attr, msg_order, FI_ORDER_NONE);
-		CHECK_SET_EQUAL(rx_attr, comp_order, FI_ORDER_NONE);
-		CHECK_SET_EQUAL(rx_attr, total_buffered_recv, 0);
-		CHECK_SET_EQUAL(rx_attr, size, 0);
-		CHECK_SET_EQUAL(rx_attr, iov_limit, 0);
-
-		if (hints->handle)
-			info->handle = hints->handle;
-
-		zhpe_set_domain_attr(version, info->src_addr,
-				     hints->domain_attr, info);
-		zhpe_set_fabric_attr(info->src_addr, hints->fabric_attr,
-				     info->fabric_attr);
-
-	} else {
-		info->mode = mode;
-		zhpe_set_domain_attr(version, info->src_addr, NULL, info);
-		zhpe_set_fabric_attr(info->src_addr, NULL, info->fabric_attr);
-		*info->ep_attr = *ep_attr;
-		*info->tx_attr = *tx_attr;
-		*info->rx_attr = *rx_attr;
-	}
-
-	info->caps |= info->tx_attr->caps | info->rx_attr->caps;
-	if (!info->caps)
-		info->caps = caps;
-	if (!info->tx_attr->caps)
-		info->tx_attr->caps = info->caps;
-	if (!info->rx_attr->caps)
-		info->rx_attr->caps = info->caps;
-
-	info->mode |= info->tx_attr->mode | info->rx_attr->mode;
-	if (FI_VERSION_LT(version, FI_VERSION(1, 5)))
-		mode |= FI_LOCAL_MR;
-	info->mode &= mode;
-	if (!info->tx_attr->mode)
-		info->tx_attr->mode = info->mode;
-	if (!info->rx_attr->mode)
-		info->rx_attr->mode = info->mode;
-
-	return info;
-err:
-	fi_freeinfo(info);
-	return NULL;
-}
-
-int zhpe_alloc_endpoint(struct fid_domain *domain, struct fi_info *info,
-		  struct zhpe_ep **ep, void *context, size_t fclass)
+int zhpe_alloc_endpoint(struct zhpe_domain *zhpe_dom,
+			struct fi_info *prov_info, struct fi_info *info,
+			struct zhpe_ep **ep, void *context, size_t fclass)
 {
 	int ret;
 	struct zhpe_ep *zhpe_ep;
 	struct zhpe_tx_ctx *tx_ctx;
 	struct zhpe_rx_ctx *rx_ctx;
-	struct zhpe_domain *zhpe_dom;
-
-	zhpe_dom = container_of(domain, struct zhpe_domain, dom_fid);
-	if (info) {
-		ret = zhpe_verify_info(zhpe_dom->fab->fab_fid.api_version,
-				       info, 0);
-		if (ret) {
-			ZHPE_LOG_DBG("Cannot support requested options!\n");
-			return -FI_EINVAL;
-		}
-	}
 
 	zhpe_ep = calloc_cachealigned(1, sizeof(*zhpe_ep));
 	if (!zhpe_ep)
@@ -1408,7 +1122,8 @@ int zhpe_alloc_endpoint(struct fid_domain *domain, struct fi_info *info,
 			zhpe_ep->tx_attr.op_flags |=
 				(info->caps & FI_RMA_EVENT);
 			zhpe_ep->tx_attr.size = zhpe_ep->tx_attr.size ?
-				zhpe_ep->tx_attr.size : ZHPE_EP_TX_SZ;
+				zhpe_ep->tx_attr.size :
+				prov_info->tx_attr->size;
 		}
 
 		if (info->rx_attr)
@@ -1481,7 +1196,7 @@ int zhpe_alloc_endpoint(struct fid_domain *domain, struct fi_info *info,
 			ZHPE_LOG_ERROR("fi_fd_nonblock failed");
 	}
 
-	atm_inc(&zhpe_dom->ref);
+	ofi_atomic_inc32(&zhpe_dom->util_domain.ref);
 
 	return 0;
 

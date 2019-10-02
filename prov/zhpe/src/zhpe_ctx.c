@@ -63,20 +63,20 @@ struct zhpe_rx_ctx *zhpe_rx_ctx_alloc(const struct fi_rx_attr *attr,
 	rx_ctx->attr = *attr;
 
 	rx_ctx->domain = domain;
-	rc = util_buf_pool_create(&rx_ctx->rx_user_free.rx_entry_pool,
-				  sizeof(struct zhpe_rx_entry), L1_CACHE_BYTES,
-				  0, 64);
+	rc = ofi_bufpool_create(&rx_ctx->rx_user_free.rx_entry_pool,
+				sizeof(struct zhpe_rx_entry), L1_CACHE_BYTES,
+				0, 64, 0);
 	if (rc < 0) {
 		rx_ctx->rx_user_free.rx_entry_pool = NULL;
-		ZHPE_LOG_ERROR("util_buf_pool_create() error %d\n", rc);
+		ZHPE_LOG_ERROR("ofi_bufpool_create() error %d\n", rc);
 		goto err;
 	}
-	rc = util_buf_pool_create(&rx_ctx->rx_prog_free.rx_entry_pool,
-				  sizeof(struct zhpe_rx_entry), L1_CACHE_BYTES,
-				  0, 64);
+	rc = ofi_bufpool_create(&rx_ctx->rx_prog_free.rx_entry_pool,
+				sizeof(struct zhpe_rx_entry), L1_CACHE_BYTES,
+				0, 64, 0);
 	if (rc < 0) {
 		rx_ctx->rx_prog_free.rx_entry_pool = NULL;
-		ZHPE_LOG_ERROR("util_buf_pool_create() error %d\n", rc);
+		ZHPE_LOG_ERROR("ofi_bufpool_create() error %d\n", rc);
 		goto err;
 	}
 	if (attr->total_buffered_recv > 0) {
@@ -99,7 +99,9 @@ struct zhpe_rx_ctx *zhpe_rx_ctx_alloc(const struct fi_rx_attr *attr,
 void zhpe_rx_ctx_free(struct zhpe_rx_ctx *rx_ctx)
 {
 	struct zhpe_rx_entry	*rx_entry;
-	struct zhpeu_atm_list_next *next;
+	struct zhpeu_atm_snatch_head rxh_list;
+	struct zhpeu_atm_list_next *rxh_cur;
+	struct zhpeu_atm_list_next *rxh_next;
 
 	/* FIXME: More to do. */
 	while (!dlist_empty(&rx_ctx->rx_posted_list)) {
@@ -120,21 +122,32 @@ void zhpe_rx_ctx_free(struct zhpe_rx_ctx *rx_ctx)
 		dlist_init(&rx_entry->lentry);
 		zhpe_rx_release_entry(rx_entry);
 	}
-	while ((next = zhpeu_atm_fifo_pop(&rx_ctx->rx_user_free.rx_fifo_list)))
+	while ((rxh_next =
+		zhpeu_atm_fifo_pop(&rx_ctx->rx_user_free.rx_fifo_list)))
 	{
-		rx_entry = container_of(next, struct zhpe_rx_entry,
+		rx_entry = container_of(rxh_next, struct zhpe_rx_entry,
 					rx_match_next);
-		util_buf_release(rx_ctx->rx_user_free.rx_entry_pool, rx_entry);
+		ofi_buf_free(rx_entry);
 	}
-	while ((next = zhpeu_atm_fifo_pop(&rx_ctx->rx_prog_free.rx_fifo_list)))
+	while ((rxh_next =
+		zhpeu_atm_fifo_pop(&rx_ctx->rx_prog_free.rx_fifo_list)))
 	{
-		rx_entry = container_of(next, struct zhpe_rx_entry,
+		rx_entry = container_of(rxh_next, struct zhpe_rx_entry,
 					rx_match_next);
-		util_buf_release(rx_ctx->rx_prog_free.rx_entry_pool, rx_entry);
+		ofi_buf_free(rx_entry);
+	}
+	zhpeu_atm_snatch_list(&rx_ctx->rx_match_list, &rxh_list);
+	for (rxh_cur = rxh_list.head; rxh_cur; rxh_cur = rxh_next) {
+		rx_entry = container_of(rxh_cur, struct zhpe_rx_entry,
+					rx_match_next);
+		rxh_next = atm_load_rlx(&rxh_cur->next);
+		if (rxh_next == ZHPEU_ATM_LIST_END)
+			rxh_next = NULL;
+		ofi_buf_free(rx_entry);
 	}
 
-	util_buf_pool_destroy(rx_ctx->rx_user_free.rx_entry_pool);
-	util_buf_pool_destroy(rx_ctx->rx_prog_free.rx_entry_pool);
+	ofi_bufpool_destroy(rx_ctx->rx_user_free.rx_entry_pool);
+	ofi_bufpool_destroy(rx_ctx->rx_prog_free.rx_entry_pool);
 	zhpe_slab_destroy(&rx_ctx->eager);
 	mutex_destroy(&rx_ctx->mutex);
 

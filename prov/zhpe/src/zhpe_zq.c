@@ -136,7 +136,7 @@ static int do_tx_setup(struct zhpe_ep_attr *ep_attr, struct zhpe_tx **ztx_out)
 	}
 
 	/* Allocate queue from bridge. */
-	ret = zhpeq_alloc(ep_attr->domain->zdom, qlen, qlen,
+	ret = zhpeq_alloc(ep_attr->domain->zqdom, qlen, qlen,
 			  0, 0, 0, &ztx->zq);
 	if (ret < 0)  {
 		ZHPE_LOG_ERROR("zhpeq_alloc() error %d\n", ret);
@@ -440,7 +440,7 @@ int zhpe_conn_fam_setup(struct zhpe_conn *conn)
 	}
 	conn->zq_index = ret;
 	/* Set up rkey entry for FAM.*/
-	ret = zhpeq_fam_qkdata(ep_attr->domain->zdom, conn->zq_index,
+	ret = zhpeq_fam_qkdata(ep_attr->domain->zqdom, conn->zq_index,
 			       &new->kdata);
 	if (ret < 0) {
 		ZHPE_LOG_ERROR("%s,%u:zhpeq_fam_qkdata() error %d\n",
@@ -483,7 +483,7 @@ void zhpe_conn_z_free(struct zhpe_conn *conn)
 		/* Is lock initialized? */
 		if (conn->kexp_tree) {
 			/* FIXME: Think about driver disconnect. */
-			fastlock_acquire(&conn->ep_attr->domain->lock);
+			mutex_lock(&conn->ztx->mutex);
 			while ((rbt = rbtBegin(conn->kexp_tree)))  {
 				kexp = zhpe_rbtKeyValue(conn->kexp_tree, rbt);
 				rbtErase(conn->kexp_tree, rbt);
@@ -491,7 +491,7 @@ void zhpe_conn_z_free(struct zhpe_conn *conn)
 				free(kexp);
 			}
 			rbtDelete(conn->kexp_tree);
-			fastlock_release(&conn->ep_attr->domain->lock);
+			mutex_unlock(&conn->ztx->mutex);
 		}
 		while (!dlist_empty(&conn->rkey_deferred_list)) {
 			dlist_pop_front(&conn->rkey_deferred_list,
@@ -751,7 +751,7 @@ int zhpe_slab_init(struct zhpe_slab *slab, size_t size,
 {
 	int			ret = -FI_ENOMEM;
 	struct zhpe_slab_free_entry *chunk;
-	struct fid_mr		*mr;
+	struct fid_mr		*fid_mr;
 
 	/* Align to pointer size boundary; assumed to be power of 2
 	 * and greater than 2; so bit 0 will always be zero.
@@ -773,12 +773,12 @@ int zhpe_slab_init(struct zhpe_slab *slab, size_t size,
 	chunk->size = 0;
 
 	ret = zhpe_mr_reg_int_uncached(domain, slab->mem, slab->size,
-				       FI_READ | FI_WRITE, 0, &mr);
+				       FI_READ | FI_WRITE, 0, &fid_mr);
 	if (ret < 0) {
 		ZHPE_LOG_ERROR("zhpe_mr_reg_int_uncached() error %d\n", ret);
 		goto done;
 	}
-	slab->zmr = container_of(mr, struct zhpe_mr, mr_fid);
+	slab->zmr = fid2zmr(&fid_mr->fid);
  done:
 	return ret;
 }
@@ -1183,9 +1183,9 @@ int zhpe_conn_key_export(struct zhpe_conn *conn, struct zhpe_msg_hdr ohdr,
 		new->conn = conn;
 		new->zkey = zmr->zkey;
 		zhpe_kexp_rbtInsert(conn->kexp_tree, new);
-		fastlock_acquire(&domain->lock);
+		fastlock_acquire(&domain->util_domain.lock);
 		dlist_insert_tail(&new->lentry, &zmr->kexp_list);
-		fastlock_release(&domain->lock);
+		fastlock_release(&domain->util_domain.lock);
 	}
 
  done:
@@ -1571,6 +1571,90 @@ size_t copy_mem_to_iov(struct zhpe_iov_state *dstate, const void *src, size_t n)
 	};
 
 	return copy_iov(dstate, &sstate, n);
+}
+
+char *zhpe_straddr(char *buf, size_t *len,
+		   uint32_t addr_format, const void *addr)
+{
+	char			*ret = NULL;
+	char			*s;
+	char			*colon;
+	int			size;
+	unsigned short		family;
+
+	if (!buf || !len || !*len || !addr)
+		goto done;
+	buf[0] = '\0';
+	if (addr_format == FI_FORMAT_UNSPEC) {
+		family = sockaddr_family(addr);
+		if (family == AF_INET || family == AF_INET6)
+			addr_format = FI_SOCKADDR;
+		else if (family != AF_ZHPE)
+			goto done;
+	}
+	if (addr_format != FI_FORMAT_UNSPEC) {
+		ret = (char *)ofi_straddr(buf, len, addr_format, addr);
+		goto done;
+	}
+	/* A zhpe address. */
+	s = sockaddr_str(addr);
+	if (!s)
+		goto done;
+	/* Leading characters are xxx: */
+	colon = strchr(s, ':');
+	if (!colon)
+		colon = s;
+	else
+		colon++;
+	size = snprintf(buf, *len, "fi_addr_zhpe://%s", colon);
+	free(s);
+	if (size < 0) {
+		size = -1;
+		goto done;
+	}
+	/* Make sure that possibly truncated messages have a null terminator. */
+	buf[*len - 1] = '\0';
+	*len = size;
+	ret = buf;
+ done:
+
+	return ret;
+}
+
+char *zhpe_astraddr(uint32_t addr_format, const void *addr)
+{
+	char			*ret;
+	char			*buf = NULL;
+	char			first_buf[1];
+	size_t			len;
+
+	len = sizeof(first_buf);
+	ret = zhpe_straddr(first_buf, &len, addr_format, addr);
+	if (!ret)
+		goto done;
+	buf = malloc(len);
+	if (!buf)
+		goto done;
+	ret = (char *)zhpe_straddr(buf, &len, addr_format, addr);
+	if (!ret)
+		free(buf);
+ done:
+
+	return ret;
+}
+
+void zhpe_straddr_log(const char *callf, uint line, enum fi_log_level level,
+		      enum fi_log_subsys subsys, const char *log_str,
+		      const void *addr)
+{
+	char			*addr_str = NULL;
+
+	if (!fi_log_enabled(&zhpe_prov, level, subsys))
+		return;
+	addr_str = zhpe_astraddr(FI_FORMAT_UNSPEC, addr);
+	fi_log(&zhpe_prov, level, subsys, callf, line,
+	       "%s: %s\n", log_str, (addr_str ?: ""));
+	free(addr_str);
 }
 
 #if ENABLE_DEBUG
