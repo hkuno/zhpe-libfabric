@@ -172,13 +172,13 @@ static int ofi_cntr_wait(struct fid_cntr *cntr_fid, uint64_t threshold, int time
 		 * and then instead of waiting for a longer period. This does
 		 * have the overhead of threads waking up unnecessarily.
 		 */
-		timeout_quantum = (timeout < 0 ? OFI_TIMEOUT_QUANTUM_MS :
-				   MIN(OFI_TIMEOUT_QUANTUM_MS, timeout));
-
 		if (cntr->domain->data_progress == FI_PROGRESS_AUTO)
-			ret = fi_wait(&cntr->wait->wait_fid, timeout_quantum);
+			timeout_quantum =
+				(timeout < 0 ? OFI_TIMEOUT_QUANTUM_MS :
+				 MIN(OFI_TIMEOUT_QUANTUM_MS, timeout));
 		else
-			ret = 0;
+			timeout_quantum = 0;
+		ret = fi_wait(&cntr->wait->wait_fid, timeout_quantum);
 	} while (!ret || (ret == -FI_ETIMEDOUT &&
 			  (timeout < 0 || timeout_quantum < timeout)));
 

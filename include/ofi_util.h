@@ -498,8 +498,7 @@ int ofi_cq_write_overflow(struct util_cq *cq, void *context, uint64_t flags, siz
 static inline void util_cq_signal(struct util_cq *cq)
 {
 	assert(cq->wait);
-	if (cq->domain->data_progress == FI_PROGRESS_AUTO)
-		cq->wait->signal(cq->wait);
+	cq->wait->signal(cq->wait);
 }
 
 static inline void
@@ -627,8 +626,7 @@ int ofi_cntr_cleanup(struct util_cntr *cntr);
 static inline void util_cntr_signal(struct util_cntr *cntr)
 {
 	assert(cntr->wait);
-	if (cntr->domain->data_progress == FI_PROGRESS_AUTO)
-		cntr->wait->signal(cntr->wait);
+	cntr->wait->signal(cntr->wait);
 }
 
 static inline void ofi_cntr_inc_noop(struct util_cntr *cntr)

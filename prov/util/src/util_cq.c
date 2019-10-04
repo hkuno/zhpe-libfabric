@@ -380,7 +380,7 @@ ssize_t ofi_cq_sreadfrom(struct fid_cq *cq_fid, void *buf, size_t count,
 {
 	struct util_cq *cq;
 	uint64_t endtime;
-	int ret;
+	int ret, timeout_quantum;
 
 	cq = container_of(cq_fid, struct util_cq, cq_fid);
 	assert(cq->wait && cq->internal_wait);
@@ -400,10 +400,12 @@ ssize_t ofi_cq_sreadfrom(struct fid_cq *cq_fid, void *buf, size_t count,
 		}
 
 		if (cq->domain->data_progress == FI_PROGRESS_AUTO)
-			ret = fi_wait(&cq->wait->wait_fid, timeout);
+			timeout_quantum = timeout;
 		else
-			ret = 0;
-	} while (!ret);
+			timeout_quantum = 0;
+		ret = fi_wait(&cq->wait->wait_fid, timeout_quantum);
+	} while (!ret || (ret == -FI_ETIMEDOUT &&
+			  (timeout < 0 || timeout_quantum < timeout)));
 
 	return ret == -FI_ETIMEDOUT ? -FI_EAGAIN : ret;
 }
