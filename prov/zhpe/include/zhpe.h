@@ -1774,7 +1774,7 @@ static inline int zhpe_pe_tx_ring(struct zhpe_pe_entry *pe_entry,
 
 	if (OFI_UNLIKELY(pe_root->compstat.flags & ZHPE_PE_RETRY)) {
 		ret = zhpe_pe_retry(conn->ztx, zhpe_pe_retry_tx_ring1,
-				    pe_root, zhpeu_free_ptr);
+				    pe_root, free);
 		goto done;
 	}
 
