@@ -111,7 +111,7 @@ static int zhpe_ext_lookup(const char *url, void **sa, size_t *sa_len)
 	sz->sz_uuid[2] = v >> 4;
 	sz->sz_uuid[3] = v << 4;
 	/* Assume 32 GB for now. */
-	sz->sz_queue = ZHPE_SA_TYPE_FAM | 32;
+	sz->sz_queue = ZHPE_SZQ_FLAGS_FAM | 32;
 
 	ret = 0;
  done:

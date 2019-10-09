@@ -65,11 +65,11 @@ static int zhpe_ep_cm_getname(fid_t fid, void *addr, size_t *addrlen)
 		return -FI_EINVAL;
 	}
 
-	*addrlen = sockaddr_len(src_addr);
+	*addrlen = zhpeu_sockaddr_len(src_addr);
 	if (!*addrlen)
 		return -FI_EOPBADSTATE;
 
-	if (sockaddr_wildcard(src_addr)) {
+	if (zhpeu_sockaddr_wildcard(src_addr)) {
 		rc = zhpe_gethostaddr(src_addr->sa_family, &addr_buf);
 		if (rc < 0)
 			return rc;
@@ -101,7 +101,7 @@ static int zhpe_ep_cm_setname(fid_t fid, void *addr, size_t addrlen)
 	struct zhpe_ep		*zhpe_ep;
 	struct zhpe_pep		*zhpe_pep;
 
-	if (!sockaddr_valid(addr, addrlen, true))
+	if (!zhpeu_sockaddr_valid(addr, addrlen, true))
 		return -FI_EINVAL;
 
 	switch (fid->fclass) {
@@ -114,7 +114,7 @@ static int zhpe_ep_cm_setname(fid_t fid, void *addr, size_t addrlen)
 		if (sa->sa_family !=
 		    zhpe_sa_family(zhpe_ep->attr->info.addr_format))
 			return -FI_EINVAL;
-		sockaddr_cpy(&zhpe_ep->attr->src_addr, sa);
+		zhpeu_sockaddr_cpy(&zhpe_ep->attr->src_addr, sa);
 		return zhpe_conn_listen(zhpe_ep->attr);
 	case FI_CLASS_PEP:
 		zhpe_pep = container_of(fid, struct zhpe_pep, pep.fid);
@@ -123,7 +123,7 @@ static int zhpe_ep_cm_setname(fid_t fid, void *addr, size_t addrlen)
 		if (sa->sa_family !=
 		    zhpe_sa_family(zhpe_pep->info.addr_format))
 			return -FI_EINVAL;
-		sockaddr_cpy(&zhpe_pep->src_addr, sa);
+		zhpeu_sockaddr_cpy(&zhpe_pep->src_addr, sa);
 		return zhpe_pep_create_listener(zhpe_pep);
 	default:
 		ZHPE_LOG_ERROR("Invalid argument\n");
@@ -139,7 +139,7 @@ static int zhpe_ep_cm_getpeer(struct fid_ep *ep, void *addr, size_t *addrlen)
 
 	zhpe_ep = container_of(ep, struct zhpe_ep, ep);
 	dest_addr = &zhpe_ep->attr->dest_addr;
-	*addrlen = sockaddr_len(dest_addr);
+	*addrlen = zhpeu_sockaddr_len(dest_addr);
 	if (!*addrlen)
 		return -FI_EOPBADSTATE;
 

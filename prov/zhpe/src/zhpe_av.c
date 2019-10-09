@@ -53,9 +53,9 @@ int zhpe_av_get_addr(struct zhpe_av *av, size_t av_index,
 	if (av_index >= av->table_hdr->size)
 		goto done;
 	av_addr = &av->table[av_index];
-	if (!sockaddr_len(&av_addr->addr))
+	if (!zhpeu_sockaddr_len(&av_addr->addr))
 		goto done;
-	sockaddr_cpy(sa, &av_addr->addr);
+	zhpeu_sockaddr_cpy(sa, &av_addr->addr);
 	ret = 0;
 
  done:
@@ -74,7 +74,7 @@ int zhpe_av_get_addr_index(struct zhpe_av *av, const void *addr,
 	fastlock_acquire(&av->list_lock);
 	for (i = 0; i < av->table_hdr->size; i++) {
 		av_addr = &av->table[i];
-		if (!sockaddr_cmp(addr, &av_addr->addr)) {
+		if (!zhpeu_sockaddr_cmp(addr, &av_addr->addr, 0)) {
 			*av_index = i;
 			ret = 0;
 			goto done;
@@ -123,7 +123,7 @@ int zhpe_av_compare_addr(struct zhpe_av *av,
 	if (ret)
 		return ret;
 
-	return sockaddr_cmp(&av_addr1->addr, &av_addr2->addr);
+	return zhpeu_sockaddr_cmp(&av_addr1->addr, &av_addr2->addr, 0);
 }
 
 static inline void zhpe_av_report_success(struct zhpe_av *av, void *context,
@@ -217,7 +217,7 @@ static int zhpe_check_table_in(struct zhpe_av *_av, const void *vaddr,
 
 	if (_av->attr.flags & FI_READ) {
 		for (i = 0, caddr = vaddr; i < count; i++, caddr += caddr_len) {
-			caddr_len = sockaddr_len(caddr);
+			caddr_len = zhpeu_sockaddr_len(caddr);
 			if (!caddr_len) {
 				if (fi_addr)
 					fi_addr[i] = FI_ADDR_NOTAVAIL;
@@ -227,7 +227,8 @@ static int zhpe_check_table_in(struct zhpe_av *_av, const void *vaddr,
 			}
 			for (j = 0; j < _av->table_hdr->size; j++) {
 				av_addr = &_av->table[j];
-				if (!sockaddr_cmp(&av_addr->addr, caddr)) {
+				if (!zhpeu_sockaddr_cmp(&av_addr->addr,
+							caddr, 0)) {
 					ZHPE_LOG_DBG("Found addr in shared"
 						     " av\n");
 					if (fi_addr)
@@ -242,7 +243,7 @@ static int zhpe_check_table_in(struct zhpe_av *_av, const void *vaddr,
 	}
 
 	for (i = 0, caddr = vaddr; i < count; i++, caddr += caddr_len) {
-		caddr_len = sockaddr_len(caddr);
+		caddr_len = zhpeu_sockaddr_len(caddr);
 		if (!caddr_len) {
 			if (fi_addr)
 				fi_addr[i] = FI_ADDR_NOTAVAIL;
@@ -266,12 +267,12 @@ static int zhpe_check_table_in(struct zhpe_av *_av, const void *vaddr,
 		}
 
 		av_addr = &_av->table[index];
-		sockaddr_ntop(caddr, sa_ip, sizeof(sa_ip));
+		zhpeu_sockaddr_ntop(caddr, sa_ip, sizeof(sa_ip));
 		ZHPE_LOG_DBG("AV-INSERT: dst_addr family: %d, IP %s,"
-			     " port: %u\n", sockaddr_family(caddr), sa_ip,
-			     sockaddr_porth(caddr));
+			     " port: %u\n", zhpeu_sockaddr_family(caddr), sa_ip,
+			     zhpeu_sockaddr_porth(caddr));
 
-		sockaddr_cpy(&av_addr->addr, caddr);
+		zhpeu_sockaddr_cpy(&av_addr->addr, caddr);
 		if (fi_addr)
 			fi_addr[i] = (fi_addr_t)index;
 
@@ -444,8 +445,8 @@ static const char *zhpe_av_straddr(struct fid_av *av, const void *addr,
 	const union sockaddr_in46 *sa = addr;
 	char			ntop[INET6_ADDRSTRLEN];
 
-	if (sockaddr_valid(addr, 0, false) &&
-	    sockaddr_ntop(sa, ntop, sizeof(ntop)))
+	if (zhpeu_sockaddr_valid(addr, 0, false) &&
+	    zhpeu_sockaddr_ntop(sa, ntop, sizeof(ntop)))
 		size = snprintf(buf, *len, "%s:%d", ntop, ntohs(sa->sin_port));
 	if (size < 0)
 		*len = 0;
