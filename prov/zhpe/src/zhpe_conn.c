@@ -83,11 +83,11 @@ struct zhpe_conn *zhpe_conn_insert(struct zhpe_ep_attr *ep_attr,
 	conn->fi_addr = FI_ADDR_NOTAVAIL;
 	conn->zq_index = FI_ADDR_NOTAVAIL;
 	conn->state = ZHPE_CONN_STATE_INIT;
-	sockaddr_cpy(&conn->addr, addr);
+	zhpeu_sockaddr_cpy(&conn->addr, addr);
 	conn->local = local;
 	conn->fam = (addr->sa_family == AF_ZHPE &&
-		     ((addr->zhpe.sz_queue & ZHPE_SA_TYPE_MASK) ==
-		      ZHPE_SA_TYPE_FAM));
+		     ((addr->zhpe.sz_queue & ZHPE_SZQ_FLAGS_MASK) ==
+		      ZHPE_SZQ_FLAGS_FAM));
 	dlist_insert_tail(&conn->ep_lentry, &ep_attr->conn_list);
  done:
 	return conn;;
@@ -104,9 +104,11 @@ struct zhpe_conn *zhpe_conn_lookup(struct zhpe_ep_attr *ep_attr,
 		if (ret->state == ZHPE_CONN_STATE_RACED)
 			continue;
 
-		if (local && ret->local && !sockaddr_portcmp(&ret->addr, addr))
+		if (local && ret->local &&
+		    !zhpeu_sockaddr_cmp(&ret->addr, addr,
+					ZHPEU_SACMP_PORT_ONLY))
 			return ret;
-		if (!sockaddr_cmp(&ret->addr, addr))
+		if (!zhpeu_sockaddr_cmp(&ret->addr, addr, 0))
 			return ret;
 	}
 
@@ -270,7 +272,7 @@ static void *_zhpe_conn_listen(void *arg)
 			continue;
 		}
 		ZHPE_LOG_DBG("ACCEPT: %s, %d\n",
-			     sockaddr_ntop(&remote46, ntop, sizeof(ntop)),
+			     zhpeu_sockaddr_ntop(&remote46, ntop, sizeof(ntop)),
 			     ntohs(remote46.sin_port));
 		rc = zhpe_set_sockopts_accept(conn_fd);
 		if (rc < 0)
@@ -314,9 +316,10 @@ static void *_zhpe_conn_listen(void *arg)
 		conn = zhpe_conn_lookup(ep_attr, &remote46, rem_local);
 		if (conn) {
 			if (rem_local)
-				rc = sockaddr_portcmp(&local46, &remote46);
+				rc = zhpeu_sockaddr_cmp(&local46, &remote46,
+							ZHPEU_SACMP_PORT_ONLY);
 			else
-				rc = sockaddr_cmp(&local46, &remote46);
+				rc = zhpeu_sockaddr_cmp(&local46, &remote46, 0);
 			if (!rc)
 				action = ZHPE_CONN_ACTION_SELF;
 			else if (rc < 0)
@@ -362,7 +365,7 @@ int zhpe_listen(const struct fi_info *info,
 #endif
 
 	if (info->src_addr)
-		sockaddr_cpy(ep_addr, info->src_addr);
+		zhpeu_sockaddr_cpy(ep_addr, info->src_addr);
 	else {
 		zhpe_getaddrinfo_hints_init(&ai,
 					    zhpe_sa_family(info->addr_format));
@@ -370,7 +373,7 @@ int zhpe_listen(const struct fi_info *info,
 		ret = zhpe_getaddrinfo(NULL, "0", &ai, &rai);
 		if (ret < 0)
 			goto done;
-		sockaddr_cpy(ep_addr, rai->ai_addr);
+		zhpeu_sockaddr_cpy(ep_addr, rai->ai_addr);
 		freeaddrinfo(rai);
 	}
 
@@ -403,7 +406,7 @@ int zhpe_listen(const struct fi_info *info,
 		}
 	}
 	ZHPE_LOG_DBG("Bound to:%s:%u\n",
-		     sockaddr_ntop(ep_addr, ntop, sizeof(ntop)),
+		     zhpeu_sockaddr_ntop(ep_addr, ntop, sizeof(ntop)),
 		     ntohs(ep_addr->sin_port));
 	ret = zhpe_set_sockopts_listen(listen_fd);
 	if (ret < 0)
@@ -487,10 +490,11 @@ int zhpe_ep_connect(struct zhpe_ep_attr *ep_attr, struct zhpe_conn *conn)
 	}
 
 	ZHPE_LOG_DBG("Connecting to: %s:%d\n",
-		     sockaddr_ntop(&conn->addr, ntop, sizeof(ntop)),
+		     zhpeu_sockaddr_ntop(&conn->addr, ntop, sizeof(ntop)),
 		     ntohs(conn->addr.sin_port));
 	ZHPE_LOG_DBG("Connecting using address:%s\n",
-		     sockaddr_ntop(&ep_attr->src_addr, ntop, sizeof(ntop)));
+		     zhpeu_sockaddr_ntop(&ep_attr->src_addr, ntop,
+					 sizeof(ntop)));
 
 	ret = connect(conn_fd, (struct sockaddr *)&conn->addr,
 		      sizeof(conn->addr));
@@ -619,10 +623,10 @@ int zhpe_gethostaddr(sa_family_t family, union sockaddr_in46 *addr)
 	if (ret < 0)
 		goto getifs;
 	/* Copy address, preserve port. */
-	if (sockaddr_loopback(rai->ai_addr, true))
+	if (zhpeu_sockaddr_loopback(rai->ai_addr, true))
 		goto getifs;
 	port = addr->sin_port;
-	sockaddr_cpy(addr, rai->ai_addr);
+	zhpeu_sockaddr_cpy(addr, rai->ai_addr);
 	addr->sin_port = port;
 	freeaddrinfo(rai);
 	goto done;
@@ -635,11 +639,11 @@ int zhpe_gethostaddr(sa_family_t family, union sockaddr_in46 *addr)
 	}
 	for (ifa = ifaddrs ; ifa ; ifa = ifa->ifa_next) {
 		if (!ifa->ifa_addr || !(ifa->ifa_flags & IFF_UP) ||
-		    !sockaddr_valid(ifa->ifa_addr, 0, false) ||
-		    sockaddr_loopback(ifa->ifa_addr, true))
+		    !zhpeu_sockaddr_valid(ifa->ifa_addr, 0, false) ||
+		    zhpeu_sockaddr_loopback(ifa->ifa_addr, true))
 			continue;
 		port = addr->sin_port;
-		sockaddr_cpy(addr, ifa->ifa_addr);
+		zhpeu_sockaddr_cpy(addr, ifa->ifa_addr);
 		addr->sin_port = port;
 		break;
 	}
@@ -656,7 +660,7 @@ int zhpe_checklocaladdr(const struct ifaddrs *ifaddrs,
 	struct ifaddrs		*ifaddrs_local = NULL;
 	const struct ifaddrs	*ifa;
 
-	if (sockaddr_loopback(addr, true))
+	if (zhpeu_sockaddr_loopback(addr, true))
 		goto done;
 
 	if (!ifaddrs) {
@@ -672,7 +676,8 @@ int zhpe_checklocaladdr(const struct ifaddrs *ifaddrs,
 	for (ifa = (ifaddrs ?: ifaddrs_local); ifa; ifa = ifa->ifa_next) {
 		if (!ifa->ifa_addr || !(ifa->ifa_flags & IFF_UP))
 			continue;
-		ret = !sockaddr_cmp_noport(addr, ifa->ifa_addr);
+		ret = !zhpeu_sockaddr_cmp(addr, ifa->ifa_addr,
+					  ZHPEU_SACMP_ADDR_ONLY);
 		if (ret)
 			break;
 	}

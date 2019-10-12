@@ -1586,7 +1586,7 @@ char *zhpe_straddr(char *buf, size_t *len,
 		goto done;
 	buf[0] = '\0';
 	if (addr_format == FI_FORMAT_UNSPEC) {
-		family = sockaddr_family(addr);
+		family = zhpeu_sockaddr_family(addr);
 		if (family == AF_INET || family == AF_INET6)
 			addr_format = FI_SOCKADDR;
 		else if (family != AF_ZHPE)
@@ -1597,7 +1597,7 @@ char *zhpe_straddr(char *buf, size_t *len,
 		goto done;
 	}
 	/* A zhpe address. */
-	s = sockaddr_str(addr);
+	s = zhpeu_sockaddr_str(addr);
 	if (!s)
 		goto done;
 	/* Leading characters are xxx: */

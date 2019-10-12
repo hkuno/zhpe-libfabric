@@ -1111,11 +1111,12 @@ int zhpe_alloc_endpoint(struct zhpe_domain *zhpe_dom,
 		}
 
 		if (info->src_addr)
-			sockaddr_cpy(&zhpe_ep->attr->src_addr, info->src_addr);
+			zhpeu_sockaddr_cpy(&zhpe_ep->attr->src_addr,
+					   info->src_addr);
 
 		if (info->dest_addr)
-			sockaddr_cpy(&zhpe_ep->attr->dest_addr,
-				     info->dest_addr);
+			zhpeu_sockaddr_cpy(&zhpe_ep->attr->dest_addr,
+					   info->dest_addr);
 
 		if (info->tx_attr) {
 			zhpe_ep->tx_attr = *info->tx_attr;
@@ -1227,7 +1228,7 @@ static int zhpe_ep_lookup_conn(struct zhpe_ep_attr *ep_attr, fi_addr_t fi_addr,
 		}
 		if (first) {
 			if (ep_attr->ep_type == FI_EP_MSG) {
-				sockaddr_cpy(&addr, &ep_attr->dest_addr);
+				zhpeu_sockaddr_cpy(&addr, &ep_attr->dest_addr);
 				addr.sin_port = htons(ep_attr->msg_dest_port);
 			} else {
 				ret = zhpe_av_get_addr(ep_attr->av, av_index,
