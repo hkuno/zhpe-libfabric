@@ -345,7 +345,7 @@ static int zhpe_ep_cm_connect(struct fid_ep *ep, const void *addr,
 	    zhpe_conn_listen(_ep->attr))
 		return -FI_EINVAL;
 
-	sockaddr_cpy(&_ep->attr->dest_addr, addr);
+	zhpeu_sockaddr_cpy(&_ep->attr->dest_addr, addr);
 
 	req = calloc(1, sizeof(*req));
 	if (!req)
@@ -359,8 +359,8 @@ static int zhpe_ep_cm_connect(struct fid_ep *ep, const void *addr,
 	req->hdr.port = htons(_ep->attr->msg_src_port);
 	req->hdr.cm_data_sz = htons(paramlen);
 	req->caps = _ep->attr->info.caps;
-	sockaddr_cpy(&req->src_addr, &_ep->attr->src_addr);
-	sockaddr_cpy(&handle->dest_addr, addr);
+	zhpeu_sockaddr_cpy(&req->src_addr, &_ep->attr->src_addr);
+	zhpeu_sockaddr_cpy(&handle->dest_addr, addr);
 
 	handle->ep = _ep;
 	handle->req = req;
@@ -899,14 +899,14 @@ int zhpe_msg_passive_ep(struct fid_fabric *fabric, struct fi_info *info,
 
 	if (info) {
 		if (info->src_addr)
-			sockaddr_cpy(&_pep->src_addr, info->src_addr);
+			zhpeu_sockaddr_cpy(&_pep->src_addr, info->src_addr);
 		else {
 			zhpe_getaddrinfo_hints_init(&ai, zhpe_sa_family(info));
 			ai.ai_flags |= AI_PASSIVE;
 			ret = zhpe_getaddrinfo(NULL, "0", &ai, &rai);
 			if (ret < 0)
 				goto err;
-			sockaddr_cpy(&_pep->src_addr, rai->ai_addr);
+			zhpeu_sockaddr_cpy(&_pep->src_addr, rai->ai_addr);
 			freeaddrinfo(rai);
 		}
 		_pep->info = *info;
