@@ -199,10 +199,8 @@ static int mmap_get_rkey(struct fid_ep *ep, fi_addr_t fi_addr, uint64_t key,
 		ret = -FI_ENOKEY;
 
  done:
-	if (ret < 0) {
-		if (tindex != -1)
-			zhpe_tx_release(pe_entry);
-	}
+	if (tindex != -1)
+		zhpe_tx_release(pe_entry);
 
 	return ret;
 }
