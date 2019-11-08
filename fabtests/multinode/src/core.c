@@ -72,6 +72,9 @@ static int multinode_setup_fabric(int argc, char **argv)
 	tx_cq_cntr = 0;
 	rx_cq_cntr = 0;
 
+	if (pm_job.my_rank != 0)
+		pm_barrier();
+
 	ret = ft_getinfo(hints, &fi);
 	if (ret)
 		return ret;
@@ -103,6 +106,9 @@ static int multinode_setup_fabric(int argc, char **argv)
 		ret = -FI_ENOMEM;
 		goto err;
 	}
+
+	if (pm_job.my_rank == 0)
+		pm_barrier();
 
 	ret = pm_allgather(my_name, pm_job.names, pm_job.name_len);
 	if (ret) {
@@ -141,7 +147,7 @@ static int multinode_post_rx()
 			break;
 
 		ret = pattern->next_source(&state.cur_source);
-		if (ret == -ENODATA) {
+		if (ret == -FI_ENODATA) {
 			state.all_recvs_posted = true;
 			break;
 		} else if (ret < 0) {
@@ -152,7 +158,7 @@ static int multinode_post_rx()
 		assert(rx_ctx_arr[offset].state == OP_DONE);
 
 		ret = ft_post_rx_buf(ep, opts.transfer_size,
-				     &rx_ctx_arr[offset],
+				     &rx_ctx_arr[offset].context,
 				     rx_ctx_arr[offset].buf,
 				     rx_ctx_arr[offset].desc, 0);
 		if (ret)
@@ -176,7 +182,7 @@ static int multinode_post_tx()
 			break;
 
 		ret = pattern->next_target(&state.cur_target);
-		if (ret == -ENODATA) {
+		if (ret == -FI_ENODATA) {
 			state.all_sends_posted = true;
 			break;
 		} else if (ret < 0) {
@@ -190,7 +196,7 @@ static int multinode_post_tx()
 		dest = pm_job.fi_addrs[state.cur_target];
 		ret = ft_post_tx_buf(ep, dest, opts.transfer_size,
 				     NO_CQ_DATA,
-				     &tx_ctx_arr[offset],
+				     &tx_ctx_arr[offset].context,
 				     tx_ctx_arr[offset].buf,
 				     tx_ctx_arr[offset].desc, 0);
 		if (ret)
@@ -250,7 +256,6 @@ static int multinode_run_test()
 	for (iter = 0; iter < opts.iterations; iter++) {
 
 		multinode_init_state();
-
 		while (!state.all_completions_done ||
 				!state.all_recvs_posted ||
 				!state.all_sends_posted) {
@@ -265,32 +270,39 @@ static int multinode_run_test()
 			ret = multinode_wait_for_comp();
 			if (ret)
 				return ret;
+
+			pm_barrier();
 		}
 	}
-	pm_barrier();
 	return 0;
 }
 
 static void pm_job_free_res()
 {
-	if (pm_job.names)
-		free(pm_job.names);
 
-	if (pm_job.fi_addrs)
+	free(pm_job.names);
+
 	free(pm_job.fi_addrs);
 }
 
 int multinode_run_tests(int argc, char **argv)
 {
 	int ret = FI_SUCCESS;
+	int i;
 
 	ret = multinode_setup_fabric(argc, argv);
 	if (ret)
 		return ret;
 
-	pattern = &full_mesh_ops;
-
-	ret = multinode_run_test();
+	for (i = 0; i < NUM_TESTS && !ret; i++) {
+		printf("starting %s... ", patterns[i].name);
+		pattern = &patterns[i];
+		ret = multinode_run_test();
+		if (ret)
+			printf("failed\n");
+		else
+			printf("passed\n");
+	}
 
 	pm_job_free_res();
 	ft_free_res();

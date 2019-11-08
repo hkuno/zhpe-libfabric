@@ -70,6 +70,12 @@ static int rxr_domain_close(fid_t fid)
 	if (ret)
 		return ret;
 
+	if (rxr_env.enable_shm_transfer) {
+		ret = fi_close(&rxr_domain->shm_domain->fid);
+		if (ret)
+			return ret;
+	}
+
 	free(rxr_domain);
 	return 0;
 }
@@ -102,6 +108,13 @@ static int rxr_mr_close(fid_t fid)
 	if (ret)
 		FI_WARN(&rxr_prov, FI_LOG_MR,
 			"Unable to close MR\n");
+
+	if (rxr_env.enable_shm_transfer) {
+		ret = fi_close(&rxr_mr->shm_msg_mr->fid);
+		if (ret)
+			FI_WARN(&rxr_prov, FI_LOG_MR,
+				"Unable to close shm MR\n");
+	}
 	free(rxr_mr);
 	return ret;
 }
@@ -114,12 +127,18 @@ static struct fi_ops rxr_mr_ops = {
 	.ops_open = fi_no_ops_open,
 };
 
+/*
+ * The mr key generated in lower EFA registration will be used in SHM
+ * registration and mr_map in an unified way
+ */
 int rxr_mr_regattr(struct fid *domain_fid, const struct fi_mr_attr *attr,
 		   uint64_t flags, struct fid_mr **mr)
 {
 	struct rxr_domain *rxr_domain;
 	struct fi_mr_attr *core_attr;
+	struct fi_mr_attr *shm_attr;
 	struct rxr_mr *rxr_mr;
+	uint64_t user_attr_access, core_attr_access;
 	int ret;
 
 	rxr_domain = container_of(domain_fid, struct rxr_domain,
@@ -129,9 +148,14 @@ int rxr_mr_regattr(struct fid *domain_fid, const struct fi_mr_attr *attr,
 	if (!rxr_mr)
 		return -FI_ENOMEM;
 
+	/* recorde the memory access permission requested by user */
+	user_attr_access = attr->access;
+	shm_attr = (struct fi_mr_attr *)attr;
+
 	/* discard const qualifier to override access registered with EFA */
 	core_attr = (struct fi_mr_attr *)attr;
-	core_attr->access = FI_SEND | FI_RECV;
+	core_attr_access = FI_SEND | FI_RECV;
+	core_attr->access = core_attr_access;
 
 	ret = fi_mr_regattr(rxr_domain->rdm_domain, core_attr, flags,
 			    &rxr_mr->msg_mr);
@@ -151,8 +175,26 @@ int rxr_mr_regattr(struct fid *domain_fid, const struct fi_mr_attr *attr,
 	rxr_mr->domain = rxr_domain;
 	*mr = &rxr_mr->mr_fid;
 
+	/* Call shm provider to register memory */
+	if (rxr_env.enable_shm_transfer) {
+		shm_attr->access = user_attr_access;
+		shm_attr->requested_key = rxr_mr->mr_fid.key;
+		ret = fi_mr_regattr(rxr_domain->shm_domain, shm_attr, flags,
+				    &rxr_mr->shm_msg_mr);
+		if (ret) {
+			FI_WARN(&rxr_prov, FI_LOG_MR,
+				"Unable to register shm MR buf (%s): %p len: %zu\n",
+				fi_strerror(-ret), attr->mr_iov->iov_base,
+				attr->mr_iov->iov_len);
+			fi_close(&rxr_mr->msg_mr->fid);
+			goto err;
+		}
+	}
+
 	assert(rxr_mr->mr_fid.key != FI_KEY_NOTAVAIL);
-	ret = ofi_mr_map_insert(&rxr_domain->util_domain.mr_map, attr,
+	core_attr->requested_key = rxr_mr->mr_fid.key;
+	core_attr->access = core_attr_access;
+	ret = ofi_mr_map_insert(&rxr_domain->util_domain.mr_map, core_attr,
 				&rxr_mr->mr_fid.key, mr);
 	if (ret) {
 		FI_WARN(&rxr_prov, FI_LOG_MR,
@@ -247,6 +289,15 @@ int rxr_domain_open(struct fid_fabric *fabric, struct fi_info *info,
 	if (ret)
 		goto err_free_core_info;
 
+	/* Open shm provider's access domain */
+	if (rxr_env.enable_shm_transfer) {
+		assert(!strcmp(shm_info->fabric_attr->name, "shm"));
+		ret = fi_domain(rxr_fabric->shm_fabric, shm_info,
+				&rxr_domain->shm_domain, context);
+		if (ret)
+			goto err_close_core_domain;
+	}
+
 	rxr_domain->rdm_mode = rdm_info->mode;
 	rxr_domain->addrlen = (info->src_addr) ?
 				info->src_addrlen : info->dest_addrlen;
@@ -257,19 +308,16 @@ int rxr_domain_open(struct fid_fabric *fabric, struct fi_info *info,
 
 	ret = ofi_domain_init(fabric, info, &rxr_domain->util_domain, context);
 	if (ret)
-		goto err_close_core_domain;
+		goto err_close_shm_domain;
 
 	rxr_domain->do_progress = 0;
 
 	/*
-	 * ofi_domain_init() would have stored the RxR mr_modes in the map, but
-	 * we need the rbtree insertions and lookups to use the lower-provider
-	 * specific key, since the latter can not support application keys
-	 * (FI_MR_PROV_KEY only). Storing the lower provider's mode in the map
-	 * instead.
+	 * ofi_domain_init() would have stored the RxR mr_modes in the mr_map, but
+	 * we need the rbtree insertions and lookups to use EFA provider's
+	 * specific key, so unset the FI_MR_PROV_KEY bit for mr_map.
 	 */
-	rxr_domain->util_domain.mr_map.mode |=
-				OFI_MR_BASIC_MAP | FI_MR_LOCAL | FI_MR_BASIC;
+	rxr_domain->util_domain.mr_map.mode &= ~FI_MR_PROV_KEY;
 
 	*domain = &rxr_domain->util_domain.domain_fid;
 	(*domain)->fid.ops = &rxr_domain_fi_ops;
@@ -278,6 +326,13 @@ int rxr_domain_open(struct fid_fabric *fabric, struct fi_info *info,
 	fi_freeinfo(rdm_info);
 	return 0;
 
+err_close_shm_domain:
+	if (rxr_env.enable_shm_transfer) {
+		retv = fi_close(&rxr_domain->shm_domain->fid);
+		if (retv)
+			FI_WARN(&rxr_prov, FI_LOG_DOMAIN,
+				"Unable to close shm domain: %s\n", fi_strerror(-retv));
+	}
 err_close_core_domain:
 	retv = fi_close(&rxr_domain->rdm_domain->fid);
 	if (retv)

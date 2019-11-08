@@ -38,8 +38,10 @@
 #include <ofi_prov.h>
 #include "rxm.h"
 
-#define RXM_ATOMIC_UNSUPPORTED_MSG_ORDER (OFI_ORDER_RAR_SET | OFI_ORDER_RAW_SET | \
-					  OFI_ORDER_WAR_SET | OFI_ORDER_WAW_SET | \
+#define RXM_ATOMIC_UNSUPPORTED_MSG_ORDER (FI_ORDER_RAW | FI_ORDER_ATOMIC_RAW | \
+					  FI_ORDER_RAR | FI_ORDER_ATOMIC_RAR | \
+					  FI_ORDER_WAW | FI_ORDER_ATOMIC_WAW | \
+					  FI_ORDER_WAR | FI_ORDER_ATOMIC_WAR | \
 					  FI_ORDER_SAR | FI_ORDER_SAW)
 
 #define RXM_PASSTHRU_CAPS (FI_MSG | FI_RMA | FI_SEND | FI_RECV |	\
@@ -50,6 +52,7 @@ size_t rxm_msg_tx_size		= 128;
 size_t rxm_msg_rx_size		= 128;
 size_t rxm_def_univ_size	= 256;
 size_t rxm_eager_limit		= RXM_BUF_SIZE - sizeof(struct rxm_pkt);
+int force_auto_progress		= 0;
 
 char *rxm_proto_state_str[] = {
 	RXM_PROTO_STATES(OFI_STR)
@@ -266,7 +269,8 @@ static void rxm_alter_info(const struct fi_info *hints, struct fi_info *info)
 					hints->ep_attr->mem_tag_format;
 			}
 		}
-		if (cur->domain_attr->data_progress == FI_PROGRESS_AUTO)
+		if (cur->domain_attr->data_progress == FI_PROGRESS_AUTO ||
+		    force_auto_progress)
 			cur->domain_attr->threading = FI_THREAD_SAFE;
 	}
 }
@@ -410,6 +414,10 @@ RXM_INI
 			"decrease noise during cq polling, but may result in "
 			"longer connection establishment times. (default: 10000).");
 
+	fi_param_define(&rxm_prov, "data_auto_progress", FI_PARAM_BOOL,
+			"Force auto-progress for data transfers even if app "
+			"requested manual progress (default: false/no) \n");
+
 	fi_param_get_size_t(&rxm_prov, "tx_size", &rxm_info.tx_attr->size);
 	fi_param_get_size_t(&rxm_prov, "rx_size", &rxm_info.rx_attr->size);
 	fi_param_get_size_t(&rxm_prov, "msg_tx_size", &rxm_msg_tx_size);
@@ -418,6 +426,12 @@ RXM_INI
 	if (fi_param_get_int(&rxm_prov, "cm_progress_interval",
 				(int *) &rxm_cm_progress_interval))
 		rxm_cm_progress_interval = 10000;
+	fi_param_get_bool(&rxm_prov, "data_auto_progress", &force_auto_progress);
+
+	if (force_auto_progress)
+		FI_INFO(&rxm_prov, FI_LOG_CORE, "auto-progress for data requested "
+			"(FI_OFI_RXM_DATA_AUTO_PROGRESS = 1), domain threading "
+			"level would be set to FI_THREAD_SAFE\n");
 
 	if (rxm_init_info()) {
 		FI_WARN(&rxm_prov, FI_LOG_CORE, "Unable to initialize rxm_info\n");

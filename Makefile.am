@@ -68,7 +68,8 @@ common_srcs =				\
 	prov/util/src/util_shm.c	\
 	prov/util/src/util_mem_monitor.c\
 	prov/util/src/util_mem_hooks.c	\
-	prov/util/src/util_mr_cache.c
+	prov/util/src/util_mr_cache.c	\
+	prov/util/src/util_coll.c
 
 
 if MACOS
@@ -127,6 +128,7 @@ src_libfabric_la_SOURCES =			\
 	include/ofi_indexer.h			\
 	include/ofi_iov.h			\
 	include/ofi_list.h			\
+	include/ofi_bitmask.h			\
 	include/shared/ofi_str.h		\
 	include/ofi_lock.h			\
 	include/ofi_mem.h			\
@@ -143,6 +145,7 @@ src_libfabric_la_SOURCES =			\
 	include/ofi_mr.h			\
 	include/ofi_net.h			\
 	include/ofi_perf.h			\
+	include/ofi_coll.h			\
 	include/fasthash.h			\
 	include/rbtree.h			\
 	include/uthash.h			\
@@ -181,6 +184,7 @@ rdmainclude_HEADERS += \
 	$(top_srcdir)/include/rdma/fabric.h \
 	$(top_srcdir)/include/rdma/fi_atomic.h \
 	$(top_srcdir)/include/rdma/fi_cm.h \
+	$(top_srcdir)/include/rdma/fi_collective.h \
 	$(top_srcdir)/include/rdma/fi_domain.h \
 	$(top_srcdir)/include/rdma/fi_eq.h \
 	$(top_srcdir)/include/rdma/fi_rma.h \
@@ -401,7 +405,6 @@ include prov/rxm/Makefile.include
 include prov/mrail/Makefile.include
 include prov/rxd/Makefile.include
 include prov/bgq/Makefile.include
-include prov/mlx/Makefile.include
 include prov/shm/Makefile.include
 include prov/tcp/Makefile.include
 include prov/zhpe/Makefile.include

@@ -82,7 +82,7 @@ static void tcpx_getinfo_ifs(struct fi_info **info)
 			continue;
 		}
 
-		cur->src_addr = mem_dup(&addr_entry->ipaddr.sa, addrlen);
+		cur->src_addr = mem_dup(&addr_entry->ipaddr, addrlen);
 		if (cur->src_addr) {
 			cur->src_addrlen = addrlen;
 			cur->addr_format = addr_format;
@@ -122,16 +122,16 @@ struct tcpx_port_range port_range = {
 	.high = 0,
 };
 
-static int tcpx_init_env(void)
+static void tcpx_init_env(void)
 {
 	srand(getpid());
 
 	fi_param_get_int(&tcpx_prov, "port_high_range", &port_range.high);
 	fi_param_get_int(&tcpx_prov, "port_low_range", &port_range.low);
 
-	if (port_range.high > TCPX_PORT_MAX_RANGE) {
+	if (port_range.high > TCPX_PORT_MAX_RANGE)
 		port_range.high = TCPX_PORT_MAX_RANGE;
-	}
+
 	if (port_range.low < 0 || port_range.high < 0 ||
 	    port_range.low > port_range.high) {
 		FI_WARN(&tcpx_prov, FI_LOG_EP_CTRL,"User provided "
@@ -139,7 +139,6 @@ static int tcpx_init_env(void)
 		port_range.low  = 0;
 		port_range.high = 0;
 	}
-	return 0;
 }
 
 static void fi_tcp_fini(void)
@@ -170,9 +169,6 @@ TCP_INI
 	fi_param_define(&tcpx_prov,"port_high_range", FI_PARAM_INT,
 			"define port high range");
 
-	if (tcpx_init_env()) {
-		FI_WARN(&tcpx_prov, FI_LOG_EP_CTRL,"Invalid info\n");
-		return NULL;
-	}
+	tcpx_init_env();
 	return &tcpx_prov;
 }

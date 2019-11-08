@@ -64,6 +64,7 @@
 #include <ofi_indexer.h>
 #include <ofi_epoll.h>
 #include <ofi_proto.h>
+#include <ofi_bitmask.h>
 
 #include "rbtree.h"
 #include "uthash.h"
@@ -81,6 +82,9 @@ extern "C" {
 
 /* Indicates that an EP has been bound to a counter */
 #define OFI_CNTR_ENABLED	(1ULL << 61)
+
+/* Memory registration should not be cached */
+#define OFI_MR_NOCACHE		BIT_ULL(60)
 
 #define OFI_Q_STRERROR(prov, level, subsys, q, q_str, entry, q_strerror)	\
 	FI_LOG(prov, level, subsys, "fi_" q_str "_readerr: err: %s (%d), "	\
@@ -291,6 +295,9 @@ struct util_ep {
 	fastlock_t		lock;
 	ofi_fastlock_acquire_t	lock_acquire;
 	ofi_fastlock_release_t	lock_release;
+
+	struct bitmask		*coll_cid_mask;
+	struct slist		coll_ready_queue;
 };
 
 int ofi_ep_bind_av(struct util_ep *util_ep, struct util_av *av);
@@ -660,6 +667,7 @@ struct util_av {
 	struct util_av_entry	*hash;
 	struct ofi_bufpool	*av_entry_pool;
 
+	struct util_coll_mc	*coll_mc;
 	void			*context;
 	uint64_t		flags;
 	size_t			count;
@@ -800,7 +808,7 @@ const char *ofi_eq_strerror(struct fid_eq *eq_fid, int prov_errno,
 #define FI_PRIMARY_CAPS	(FI_MSG | FI_RMA | FI_TAGGED | FI_ATOMICS | FI_MULTICAST | \
 			 FI_NAMED_RX_CTX | FI_DIRECTED_RECV | \
 			 FI_READ | FI_WRITE | FI_RECV | FI_SEND | \
-			 FI_REMOTE_READ | FI_REMOTE_WRITE)
+			 FI_REMOTE_READ | FI_REMOTE_WRITE | FI_COLLECTIVE)
 
 #define FI_SECONDARY_CAPS (FI_MULTI_RECV | FI_SOURCE | FI_RMA_EVENT | \
 			   FI_SHARED_AV | FI_TRIGGER | FI_FENCE | \

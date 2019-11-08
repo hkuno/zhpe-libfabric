@@ -34,8 +34,10 @@
 #include <math.h>
 
 #include <rdma/fabric.h>
+#include <rdma/fi_collective.h>
 #include "ofi.h"
 #include <ofi_util.h>
+#include <ofi_coll.h>
 
 #include "rxm.h"
 
@@ -118,7 +120,7 @@ rxm_mr_buf_reg(struct rxm_ep *rxm_ep, void *addr, size_t len, void **context)
 
 		ret = fi_mr_reg(msg_domain, addr, len,
 				FI_SEND | FI_RECV | FI_READ | FI_WRITE,
-				0, 0, 0, &mr, NULL);
+				0, 0, OFI_MR_NOCACHE, &mr, NULL);
 		*context = mr;
 	}
 
@@ -359,7 +361,7 @@ static int rxm_ep_txrx_pool_create(struct rxm_ep *rxm_ep)
 		[RXM_BUF_POOL_TX_SAR] = rxm_ep->msg_info->tx_attr->size,
 		[RXM_BUF_POOL_RMA] = rxm_ep->msg_info->tx_attr->size,
 	};
-	size_t entry_sizes[] = {		
+	size_t entry_sizes[] = {
 		[RXM_BUF_POOL_RX] = rxm_eager_limit +
 				    sizeof(struct rxm_rx_buf),
 		[RXM_BUF_POOL_TX] = rxm_eager_limit +
@@ -390,8 +392,9 @@ static int rxm_ep_txrx_pool_create(struct rxm_ep *rxm_ep)
 			continue;
 
 		ret = rxm_buf_pool_create(rxm_ep, entry_sizes[i],
-					  (i == RXM_BUF_POOL_RX ? 0 :
-					   rxm_ep->rxm_info->tx_attr->size),
+					  (i == RXM_BUF_POOL_RX ||
+					   i == RXM_BUF_POOL_TX_ATOMIC) ? 0 :
+					  rxm_ep->rxm_info->tx_attr->size,
 					  queue_sizes[i],
 					  &rxm_ep->buf_pools[i], i);
 		if (ret)
@@ -468,6 +471,18 @@ static int rxm_getname(fid_t fid, void *addr, size_t *addrlen)
 	return fi_getname(&rxm_ep->msg_pep->fid, addr, addrlen);
 }
 
+static int rxm_join_coll(struct fid_ep *ep, const void *addr, uint64_t flags,
+		    struct fid_mc **mc, void *context)
+{
+	if((flags & FI_COLLECTIVE) == 0) {
+		return -FI_ENOSYS;
+	}
+
+	struct fi_collective_addr *c_addr = (struct fi_collective_addr *) addr;
+	return ofi_join_collective(ep, c_addr->coll_addr, c_addr->set, flags,
+				mc, context);
+}
+
 static struct fi_ops_cm rxm_ops_cm = {
 	.size = sizeof(struct fi_ops_cm),
 	.setname = rxm_setname,
@@ -478,7 +493,21 @@ static struct fi_ops_cm rxm_ops_cm = {
 	.accept = fi_no_accept,
 	.reject = fi_no_reject,
 	.shutdown = fi_no_shutdown,
-	.join = fi_no_join,
+	.join = rxm_join_coll,
+};
+
+static struct rxm_handle_txrx_ops rxm_rx_ops = {
+	.comp_eager_tx = rxm_finish_eager_send,
+	.handle_eager_rx = rxm_cq_handle_eager,
+	.handle_rndv_rx = rxm_cq_handle_rndv,
+	.handle_seg_data_rx =rxm_cq_handle_seg_data,
+};
+
+static struct rxm_handle_txrx_ops rxm_coll_rx_ops = {
+	.comp_eager_tx = rxm_finish_coll_eager_send,
+	.handle_eager_rx = rxm_cq_handle_coll_eager,
+	.handle_rndv_rx = rxm_cq_handle_rndv,
+	.handle_seg_data_rx =rxm_cq_handle_seg_data,
 };
 
 static int rxm_ep_cancel_recv(struct rxm_ep *rxm_ep,
@@ -1105,7 +1134,7 @@ rxm_ep_sar_tx_send(struct rxm_ep *rxm_ep, struct rxm_conn *rxm_conn,
 	struct rxm_deferred_tx_entry *def_tx_entry;
 	uint64_t msg_id = 0;
 
-	assert(segs_cnt >= 2);	
+	assert(segs_cnt >= 2);
 
 	first_tx_buf = rxm_ep_sar_tx_prepare_segment(rxm_ep, rxm_conn, context, data_len,
 						     rxm_eager_limit, 0, data, flags,
@@ -1603,7 +1632,7 @@ static ssize_t rxm_ep_senddata(struct fid_ep *ep_fid, const void *buf, size_t le
 	if (OFI_UNLIKELY(ret))
 		goto unlock;
 
-	ret = rxm_ep_send_common(rxm_ep, rxm_conn, &iov, desc, 1, context, data,
+	ret = rxm_ep_send_common(rxm_ep, rxm_conn, &iov, &desc, 1, context, data,
 				  rxm_ep_tx_flags(rxm_ep) | FI_REMOTE_CQ_DATA,
 				  0, ofi_op_msg, rxm_conn->inject_data_pkt);
 unlock:
@@ -1844,7 +1873,7 @@ static ssize_t rxm_ep_tsenddata(struct fid_ep *ep_fid, const void *buf, size_t l
 	if (OFI_UNLIKELY(ret))
 		goto unlock;
 
-	ret = rxm_ep_send_common(rxm_ep, rxm_conn, &iov, desc, 1, context, data,
+	ret = rxm_ep_send_common(rxm_ep, rxm_conn, &iov, &desc, 1, context, data,
 				  rxm_ep_tx_flags(rxm_ep) | FI_REMOTE_CQ_DATA,
 				  tag, ofi_op_tagged, rxm_conn->tinject_data_pkt);
 unlock:
@@ -1916,6 +1945,34 @@ static struct fi_ops_tagged rxm_ops_tagged_thread_unsafe = {
 	.inject = rxm_ep_tinject_fast,
 	.senddata = rxm_ep_tsenddata,
 	.injectdata = rxm_ep_tinjectdata_fast,
+};
+
+static struct fi_ops_collective rxm_ops_collective = {
+	.size = sizeof(struct fi_ops_collective),
+	.barrier = ofi_ep_barrier,
+	.broadcast = fi_coll_no_broadcast,
+	.alltoall = fi_coll_no_alltoall,
+	.allreduce = ofi_ep_allreduce,
+	.allgather = fi_coll_no_allgather,
+	.reduce_scatter = fi_coll_no_reduce_scatter,
+	.reduce = fi_coll_no_reduce,
+	.scatter = fi_coll_no_scatter,
+	.gather = fi_coll_no_gather,
+	.msg = fi_coll_no_msg,
+};
+
+static struct fi_ops_collective rxm_ops_collective_none = {
+	.size = sizeof(struct fi_ops_collective),
+	.barrier = fi_coll_no_barrier,
+	.broadcast = fi_coll_no_broadcast,
+	.alltoall = fi_coll_no_alltoall,
+	.allreduce = fi_coll_no_allreduce,
+	.allgather = fi_coll_no_allgather,
+	.reduce_scatter = fi_coll_no_reduce_scatter,
+	.reduce = fi_coll_no_reduce,
+	.scatter = fi_coll_no_scatter,
+	.gather = fi_coll_no_gather,
+	.msg = fi_coll_no_msg,
 };
 
 static int rxm_ep_msg_res_close(struct rxm_ep *rxm_ep)
@@ -2155,6 +2212,8 @@ static void rxm_ep_settings_init(struct rxm_ep *rxm_ep)
 			   rxm_ep->msg_info->rx_attr->size) / 2;
 	rxm_ep->comp_per_progress = (rxm_ep->comp_per_progress > max_prog_val) ?
 				    max_prog_val : rxm_ep->comp_per_progress;
+	ofi_atomic_initialize32(&rxm_ep->atomic_tx_credits,
+				rxm_ep->rxm_info->tx_attr->size);
 
 	rxm_ep->msg_mr_local = ofi_mr_local(rxm_ep->msg_info);
 	rxm_ep->rxm_mr_local = ofi_mr_local(rxm_ep->rxm_info);
@@ -2418,8 +2477,16 @@ int rxm_endpoint(struct fid_domain *domain, struct fi_info *info,
 			     (int *)&rxm_ep->comp_per_progress))
 		rxm_ep->comp_per_progress = 1;
 
-	ret = ofi_endpoint_init(domain, &rxm_util_prov, info, &rxm_ep->util_ep,
-				context, &rxm_ep_progress);
+	if (rxm_ep->rxm_info->caps & FI_COLLECTIVE) {
+		ret = ofi_endpoint_init(domain, &rxm_util_prov, info,
+					&rxm_ep->util_ep, context,
+					&rxm_ep_progress_coll);
+	} else {
+		ret = ofi_endpoint_init(domain, &rxm_util_prov, info,
+					&rxm_ep->util_ep, context,
+					&rxm_ep_progress);
+	}
+
 	if (ret)
 		goto err1;
 
@@ -2432,7 +2499,16 @@ int rxm_endpoint(struct fid_domain *domain, struct fi_info *info,
 	*ep_fid = &rxm_ep->util_ep.ep_fid;
 	(*ep_fid)->fid.ops = &rxm_ep_fi_ops;
 	(*ep_fid)->ops = &rxm_ops_ep;
-	(*ep_fid)->cm = &rxm_ops_cm;
+		(*ep_fid)->cm = &rxm_ops_cm;
+
+	if(rxm_ep->rxm_info->caps & FI_COLLECTIVE) {
+		(*ep_fid)->collective = &rxm_ops_collective;
+		rxm_ep->txrx_ops = &rxm_coll_rx_ops;
+	} else {
+		(*ep_fid)->collective = &rxm_ops_collective_none;
+		rxm_ep->txrx_ops = &rxm_rx_ops;
+	}
+
 	if (rxm_ep->util_ep.domain->threading != FI_THREAD_SAFE) {
 		(*ep_fid)->msg = &rxm_ops_msg_thread_unsafe;
 		(*ep_fid)->tagged = &rxm_ops_tagged_thread_unsafe;

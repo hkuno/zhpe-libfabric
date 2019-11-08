@@ -242,8 +242,19 @@ static int fi_ibv_ep_close(fid_t fid)
 
 	switch (ep->util_ep.type) {
 	case FI_EP_MSG:
-		if (ep->eq)
+		if (ep->eq) {
 			fastlock_acquire(&ep->eq->lock);
+			if (ep->eq->err.err && ep->eq->err.fid == fid) {
+				if (ep->eq->err.err_data) {
+					free(ep->eq->err.err_data);
+					ep->eq->err.err_data = NULL;
+					ep->eq->err.err_data_size = 0;
+				}
+				ep->eq->err.err = 0;
+				ep->eq->err.prov_errno = 0;
+			}
+			fi_ibv_eq_remove_events(ep->eq, fid);
+		}
 
 		if (fi_ibv_is_xrc(ep->info))
 			fi_ibv_ep_xrc_close(ep);
@@ -718,13 +729,7 @@ static int fi_ibv_dgram_ep_setname(fid_t ep_fid, void *addr, size_t addrlen)
 	void *save_addr;
 	int ret = FI_SUCCESS;
 
-	if (ep_fid->fclass != FI_CLASS_EP)
-		return -FI_EINVAL;
-
 	ep = container_of(ep_fid, struct fi_ibv_ep, util_ep.ep_fid.fid);
-	if (!ep)
-		return -FI_EINVAL;
-
 	if (addrlen < ep->info->src_addrlen) {
 		VERBS_INFO(FI_LOG_EP_CTRL,
 			   "addrlen expected: %zu, got: %zu\n",
@@ -756,13 +761,7 @@ static int fi_ibv_dgram_ep_getname(fid_t ep_fid, void *addr, size_t *addrlen)
 {
 	struct fi_ibv_ep *ep;
 
-	if (ep_fid->fclass != FI_CLASS_EP)
-		return -FI_EINVAL;
-
 	ep = container_of(ep_fid, struct fi_ibv_ep, util_ep.ep_fid.fid);
-	if (!ep)
-		return -FI_EINVAL;
-
 	if (*addrlen < sizeof(ep->ep_name)) {
 		*addrlen = sizeof(ep->ep_name);
 		VERBS_INFO(FI_LOG_EP_CTRL,

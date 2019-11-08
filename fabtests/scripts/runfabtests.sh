@@ -46,6 +46,8 @@ trap cleanup_and_exit SIGINT
 #
 declare BIN_PATH
 declare PROV=""
+declare CORE=""
+declare UTIL=""
 declare TEST_TYPE="quick"
 declare SERVER="127.0.0.1"
 declare CLIENT="127.0.0.1"
@@ -197,6 +199,11 @@ complex_tests=(
 	"fi_ubertest"
 )
 
+multinode_tests=(
+	"fi_multinode"
+	"fi_multinode_coll"
+)
+
 function errcho {
 	>&2 echo $*
 }
@@ -298,12 +305,17 @@ function read_exclude_file {
 
 function auto_exclude {
 	local excl_file
+	local name=$UTIL
 
-	excl_file="./fabtests/test_configs/${PROV}/${PROV}.exclude"
+	if [ -z $UTIL ]; then
+		name=$CORE
+	fi
+
+	excl_file="./fabtests/test_configs/${name}/${name}.exclude"
 	if [[ ! -f "$excl_file" ]]; then
-		excl_file="./test_configs/${PROV}/${PROV}.exclude"
+		excl_file="./test_configs/${name}/${name}.exclude"
 		if [[ ! -f "$excl_file" ]]; then
-			excl_file="../test_configs/${PROV}/${PROV}.exclude"
+			excl_file="../test_configs/${name}/${name}.exclude"
 			if [[ ! -f "$excl_file" ]]; then
 				return
 			fi
@@ -443,9 +455,31 @@ function cs_test {
 	fi
 }
 
+function set_cfg_file {
+	local cfg_file
+	local parent=$UTIL
+	local name=$CORE
+
+	if [ -z $UTIL ]; then
+		parent=$CORE
+		name=$1
+	fi
+
+	cfg_file="${PWD}/fabtests/test_configs/${parent}/${name}.test"
+	if [[ ! -f "$cfg_file" ]]; then
+		cfg_file="${PWD}/test_configs/${parent}/${name}.test"
+		if [[ ! -f "$cfg_file" ]]; then
+			return
+		fi
+	fi
+
+	COMPLEX_CFG=${cfg_file}
+}
+
 function complex_test {
 	local test=$1
 	local config=$2
+	local path=${PROV/;/\/}
 	local test_exe="${test}"
 	local s_ret=0
 	local c_ret=0
@@ -454,6 +488,9 @@ function complex_test {
 	local test_time
 
 	is_excluded "$test" && return
+	if [[ -z "$COMPLEX_CFG" ]]; then
+		set_cfg_file $config
+	fi
 
 	start_time=$(date '+%s')
 
@@ -468,7 +505,7 @@ function complex_test {
 	s_pid=$!
 	sleep 1
 
-	c_cmd="${BIN_PATH}${test_exe} -p \"${PROV}\" -t $config $S_INTERFACE $opts"
+	c_cmd="${BIN_PATH}${test_exe} -u "${COMPLEX_CFG}" $S_INTERFACE $opts"
 	FI_LOG_LEVEL=error ${CLIENT_CMD} "${EXPORT_ENV} $c_cmd" &> $c_outp &
 	c_pid=$!
 
@@ -510,28 +547,90 @@ function complex_test {
 	fi
 }
 
+function multinode_test {
+	local test=$1
+	local s_ret=0
+	local c_ret=0
+	local num_procs=$2
+	local test_exe="${test} -n $num_procs -p \"${PROV}\"" 	
+	local start_time
+	local end_time
+	local test_time
+
+
+	is_excluded "$test" && return
+
+	start_time=$(date '+%s')
+
+	s_cmd="${BIN_PATH}${test_exe} ${S_ARGS} -s ${S_INTERFACE}"
+	${SERVER_CMD} "${EXPORT_ENV} $s_cmd" &> $s_outp &
+	s_pid=$!
+	sleep 1
+	
+	c_pid_arr=()	
+	for ((i=1; i<num_procs; i++))
+	do
+		c_cmd="${BIN_PATH}${test_exe} ${S_ARGS} -s ${S_INTERFACE}"
+		${CLIENT_CMD} "${EXPORT_ENV} $c_cmd" &> $c_outp & 
+		c_pid_arr+=($!)
+	done
+
+	[[ c_ret -ne 0 ]] && kill -9 $s_pid 2> /dev/null
+
+	wait $s_pid
+	s_ret=$?
+	
+	end_time=$(date '+%s')
+	test_time=$(compute_duration "$start_time" "$end_time")
+
+	if [[ $STRICT_MODE -eq 0 && $s_ret -eq $FI_ENODATA && $c_ret -eq $FI_ENODATA ]] ||
+	   [[ $STRICT_MODE -eq 0 && $s_ret -eq $FI_ENOSYS && $c_ret -eq $FI_ENOSYS ]]; then
+		print_results "$test_exe" "Notrun" "$test_time" "$s_outp" "$s_cmd" "$c_outp" "$c_cmd"
+		skip_count+=1
+	elif [ $s_ret -ne 0 -o $c_ret -ne 0 ]; then
+		print_results "$test_exe" "Fail" "$test_time" "$s_outp" "$s_cmd" "$c_outp" "$c_cmd"
+		if [ $s_ret -eq 124 -o $c_ret -eq 124 ]; then
+			cleanup
+		fi
+		fail_count+=1
+	else
+		print_results "$test_exe" "Pass" "$test_time" "$s_outp" "$s_cmd" "$c_outp" "$c_cmd"
+		pass_count+=1
+	fi
+}
+
+function set_core_util {
+	prov_arr=$(echo $PROV | tr ";" " ")
+	CORE=""
+	UTIL=""
+	for p in $prov_arr; do
+		if [[ -z $CORE ]]; then
+			CORE=$p
+		else
+			UTIL=$p
+		fi
+	done
+}
+
 function main {
 	skip_count=0
 	pass_count=0
 	fail_count=0
-	local complex_cfg="quick"
+	local complex_type="quick"
 
+	set_core_util
 	set_excludes
 
 	if [[ $1 == "quick" ]]; then
 		local -r tests="unit functional short"
 	elif [[ $1 == "verify" ]]; then
 		local -r tests="complex"
-		complex_cfg=$1
+		complex_type=$1
 	else
 		local -r tests=$(echo $1 | sed 's/all/unit,functional,standard,complex/g' | tr ',' ' ')
-		if [[ $1 == "all" ]]; then
-			complex_cfg=$1
+		if [[ $1 == "all" || $1 == "complex" ]]; then
+			complex_type="all"
 		fi
-	fi
-
-	if [[ -n "$COMPLEX_CFG" ]]; then
-		complex_cfg="$COMPLEX_CFG"
 	fi
 
 	if [ $VERBOSE -eq 0 ] ; then
@@ -569,8 +668,13 @@ function main {
 		;;
 		complex)
 			for test in "${complex_tests[@]}"; do
-				complex_test $test $complex_cfg
+				complex_test $test $complex_type
 
+			done
+		;;
+		multinode)
+			for test in "${multinode_tests[@]}"; do
+					multinode_test $test 3
 			done
 		;;
 		*)

@@ -32,7 +32,7 @@ fi_mr_unmap_key
 : Releases a previously mapped raw memory region key.
 
 fi_mr_bind
-: Associate a registered memory region with a completion counter.
+: Associate a registered memory region with a completion counter or an endpoint.
 
 fi_mr_refresh
 : Updates the memory pages associated with a memory region.
@@ -164,11 +164,13 @@ The following apply to memory registration.
 *FI_MR_LOCAL*
 : When the FI_MR_LOCAL mode bit is set, applications must register all
   data buffers that will be accessed by the local hardware and provide
-  a valid mem_desc parameter into applicable data transfer operations.
+  a valid desc parameter into applicable data transfer operations.
   When FI_MR_LOCAL is zero, applications are not required to register
   data buffers before using them for local operations (e.g. send and
-  receive data buffers), and the mem_desc parameter into data transfer
-  operations is ignored.
+  receive data buffers).  The desc parameter into data transfer
+  operations will be ignored in this case, unless otherwise required
+  (e.g. se  FI_MR_HMEM).  It is recommended that applications pass in
+  NULL for desc when not required.
 
   A provider may hide local registration requirements from applications
   by making use of an internal registration cache or similar mechanisms.
@@ -245,17 +247,34 @@ The following apply to memory registration.
   MR with an endpoint, the application must use fi_mr_bind().  To
   enable the memory region, the application must call fi_mr_enable().
 
+*FI_MR_HMEM*
+: This mode bit is associated with the FI_HMEM capability.
+  If FI_MR_HMEM is set, the application must register buffers that
+  were allocated using a device call and provide a valid desc
+  parameter into applicable data transfer operations even if they are
+  only used for local operations (e.g. send and receive data buffers).
+  Device memory must be registered using the fi_mr_regattr call, with
+  the iface and device fields filled out.
+
+  If FI_MR_HMEM is set, but FI_MR_LOCAL is unset, only device buffers
+  must be registered when used locally.  In this case, the desc parameter
+  passed into data transfer operations must either be valid or NULL.
+  Similarly, if FI_MR_LOCAL is set, but FI_MR_HMEM is not, the desc
+  parameter must either be valid or NULL.
+
 *Basic Memory Registration*
 : Basic memory registration is indicated by the FI_MR_BASIC mr_mode bit.
   FI_MR_BASIC is maintained for backwards compatibility (libfabric version
   1.4 or earlier).  The behavior of basic registration is equivalent
   to setting the following mr_mode bits to one: FI_MR_VIRT_ADDR,
   FI_MR_ALLOCATED, and FI_MR_PROV_KEY.  Additionally, providers that
-  support basic registration usually required FI_MR_LOCAL.  FI_MR_BASIC 
-  must either be set alone, or in conjunction with FI_MR_LOCAL.  Other
-  mr_mode bit pairings are invalid.  Unlike other mr_mode bits, if
-  FI_MR_BASIC is set on input to fi_getinfo(),  it will not be cleared
-  by the provider.  That is, setting FI_MR_BASIC
+  support basic registration usually required the fi_info mode bit FI_LOCAL_MR.
+  As a result, it is recommended that applications migrating from libfabric 1.4
+  or earlier or wanting to support basic memory registration set the mr_mode
+  to FI_MR_VIRT_ADDR | FI_MR_ALLOCATED | FI_MR_PROV_KEY | FI_MR_LOCAL.
+  FI_MR_BASIC must be set alone.  Other mr_mode bit pairings are invalid.
+  Unlike other mr_mode bits, if FI_MR_BASIC is set on input to fi_getinfo(),
+  it will not be cleared by the provider.  That is, setting FI_MR_BASIC
   to one requests basic registration.
 
 The registrations functions -- fi_mr_reg, fi_mr_regv, and
@@ -452,6 +471,11 @@ struct fi_mr_attr {
 	void               *context;
 	size_t             auth_key_size;
 	uint8_t            *auth_key;
+	enum fi_hmem_iface  iface;
+	union {
+		uint64_t	reserved;
+		int		cuda;
+	} device;
 };
 ```
 ## mr_iov
@@ -543,6 +567,26 @@ that are programmed to use the same authorization key may access the memory
 region.  The domain authorization key will be used if the auth_key_size 
 provided is 0.  This field is ignored unless the fabric is opened with API 
 version 1.5 or greater.
+
+## iface
+Indicates the software interfaces used by the application to allocate and
+manage the memory region. This field is ignored unless the application has
+requested the FI_HMEM capability.
+
+*FI_HMEM_SYSTEM*
+: Uses standard operating system calls and libraries, such as malloc,
+  calloc, realloc, mmap, and free.
+
+*FI_HMEM_CUDA*
+: Uses Nvidia CUDA interfaces such as cuMemAlloc, cuMemAllocHost,
+  cuMemAllocManaged, cuMemFree, cudaMalloc, cudaFree.
+
+## device
+Reserved 64 bits for device identifier if using non-standard HMEM interface.
+This field is ignore unless the iface field is valid.
+
+*cuda*
+: For FI_HMEM_CUDA, this is equivalent to CUdevice (int).
 
 # NOTES
 

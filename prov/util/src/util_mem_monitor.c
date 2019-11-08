@@ -33,6 +33,7 @@
  */
 
 #include <ofi_mr.h>
+#include <unistd.h>
 
 static struct ofi_uffd uffd;
 struct ofi_mem_monitor *uffd_monitor = &uffd.monitor;
@@ -40,15 +41,31 @@ struct ofi_mem_monitor *uffd_monitor = &uffd.monitor;
 struct ofi_mem_monitor *default_monitor;
 
 
+static size_t ofi_default_cache_size(void)
+{
+	long cpu_cnt;
+	size_t cache_size;
+
+	cpu_cnt = ofi_sysconf(_SC_NPROCESSORS_ONLN);
+	/* disable cache on error */
+	if (cpu_cnt <= 0)
+		return 0;
+
+	cache_size = ofi_get_mem_size() / (size_t) cpu_cnt / 2;
+	FI_INFO(&core_prov, FI_LOG_MR,
+		"default cache size=%zu\n", cache_size);
+	return cache_size;
+}
+
 /*
  * Initialize all available memory monitors
  */
 void ofi_monitor_init(void)
 {
-	fastlock_init(&uffd_monitor->lock);
+	pthread_mutex_init(&uffd_monitor->lock, NULL);
 	dlist_init(&uffd_monitor->list);
 
-	fastlock_init(&memhooks_monitor->lock);
+	pthread_mutex_init(&memhooks_monitor->lock, NULL);
 	dlist_init(&memhooks_monitor->list);
 
 #if HAVE_UFFD_UNMAP
@@ -64,7 +81,7 @@ void ofi_monitor_init(void)
 			" regions that may be tracked by the MR cache."
 			" Setting this will reduce the amount of memory"
 			" not actively in use that may be registered."
-			" (default: 0 no limit is enforced)");
+			" (default: total memory / number of cpu cores / 2)");
 	fi_param_define(NULL, "mr_cache_max_count", FI_PARAM_SIZE_T,
 			"Defines the total number of memory regions that"
 			" may be store in the cache.  Setting this will"
@@ -94,7 +111,7 @@ void ofi_monitor_init(void)
 	fi_param_get_str(NULL, "mr_cache_monitor", &cache_params.monitor);
 
 	if (!cache_params.max_size)
-		cache_params.max_size = SIZE_MAX;
+		cache_params.max_size = ofi_default_cache_size();
 
 	if (cache_params.monitor != NULL) {
 		if (!strcmp(cache_params.monitor, "userfaultfd") &&
@@ -110,10 +127,10 @@ void ofi_monitor_init(void)
 void ofi_monitor_cleanup(void)
 {
 	assert(dlist_empty(&uffd_monitor->list));
-	fastlock_destroy(&uffd_monitor->lock);
+	pthread_mutex_destroy(&uffd_monitor->lock);
 
 	assert(dlist_empty(&memhooks_monitor->list));
-	fastlock_destroy(&memhooks_monitor->lock);
+	pthread_mutex_destroy(&memhooks_monitor->lock);
 }
 
 int ofi_monitor_add_cache(struct ofi_mem_monitor *monitor,
@@ -124,7 +141,7 @@ int ofi_monitor_add_cache(struct ofi_mem_monitor *monitor,
 	if (!monitor)
 		return -FI_ENOSYS;
 
-	fastlock_acquire(&monitor->lock);
+	pthread_mutex_lock(&monitor->lock);
 	if (dlist_empty(&monitor->list)) {
 		if (monitor == uffd_monitor)
 			ret = ofi_uffd_init();
@@ -139,7 +156,7 @@ int ofi_monitor_add_cache(struct ofi_mem_monitor *monitor,
 	cache->monitor = monitor;
 	dlist_insert_tail(&cache->notify_entry, &monitor->list);
 out:
-	fastlock_release(&monitor->lock);
+	pthread_mutex_unlock(&monitor->lock);
 	return ret;
 }
 
@@ -148,7 +165,7 @@ void ofi_monitor_del_cache(struct ofi_mr_cache *cache)
 	struct ofi_mem_monitor *monitor = cache->monitor;
 
 	assert(monitor);
-	fastlock_acquire(&monitor->lock);
+	pthread_mutex_lock(&monitor->lock);
 	dlist_remove(&cache->notify_entry);
 
 	if (dlist_empty(&monitor->list)) {
@@ -158,7 +175,7 @@ void ofi_monitor_del_cache(struct ofi_mr_cache *cache)
 			ofi_memhooks_cleanup();
 	}
 
-	fastlock_release(&monitor->lock);
+	pthread_mutex_unlock(&monitor->lock);
 }
 
 /* Must be called holding monitor lock */
@@ -219,10 +236,10 @@ static void *ofi_uffd_handler(void *arg)
 		if (ret != 1)
 			break;
 
-		fastlock_acquire(&uffd.monitor.lock);
+		pthread_mutex_lock(&uffd.monitor.lock);
 		ret = read(uffd.fd, &msg, sizeof(msg));
 		if (ret != sizeof(msg)) {
-			fastlock_release(&uffd.monitor.lock);
+			pthread_mutex_unlock(&uffd.monitor.lock);
 			if (errno != EAGAIN)
 				break;
 			continue;
@@ -230,6 +247,11 @@ static void *ofi_uffd_handler(void *arg)
 
 		switch (msg.event) {
 		case UFFD_EVENT_REMOVE:
+			ofi_monitor_unsubscribe(&uffd.monitor,
+				(void *) (uintptr_t) msg.arg.remove.start,
+				(size_t) (msg.arg.remove.end -
+					  msg.arg.remove.start));
+			/* fall through */
 		case UFFD_EVENT_UNMAP:
 			ofi_monitor_notify(&uffd.monitor,
 				(void *) (uintptr_t) msg.arg.remove.start,
@@ -246,7 +268,7 @@ static void *ofi_uffd_handler(void *arg)
 				"Unhandled uffd event %d\n", msg.event);
 			break;
 		}
-		fastlock_release(&uffd.monitor.lock);
+		pthread_mutex_unlock(&uffd.monitor.lock);
 	}
 	return NULL;
 }

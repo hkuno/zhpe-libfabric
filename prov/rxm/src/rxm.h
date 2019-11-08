@@ -132,6 +132,7 @@ extern size_t rxm_msg_tx_size;
 extern size_t rxm_msg_rx_size;
 extern size_t rxm_def_univ_size;
 extern size_t rxm_cm_progress_interval;
+extern int force_auto_progress;
 
 /*
  * Connection Map
@@ -149,7 +150,6 @@ enum rxm_cmap_signal {
 	FUNC(RXM_CMAP_IDLE),		\
 	FUNC(RXM_CMAP_CONNREQ_SENT),	\
 	FUNC(RXM_CMAP_CONNREQ_RECV),	\
-	FUNC(RXM_CMAP_CONNECTED_NOTIFY),\
 	FUNC(RXM_CMAP_CONNECTED),	\
 	FUNC(RXM_CMAP_SHUTDOWN),	\
 
@@ -189,8 +189,6 @@ struct rxm_cmap_peer {
 
 struct rxm_cmap_attr {
 	void 				*name;
-	/* user guarantee for serializing access to cmap objects */
-	uint8_t				serial_access;
 };
 
 struct rxm_cmap {
@@ -250,8 +248,6 @@ union rxm_cm_data {
 struct rxm_cmap_handle *rxm_cmap_key2handle(struct rxm_cmap *cmap, uint64_t key);
 int rxm_cmap_update(struct rxm_cmap *cmap, const void *addr, fi_addr_t fi_addr);
 
-void rxm_cmap_process_conn_notify(struct rxm_cmap *cmap,
-				  struct rxm_cmap_handle *handle);
 void rxm_cmap_process_reject(struct rxm_cmap *cmap,
 			     struct rxm_cmap_handle *handle,
 			     enum rxm_cmap_reject_reason cm_reject_reason);
@@ -372,7 +368,7 @@ union rxm_sar_ctrl_data {
 		enum rxm_sar_seg_type {
 			RXM_SAR_SEG_FIRST	= 1,
 			RXM_SAR_SEG_MIDDLE	= 2,
-			RXM_SAR_SEG_LAST	= 3,	
+			RXM_SAR_SEG_LAST	= 3,
 		} seg_type : 2;
 		uint32_t offset;
 	};
@@ -645,6 +641,14 @@ struct rxm_msg_eq_entry {
 #define RXM_CM_ENTRY_SZ (sizeof(struct fi_eq_cm_entry) + \
 			 sizeof(union rxm_cm_data))
 
+struct rxm_handle_txrx_ops {
+	int (*comp_eager_tx)(struct rxm_ep *rxm_ep,
+				    struct rxm_tx_eager_buf *tx_eager_buf);
+	ssize_t (*handle_eager_rx)(struct rxm_rx_buf *rx_buf);
+	ssize_t (*handle_rndv_rx)(struct rxm_rx_buf *rx_buf);
+	ssize_t (*handle_seg_data_rx)(struct rxm_rx_buf *rx_buf);
+};
+
 struct rxm_ep {
 	struct util_ep 		util_ep;
 	struct fi_info 		*rxm_info;
@@ -656,6 +660,7 @@ struct rxm_ep {
 	uint64_t		msg_cq_last_poll;
 	struct fid_ep 		*srx_ctx;
 	size_t 			comp_per_progress;
+	ofi_atomic32_t		atomic_tx_credits;
 	int			msg_mr_local;
 	int			rxm_mr_local;
 	size_t			min_multi_recv_size;
@@ -673,6 +678,8 @@ struct rxm_ep {
 
 	struct rxm_recv_queue	recv_queue;
 	struct rxm_recv_queue	trecv_queue;
+
+	struct rxm_handle_txrx_ops *txrx_ops;
 };
 
 struct rxm_conn {
@@ -692,9 +699,6 @@ struct rxm_conn {
 	struct dlist_entry sar_rx_msg_list;
 	struct dlist_entry sar_deferred_rx_msg_list;
 
-	/* This is saved MSG EP fid, that hasn't been closed during
-	 * handling of CONN_RECV in RXM_CMAP_CONNREQ_SENT for passive side */
-	struct fid_ep *saved_msg_ep;
 	uint32_t rndv_tx_credits;
 };
 
@@ -727,7 +731,15 @@ int rxm_conn_cmap_alloc(struct rxm_ep *rxm_ep);
 void rxm_cq_write_error(struct util_cq *cq, struct util_cntr *cntr,
 			void *op_context, int err);
 void rxm_ep_progress(struct util_ep *util_ep);
+void rxm_ep_progress_coll(struct util_ep *util_ep);
 void rxm_ep_do_progress(struct util_ep *util_ep);
+
+ssize_t rxm_cq_handle_eager(struct rxm_rx_buf *rx_buf);
+ssize_t rxm_cq_handle_coll_eager(struct rxm_rx_buf *rx_buf);
+ssize_t rxm_cq_handle_rndv(struct rxm_rx_buf *rx_buf);
+ssize_t rxm_cq_handle_seg_data(struct rxm_rx_buf *rx_buf);
+int rxm_finish_eager_send(struct rxm_ep *rxm_ep, struct rxm_tx_eager_buf *tx_eager_buf);
+int rxm_finish_coll_eager_send(struct rxm_ep *rxm_ep, struct rxm_tx_eager_buf *tx_eager_buf);
 
 int rxm_msg_ep_prepost_recv(struct rxm_ep *rxm_ep, struct fid_ep *msg_ep);
 
@@ -824,7 +836,7 @@ rxm_ep_msg_mr_regv(struct rxm_ep *rxm_ep, const struct iovec *iov, size_t count,
 	size_t i;
 	struct rxm_domain *rxm_domain =
 		container_of(rxm_ep->util_ep.domain, struct rxm_domain, util_domain);
- 
+
 	for (i = 0; i < count; i++) {
 		ret = fi_mr_reg(rxm_domain->msg_domain, iov[i].iov_base,
 				iov[i].iov_len, access, 0, 0, 0, &mr[i], NULL);
@@ -845,7 +857,7 @@ rxm_ep_msg_mr_regv_lim(struct rxm_ep *rxm_ep, const struct iovec *iov, size_t co
 	size_t i;
 	struct rxm_domain *rxm_domain =
 		container_of(rxm_ep->util_ep.domain, struct rxm_domain, util_domain);
- 
+
 	for (i = 0; i < count && total_reg_len; i++) {
 		size_t len = MIN(iov[i].iov_len, total_reg_len);
 		ret = fi_mr_reg(rxm_domain->msg_domain, iov[i].iov_base,

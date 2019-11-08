@@ -112,6 +112,11 @@ struct fid_mr {
 	uint64_t		key;
 };
 
+enum fi_hmem_iface {
+	FI_HMEM_SYSTEM	= 0,
+	FI_HMEM_CUDA,
+};
+
 struct fi_mr_attr {
 	const struct iovec	*mr_iov;
 	size_t			iov_count;
@@ -121,6 +126,11 @@ struct fi_mr_attr {
 	void			*context;
 	size_t			auth_key_size;
 	uint8_t			*auth_key;
+	enum fi_hmem_iface	iface;
+	union {
+		uint64_t	reserved;
+		int		cuda;
+	} device;
 };
 
 struct fi_mr_modify {
@@ -135,7 +145,7 @@ struct fi_mr_modify {
 
 #ifndef FABRIC_DIRECT_ATOMIC_DEF
 
-#define FI_COLLECTIVE_OFFSET 256
+//#define FI_COLLECTIVE_OFFSET 256
 
 enum fi_datatype {
 	FI_INT8,
@@ -156,7 +166,7 @@ enum fi_datatype {
 	FI_DATATYPE_LAST,
 
 	/* Collective datatypes */
-	FI_VOID = FI_COLLECTIVE_OFFSET,
+//	FI_VOID = FI_COLLECTIVE_OFFSET,
 };
 
 enum fi_op {
@@ -181,12 +191,6 @@ enum fi_op {
 	FI_MSWAP,
 	/* End of point to point atomic ops */
 	FI_ATOMIC_OP_LAST,
-
-	/* Collective only ops */
-	FI_BARRIER = FI_COLLECTIVE_OFFSET,
-	FI_BROADCAST,
-	FI_ALLTOALL,
-	FI_ALLGATHER,
 };
 
 #endif

@@ -192,7 +192,7 @@ fi_ibv_eq_cm_getinfo(struct rdma_cm_event *event, struct fi_info *pep_info,
 			goto err1;
 	} else {
 		if (fi_ibv_pep_dev_domain_match(hints, devname)) {
-			VERBS_WARN(FI_LOG_EQ, "Passive endpoint domain: %s does"
+			VERBS_WARN(FI_LOG_EQ, "passive endpoint domain: %s does"
 				   " not match device: %s where we got a "
 				   "connection request\n",
 				   hints->domain_attr->name, devname);
@@ -206,11 +206,15 @@ fi_ibv_eq_cm_getinfo(struct rdma_cm_event *event, struct fi_info *pep_info,
 		hints->fabric_attr->name = NULL;
 	}
 
-	if (fi_ibv_getinfo(hints->fabric_attr->api_version, NULL, NULL, 0,
-			   hints, info))
+	ret = fi_ibv_get_matching_info(hints->fabric_attr->api_version, hints,
+				       info, fi_ibv_util_prov.info, 0);
+	if (ret)
 		goto err1;
 
 	assert(!(*info)->dest_addr);
+
+	ofi_alter_info(*info, hints, hints->fabric_attr->api_version);
+	fi_ibv_alter_info(hints, *info);
 
 	free((*info)->src_addr);
 
@@ -296,7 +300,6 @@ fi_ibv_eq_xrc_connreq_event(struct fi_ibv_eq *eq, struct fi_eq_cm_entry *entry,
 		return FI_SUCCESS;
 	}
 
-	fastlock_acquire(&eq->lock);
 	/*
 	 * Reciprocal connections are initiated and handled internally by
 	 * the provider, get the endpoint that issued the original connection
@@ -329,7 +332,6 @@ fi_ibv_eq_xrc_connreq_event(struct fi_ibv_eq *eq, struct fi_eq_cm_entry *entry,
 		goto send_reject;
 	}
 done:
-	fastlock_release(&eq->lock);
 
 	/* Event is handled internally and not passed to the application */
 	return -FI_EAGAIN;
@@ -337,9 +339,18 @@ done:
 send_reject:
 	if (rdma_reject(connreq->id, *priv_data, *priv_datalen))
 		VERBS_WARN(FI_LOG_EP_CTRL, "rdma_reject %d\n", -errno);
-	fastlock_release(&eq->lock);
 
 	return -FI_EAGAIN;
+}
+
+static void
+fi_ibv_eq_xrc_establish(struct rdma_cm_event *cma_event)
+{
+	/* For newer rdma-core, active side  must complete the
+	 * connect if rdma_cm is not managing the QP */
+	if (cma_event->event == RDMA_CM_EVENT_CONNECT_RESPONSE &&
+	    !cma_event->id->qp)
+		rdma_establish(cma_event->id);
 }
 
 static int
@@ -374,6 +385,7 @@ fi_ibv_eq_xrc_conn_event(struct fi_ibv_xrc_ep *ep,
 		fi_ibv_save_priv_data(ep, priv_data, priv_datalen);
 		fi_ibv_ep_ini_conn_done(ep, xrc_info.conn_data,
 					xrc_info.conn_param.qp_num);
+		fi_ibv_eq_xrc_establish(cma_event);
 	} else {
 		fi_ibv_ep_tgt_conn_done(ep);
 		ret = fi_ibv_connect_xrc(ep, NULL, FI_IBV_RECIP_CONN, &cm_data,
@@ -420,6 +432,7 @@ fi_ibv_eq_xrc_recip_conn_event(struct fi_ibv_eq *eq,
 		ep->peer_srqn = xrc_info.conn_data;
 		fi_ibv_ep_ini_conn_done(ep, xrc_info.conn_data,
 					xrc_info.conn_param.qp_num);
+		fi_ibv_eq_xrc_establish(cma_event);
 	} else {
 		fi_ibv_ep_tgt_conn_done(ep);
 	}
@@ -601,21 +614,18 @@ fi_ibv_eq_xrc_disconnect_event(struct fi_ibv_eq *eq,
 static ssize_t
 fi_ibv_eq_cm_process_event(struct fi_ibv_eq *eq,
 	struct rdma_cm_event *cma_event, uint32_t *event,
-	struct fi_eq_cm_entry *entry, size_t len, int *acked)
+	struct fi_eq_cm_entry *entry, size_t len)
 {
 	const struct fi_ibv_cm_data_hdr *cm_hdr;
 	size_t datalen = 0;
 	size_t priv_datalen = cma_event->param.conn.private_data_len;
 	const void *priv_data = cma_event->param.conn.private_data;
-	int ret;
+	int ret, acked = 0;;
 	fid_t fid = cma_event->id->context;
 	struct fi_ibv_pep *pep =
 		container_of(fid, struct fi_ibv_pep, pep_fid);
 	struct fi_ibv_ep *ep;
 	struct fi_ibv_xrc_ep *xrc_ep;
-	struct fi_ibv_domain *domain;
-
-	*acked = 0;
 
 	switch (cma_event->event) {
 	case RDMA_CM_EVENT_ROUTE_RESOLVED:
@@ -628,14 +638,12 @@ fi_ibv_eq_cm_process_event(struct fi_ibv_eq *eq,
 			if (fi_ibv_is_xrc(ep->info)) {
 				xrc_ep = container_of(fid, struct fi_ibv_xrc_ep,
 						      base_ep.util_ep.ep_fid);
-				domain = fi_ibv_ep_to_domain(ep);
-				fastlock_acquire(&domain->xrc.ini_mgmt_lock);
 				fi_ibv_put_shared_ini_conn(xrc_ep);
-				fastlock_release(&domain->xrc.ini_mgmt_lock);
 			}
-			return ret;
+		} else {
+			ret = -FI_EAGAIN;
 		}
-		return -FI_EAGAIN;
+		goto ack;
 	case RDMA_CM_EVENT_CONNECT_REQUEST:
 		*event = FI_CONNREQ;
 
@@ -643,7 +651,6 @@ fi_ibv_eq_cm_process_event(struct fi_ibv_eq *eq,
 		if (ret) {
 			VERBS_WARN(FI_LOG_EP_CTRL,
 				   "CM getinfo error %d\n", ret);
-			fastlock_acquire(&eq->lock);
 			rdma_destroy_id(cma_event->id);
 			eq->err.err = -ret;
 			eq->err.prov_errno = ret;
@@ -654,9 +661,10 @@ fi_ibv_eq_cm_process_event(struct fi_ibv_eq *eq,
 			ret = fi_ibv_eq_xrc_connreq_event(eq, entry, &priv_data,
 							  &priv_datalen);
 			if (ret == -FI_EAGAIN)
-				return ret;
+				goto ack;
 		}
 		break;
+	case RDMA_CM_EVENT_CONNECT_RESPONSE:
 	case RDMA_CM_EVENT_ESTABLISHED:
 		*event = FI_CONNECTED;
 
@@ -665,50 +673,42 @@ fi_ibv_eq_cm_process_event(struct fi_ibv_eq *eq,
 		    IBV_TRANSPORT_IWARP) {
 			ret = fi_ibv_set_rnr_timer(cma_event->id->qp);
 			if (ret)
-				return ret;
+				goto ack;
 		}
 		ep = container_of(fid, struct fi_ibv_ep, util_ep.ep_fid);
 		if (fi_ibv_is_xrc(ep->info)) {
-			fastlock_acquire(&eq->lock);
 			ret = fi_ibv_eq_xrc_connected_event(eq, cma_event,
 							    entry, len);
-			fastlock_release(&eq->lock);
-			return ret;
+			goto ack;
 		}
 		entry->info = NULL;
 		break;
 	case RDMA_CM_EVENT_DISCONNECTED:
 		ep = container_of(fid, struct fi_ibv_ep, util_ep.ep_fid);
 		if (fi_ibv_is_xrc(ep->info)) {
-			fastlock_acquire(&eq->lock);
-			fi_ibv_eq_xrc_disconnect_event(eq, cma_event, acked);
-			fastlock_release(&eq->lock);
-			return -FI_EAGAIN;
+			fi_ibv_eq_xrc_disconnect_event(eq, cma_event, &acked);
+			ret = -FI_EAGAIN;
+			goto ack;
 		}
 		*event = FI_SHUTDOWN;
 		entry->info = NULL;
 		break;
 	case RDMA_CM_EVENT_TIMEWAIT_EXIT:
 		ep = container_of(fid, struct fi_ibv_ep, util_ep.ep_fid);
-		if (fi_ibv_is_xrc(ep->info)) {
-			fastlock_acquire(&eq->lock);
-			fi_ibv_eq_xrc_timewait_event(eq, cma_event, acked);
-			fastlock_release(&eq->lock);
-		}
-		return -FI_EAGAIN;
+		if (fi_ibv_is_xrc(ep->info))
+			fi_ibv_eq_xrc_timewait_event(eq, cma_event, &acked);
+		ret = -FI_EAGAIN;
+		goto ack;
 	case RDMA_CM_EVENT_ADDR_ERROR:
 	case RDMA_CM_EVENT_ROUTE_ERROR:
 	case RDMA_CM_EVENT_CONNECT_ERROR:
 	case RDMA_CM_EVENT_UNREACHABLE:
-		fastlock_acquire(&eq->lock);
 		ep = container_of(fid, struct fi_ibv_ep, util_ep.ep_fid);
 		assert(ep->info);
 		if (fi_ibv_is_xrc(ep->info)) {
 			ret = fi_ibv_eq_xrc_cm_err_event(eq, cma_event);
-			if (ret == -FI_EAGAIN) {
-				fastlock_release(&eq->lock);
-				return ret;
-			}
+			if (ret == -FI_EAGAIN)
+				goto ack;
 		}
 		eq->err.err = ETIMEDOUT;
 		eq->err.prov_errno = -cma_event->status;
@@ -721,14 +721,11 @@ fi_ibv_eq_cm_process_event(struct fi_ibv_eq *eq,
 	case RDMA_CM_EVENT_REJECTED:
 		ep = container_of(fid, struct fi_ibv_ep, util_ep.ep_fid);
 		if (fi_ibv_is_xrc(ep->info)) {
-			fastlock_acquire(&eq->lock);
 			ret = fi_ibv_eq_xrc_rej_event(eq, cma_event);
-			fastlock_release(&eq->lock);
 			if (ret == -FI_EAGAIN)
-				return ret;
+				goto ack;
 			fi_ibv_eq_skip_xrc_cm_data(&priv_data, &priv_datalen);
 		}
-		fastlock_acquire(&eq->lock);
 		eq->err.err = ECONNREFUSED;
 		eq->err.prov_errno = -cma_event->status;
 		if (eq->err.err_data) {
@@ -746,15 +743,16 @@ fi_ibv_eq_cm_process_event(struct fi_ibv_eq *eq,
 		}
 		goto err;
 	case RDMA_CM_EVENT_DEVICE_REMOVAL:
-		fastlock_acquire(&eq->lock);
 		eq->err.err = ENODEV;
 		goto err;
 	case RDMA_CM_EVENT_ADDR_CHANGE:
-		fastlock_acquire(&eq->lock);
 		eq->err.err = EADDRNOTAVAIL;
 		goto err;
 	default:
-		return 0;
+		VERBS_WARN(FI_LOG_EP_CTRL, "unknown rdmacm event received: %d\n",
+			   cma_event->event);
+		ret = -FI_EAGAIN;
+		goto ack;
 	}
 
 	entry->fid = fid;
@@ -763,11 +761,16 @@ fi_ibv_eq_cm_process_event(struct fi_ibv_eq *eq,
 	if (priv_datalen)
 		datalen = fi_ibv_eq_copy_event_data(entry, len, priv_data,
 						    priv_datalen);
+	if (!acked)
+		rdma_ack_cm_event(cma_event);
 	return sizeof(*entry) + datalen;
 err:
+	ret = -FI_EAVAIL;
 	eq->err.fid = fid;
-	fastlock_release(&eq->lock);
-	return -FI_EAVAIL;
+ack:
+	if (!acked)
+		rdma_ack_cm_event(cma_event);
+	return ret;
 }
 
 int fi_ibv_eq_trywait(struct fi_ibv_eq *eq)
@@ -777,6 +780,30 @@ int fi_ibv_eq_trywait(struct fi_ibv_eq *eq)
 	ret = dlistfd_empty(&eq->list_head);
 	fastlock_release(&eq->lock);
 	return ret ? 0 : -FI_EAGAIN;
+}
+
+int fi_ibv_eq_match_event(struct dlist_entry *item, const void *arg)
+{
+	struct fi_ibv_eq_entry *entry =
+		container_of(item, struct fi_ibv_eq_entry, item);
+	const struct fid *fid = arg;
+	return entry->eq_entry->fid == fid;
+}
+
+/* Caller must hold eq->lock */
+void fi_ibv_eq_remove_events(struct fi_ibv_eq *eq, struct fid *fid)
+{
+	struct dlist_entry *item;
+	struct fi_ibv_eq_entry *entry;
+
+	while ((item =
+		dlistfd_remove_first_match(&eq->list_head,
+					   fi_ibv_eq_match_event, fid))) {
+		entry = container_of(item, struct fi_ibv_eq_entry, item);
+		if (entry->event == FI_CONNREQ)
+			fi_freeinfo(entry->cm_entry->info);
+		free(entry);
+	}
 }
 
 ssize_t fi_ibv_eq_write_event(struct fi_ibv_eq *eq, uint32_t event,
@@ -792,7 +819,7 @@ ssize_t fi_ibv_eq_write_event(struct fi_ibv_eq *eq, uint32_t event,
 
 	entry->event = event;
 	entry->len = len;
-	memcpy(entry->eq_entry, buf, len);
+	memcpy(entry->entry, buf, len);
 
 	fastlock_acquire(&eq->lock);
 	dlistfd_insert_tail(&entry->item, &eq->list_head);
@@ -837,7 +864,7 @@ static size_t fi_ibv_eq_read_event(struct fi_ibv_eq *eq, uint32_t *event,
 
 	ret = entry->len;
 	*event = entry->event;
-	memcpy(buf, entry->eq_entry, entry->len);
+	memcpy(buf, entry->entry, entry->len);
 
 	if (!(flags & FI_PEEK)) {
 		dlistfd_remove(eq->list_head.list.next, &eq->list_head);
@@ -856,7 +883,9 @@ fi_ibv_eq_read(struct fid_eq *eq_fid, uint32_t *event,
 	struct fi_ibv_eq *eq;
 	struct rdma_cm_event *cma_event;
 	ssize_t ret = 0;
-	int acked;
+
+	if (len < sizeof(struct fi_eq_cm_entry))
+		return -FI_ETOOSMALL;
 
 	eq = container_of(eq_fid, struct fi_ibv_eq, eq_fid.fid);
 
@@ -864,29 +893,25 @@ fi_ibv_eq_read(struct fid_eq *eq_fid, uint32_t *event,
 		return ret;
 
 	if (eq->channel) {
+next_event:
 		fastlock_acquire(&eq->lock);
 		ret = rdma_get_cm_event(eq->channel, &cma_event);
-		fastlock_release(&eq->lock);
-
-		if (ret)
+		if (ret) {
+			fastlock_release(&eq->lock);
 			return -errno;
-
-		acked = 0;
-		if (len < sizeof(struct fi_eq_cm_entry)) {
-			ret = -FI_ETOOSMALL;
-			goto ack;
 		}
 
 		ret = fi_ibv_eq_cm_process_event(eq, cma_event, event,
-				(struct fi_eq_cm_entry *)buf, len, &acked);
-		if (ret < 0)
-			goto ack;
+						 (struct fi_eq_cm_entry *)buf,
+						 len);
+		fastlock_release(&eq->lock);
+		/* If the CM event was handled internally (e.g. XRC), continue
+		 * to process events. */
+		if (ret == -FI_EAGAIN)
+			goto next_event;
 
 		if (flags & FI_PEEK)
 			ret = fi_ibv_eq_write_event(eq, *event, buf, ret);
-ack:
-		if (!acked)
-			rdma_ack_cm_event(cma_event);
 
 		return ret;
 	}

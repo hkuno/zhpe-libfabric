@@ -70,7 +70,7 @@ int smr_getname(fid_t fid, void *addr, size_t *addrlen)
 	if (!addr || *addrlen == 0 ||
 	    snprintf(addr, *addrlen, "%s", ep->name) >= *addrlen)
 		ret = -FI_ETOOSMALL;
-	*addrlen = sizeof(struct smr_addr);
+	*addrlen = SMR_NAME_SIZE;
 	return ret;
 }
 
@@ -138,7 +138,7 @@ static int smr_ep_cancel_recv(struct smr_ep *ep, struct smr_queue *queue,
 		recv_entry = container_of(entry, struct smr_ep_entry, entry);
 		ret = smr_complete_rx(ep, (void *) recv_entry->context, ofi_op_msg,
 				  recv_entry->flags, 0,
-				  NULL, (void *) recv_entry->addr,
+				  NULL, recv_entry->addr,
 				  recv_entry->tag, 0, FI_ECANCELED);
 		freestack_push(ep->recv_fs, recv_entry);
 		ret = ret ? ret : 1;
@@ -288,7 +288,7 @@ void smr_format_iov(struct smr_cmd *cmd, fi_addr_t peer_id,
 {
 	smr_generic_format(cmd, peer_id, op, tag, 0, 0, data, op_flags);
 	cmd->msg.hdr.op_src = smr_src_iov;
-	cmd->msg.hdr.src_data = (uint64_t) ((char **) resp - (char **) smr);
+	cmd->msg.hdr.src_data = (uintptr_t) ((char **) resp - (char **) smr);
 	cmd->msg.data.iov_count = count;
 	cmd->msg.hdr.size = total_len;
 	cmd->msg.hdr.msg_id = (uint64_t) (uintptr_t) context;

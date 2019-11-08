@@ -136,6 +136,7 @@
 
 extern struct fi_provider fi_ibv_prov;
 extern struct util_prov fi_ibv_util_prov;
+extern struct dlist_entry verbs_devs;
 
 extern struct fi_ibv_gl_data {
 	int	def_tx_size;
@@ -241,7 +242,11 @@ struct fi_ibv_eq_entry {
 	struct dlist_entry	item;
 	uint32_t		event;
 	size_t			len;
-	char 			eq_entry[0];
+	union {
+		char 			entry[0];
+		struct fi_eq_entry 	*eq_entry;
+		struct fi_eq_cm_entry	*cm_entry;
+	};
 };
 
 typedef int (*fi_ibv_trywait_func)(struct fid *fid);
@@ -288,6 +293,7 @@ struct fi_ibv_eq {
 int fi_ibv_eq_open(struct fid_fabric *fabric, struct fi_eq_attr *attr,
 		   struct fid_eq **eq, void *context);
 int fi_ibv_eq_trywait(struct fi_ibv_eq *eq);
+void fi_ibv_eq_remove_events(struct fi_ibv_eq *eq, struct fid *fid);
 
 int fi_ibv_av_open(struct fid_domain *domain, struct fi_av_attr *attr,
 		   struct fid_av **av, void *context);
@@ -324,8 +330,9 @@ struct fi_ibv_domain {
 
 		/* The domain maintains a RBTree for mapping an endpoint
 		 * destination addresses to physical XRC INI QP connected
-		 * to that host. */
-		fastlock_t		ini_mgmt_lock;
+		 * to that host. The map is protected using the EQ lock
+		 * bound to the domain to avoid the need for additional
+		 * locking. */
 		struct ofi_rbmap	*ini_conn_rbmap;
 	} xrc ;
 
@@ -462,7 +469,7 @@ enum fi_ibv_ini_qp_state {
  * An XRC transport INI QP connection can be shared within a process to
  * communicate with all the ranks on the same remote node. This structure is
  * only accessed during connection setup and tear down and should be
- * done while holding the domain:xrc:ini_mgmt_lock.
+ * done while holding the domain:eq:lock.
  */
 struct fi_ibv_ini_shared_conn {
 	/* To share, EP must have same remote peer host addr and TX CQ */
@@ -700,6 +707,11 @@ int fi_ibv_fi_to_rai(const struct fi_info *fi, uint64_t flags,
 		     struct rdma_addrinfo *rai);
 int fi_ibv_get_rdma_rai(const char *node, const char *service, uint64_t flags,
 			const struct fi_info *hints, struct rdma_addrinfo **rai);
+int fi_ibv_get_matching_info(uint32_t version, const struct fi_info *hints,
+			     struct fi_info **info, const struct fi_info *verbs_info,
+			     uint8_t passive);
+void fi_ibv_alter_info(const struct fi_info *hints, struct fi_info *info);
+
 struct verbs_ep_domain {
 	char			*suffix;
 	enum fi_ep_type		type;
@@ -886,24 +898,20 @@ static inline int fi_ibv_poll_reap_unsig_cq(struct fi_ibv_ep *ep)
 						    util_domain);
 
 	cq->util_cq.cq_fastlock_acquire(&cq->util_cq.cq_lock);
-	/* TODO: retrieve WCs as much as possible in a single
-	 * ibv_poll_cq call */
 	while (1) {
 		ret = domain->poll_cq(cq->cq, 10, wc);
-		if (ret <= 0) {
-			cq->util_cq.cq_fastlock_release(&cq->util_cq.cq_lock);
-			return ret;
-		}
+		if (ret <= 0)
+			break;
+
 		for (i = 0; i < ret; i++) {
-			if (!fi_ibv_process_wc(cq, &wc[i]))
-				continue;
-			if (OFI_LIKELY(!fi_ibv_wc_2_wce(cq, &wc[i], &wce)))
+			if (fi_ibv_process_wc(cq, &wc[i]) &&
+			    (!fi_ibv_wc_2_wce(cq, &wc[i], &wce)))
 				slist_insert_tail(&wce->entry, &cq->wcq);
 		}
 	}
 
 	cq->util_cq.cq_fastlock_release(&cq->util_cq.cq_lock);
-	return FI_SUCCESS;
+	return ret;
 }
 
 /* WR must be filled out by now except for context */
