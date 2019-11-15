@@ -376,8 +376,9 @@ static int zhpe_av_insertsym(struct fid_av *av, const char *node,
 	else
 		fmt = offset;
 
-	assert((hostlen-offset) < FI_NAME_MAX);
-	strncpy(base_host, node, hostlen - (offset));
+	if (hostlen - offset >= FI_NAME_MAX)
+		return -FI_ETOOSMALL;
+	memcpy(base_host, node, hostlen - offset);
 	var_port = atoi(service);
 	var_host = atoi(node + hostlen - offset);
 
