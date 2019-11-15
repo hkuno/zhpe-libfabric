@@ -42,6 +42,7 @@ extern "C" {
 #define FI_ZHPE_OPS_V1		"zhpe_ops_v1"
 
 #define FI_ZHPE_FAM_RKEY	(0)
+#define FI_ZHPE_MSA_RKEY	(1)
 
 enum fi_zhpe_mmap_cache_mode {
 	FI_ZHPE_MMAP_CACHE_WB	= 0,

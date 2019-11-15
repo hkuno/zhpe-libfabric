@@ -72,7 +72,10 @@ static int zhpe_ext_lookup(const char *url, void **sa, size_t *sa_len)
 	int			ret = -FI_EINVAL;
 	const char		fam_pfx[] = "zhpe:///fam";
 	const size_t		fam_pfx_len = strlen(fam_pfx);
+	const char		ion_pfx[] = "zhpe:///ion";
+	const size_t		ion_pfx_len = strlen(ion_pfx);
 	const char		*p = url;
+	uint			gcid;
 	struct sockaddr_zhpe	*sz;
 	char			*e;
 	ulong			v;
@@ -82,11 +85,14 @@ static int zhpe_ext_lookup(const char *url, void **sa, size_t *sa_len)
 	*sa = NULL;
 	if (!url || !sa_len || !zhpeq_is_asic())
 		goto done;
-	if (strncmp(url, fam_pfx, fam_pfx_len)) {
-		ret = -FI_ENOENT;
+	if (!strncmp(url, fam_pfx, fam_pfx_len)) {
+		gcid = 40;
+		p += fam_pfx_len;
+	} else if (!strncmp(url, ion_pfx, ion_pfx_len)) {
+		gcid = 0;
+		p += ion_pfx_len;
+	} else
 		goto done;
-	}
-	p += fam_pfx_len;
 	if (!*p)
 		goto done;
 	errno = 0;
@@ -105,14 +111,13 @@ static int zhpe_ext_lookup(const char *url, void **sa, size_t *sa_len)
 	}
 	*sa = sz;
 	sz->sz_family = AF_ZHPE;
-	v += 0x40;
-	sz->sz_uuid[0] = v >> 20;
-	sz->sz_uuid[1] = v >> 12;
-	sz->sz_uuid[2] = v >> 4;
-	sz->sz_uuid[3] = v << 4;
-	/* Assume 32 GB for now. */
-	sz->sz_queue = ZHPE_SA_TYPE_FAM | 32;
-
+	gcid += v;
+	sz->sz_uuid[0] = gcid >> 20;
+	sz->sz_uuid[1] = gcid >> 12;
+	sz->sz_uuid[2] = gcid >> 4;
+	sz->sz_uuid[3] = gcid << 4;
+	sz->sz_queue = ZHPE_SA_TYPE_FAM;
+	*sa  = sz;
 	ret = 0;
  done:
 	return ret;

@@ -395,11 +395,15 @@ int zhpe_conn_z_setup(struct zhpe_conn *conn, int conn_fd)
  done:
 	return ret;
 }
+
 int zhpe_conn_fam_setup(struct zhpe_conn *conn)
 {
 	int			ret = 0;
 	struct zhpe_ep_attr	*ep_attr = conn->ep_attr;
+	size_t			n_qkdata = 0;
+	struct zhpeq_key_data	*qkdata[2];
 	struct zhpe_rkey_data	*new;
+	size_t			i;
 
 	mutex_lock(&ep_attr->conn_mutex);
 	if (!ep_attr->ztx)
@@ -418,19 +422,7 @@ int zhpe_conn_fam_setup(struct zhpe_conn *conn)
 	conn->rkey_tree = rbtNew(zhpe_compare_zkeys);
 	if (!conn->rkey_tree)
 		goto done;
-	new = malloc(sizeof(*new));
-	if (!new) {
-		ret = -FI_ENOMEM;
-		goto done;
-	}
-	atm_inc(&conn->ztx->use_count);
-	new->ztx = conn->ztx;
-	new->zkey.key = 0;
-	new->zkey.internal = false;
-	new->kdata = NULL;
-	new->ohdr = (struct zhpe_msg_hdr){ 0 };
-	new->use_count = 1;
-	zhpe_rkey_rbtInsert(conn->rkey_tree, new);
+
 	/* Get address index. */
 	ret = zhpeq_backend_open(conn->ztx->zq, &conn->addr);
 	if (ret < 0) {
@@ -439,19 +431,39 @@ int zhpe_conn_fam_setup(struct zhpe_conn *conn)
 		goto done;
 	}
 	conn->zq_index = ret;
-	/* Set up rkey entry for FAM.*/
+
+	/* Get qkdata entries for FAM.*/
+	n_qkdata = ARRAY_SIZE(qkdata);
 	ret = zhpeq_fam_qkdata(ep_attr->domain->zqdom, conn->zq_index,
-			       &new->kdata);
+			       qkdata, &n_qkdata);
 	if (ret < 0) {
 		ZHPE_LOG_ERROR("%s,%u:zhpeq_fam_qkdata() error %d\n",
 			       __func__, __LINE__, ret);
 		goto done;
 	}
-	ret = zhpeq_zmmu_reg(new->kdata);
-	if (ret < 0) {
-		ZHPE_LOG_ERROR("%s,%u:zhpeq_req() error %d\n",
-			       __func__, __LINE__, ret);
-		goto done;
+	for (i = 0; i < n_qkdata; i++) {
+		new = malloc(sizeof(*new));
+		if (!new) {
+			ret = -FI_ENOMEM;
+			goto done;
+		}
+		atm_inc(&conn->ztx->use_count);
+		new->ztx = conn->ztx;
+		new->zkey.key = i;
+		new->zkey.internal = false;
+		new->kdata = NULL;
+		new->ohdr = (struct zhpe_msg_hdr){ 0 };
+		new->use_count = 1;
+		zhpe_rkey_rbtInsert(conn->rkey_tree, new);
+		/* Create requester ZMMU entry for qkdata. */
+		ret = zhpeq_zmmu_reg(qkdata[i]);
+		if (ret < 0) {
+			ZHPE_LOG_ERROR("%s,%u:zhpeq_req() error %d\n",
+				       __func__, __LINE__, ret);
+			goto done;
+		}
+		new->kdata = qkdata[i];
+		qkdata[i] = NULL;
 	}
 	/* FIXME: Rethink for multiple contexts. */
 	conn->tx_ctx = ep_attr->tx_ctx;
@@ -461,8 +473,12 @@ int zhpe_conn_fam_setup(struct zhpe_conn *conn)
 	mutex_unlock(&ep_attr->conn_mutex);
 	cond_broadcast(&ep_attr->conn_cond);
 	ret = 0;
-
  done:
+	if (ret < 0) {
+		for (i = 0; i < n_qkdata; i++)
+			zhpeq_qkdata_free(qkdata[i]);
+	}
+
 	return ret;
 }
 
