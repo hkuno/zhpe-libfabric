@@ -33,6 +33,8 @@
 #ifndef _FI_EXT_ZHPE_H_
 #define _FI_EXT_ZHPE_H_
 
+#include <stdbool.h>
+
 #include <rdma/fabric.h>
 
 #ifdef  __cplusplus
