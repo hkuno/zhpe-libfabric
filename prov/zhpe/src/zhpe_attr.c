@@ -93,7 +93,6 @@
 #define ZHPE_PROTO_VERSION_WIRE	(1)
 
 #define	ZHPE_PROV_API_VERSION	FI_VERSION(1, 5)
-#define	ZHPE_PROV_FI_VERSION	FI_VERSION(1, 8)
 #define ZHPE_PROV_NAME		"zhpe"
 #define ZHPE_PROV_VERSION	FI_VERSION(1, 0)
 
@@ -203,7 +202,7 @@ struct fi_info zhpe_info_rdm = {
 struct fi_provider zhpe_prov = {
 	.name			= ZHPE_PROV_NAME,
 	.version		= ZHPE_PROV_VERSION,
-	.fi_version		= ZHPE_PROV_FI_VERSION,
+	.fi_version		= OFI_VERSION_LATEST,
 	.getinfo		= zhpe_getinfo,
 	.fabric			= zhpe_fabric,
 	.cleanup		= fi_zhpe_fini
