@@ -433,6 +433,7 @@ void rxm_cmap_process_shutdown(struct rxm_cmap *cmap,
 			"Invalid handle on shutdown event\n");
 	} else if (handle->state != RXM_CMAP_SHUTDOWN) {
 		FI_DBG(cmap->av->prov, FI_LOG_EP_CTRL, "Got remote shutdown\n");
+		rxm_cmap_del_handle(handle);
 	} else {
 		FI_DBG(cmap->av->prov, FI_LOG_EP_CTRL, "Got local shutdown\n");
 	}
@@ -590,7 +591,7 @@ unlock:
 int rxm_msg_eq_progress(struct rxm_ep *rxm_ep)
 {
 	struct rxm_msg_eq_entry *entry;
-       int ret;
+	int ret;
 
 	entry = alloca(RXM_MSG_EQ_ENTRY_SZ);
 	if (!entry) {
@@ -606,8 +607,11 @@ int rxm_msg_eq_progress(struct rxm_ep *rxm_ep)
 			break;
 		}
 		ret = rxm_conn_handle_event(rxm_ep, entry);
-		if (ret)
+		if (ret) {
+			FI_DBG(&rxm_prov, FI_LOG_EP_CTRL,
+			       "invalid connection handle event: %d\n", ret);
 			break;
+		}
 	}
 	return ret;
 }
@@ -1077,18 +1081,51 @@ err1:
 	return ret;
 }
 
+static void rxm_flush_msg_cq(struct rxm_ep *rxm_ep)
+{
+	struct fi_cq_data_entry comp;
+	int ret;
+	do {
+		ret = fi_cq_read(rxm_ep->msg_cq, &comp, 1);
+		if (ret > 0) {
+			ret = rxm_cq_handle_comp(rxm_ep, &comp);
+			if (OFI_UNLIKELY(ret)) {
+				rxm_cq_write_error_all(rxm_ep, ret);
+			} else {
+				ret = 1;
+			}
+		} else if (ret == -FI_EAVAIL) {
+			rxm_cq_read_write_error(rxm_ep);
+			ret = 1;
+		} else if (ret < 0 && ret != -FI_EAGAIN) {
+			rxm_cq_write_error_all(rxm_ep, ret);
+		}
+	} while (ret > 0);
+}
+
 static int rxm_conn_handle_notify(struct fi_eq_entry *eq_entry)
 {
 	struct rxm_cmap *cmap;
 	struct rxm_cmap_handle *handle;
+	struct rxm_ep *rxm_ep;
 
-	assert((enum rxm_cmap_signal)eq_entry->data);
+	assert((enum rxm_cmap_signal) eq_entry->data);
 
-	if ((enum rxm_cmap_signal)eq_entry->data == RXM_CMAP_FREE) {
+	if ((enum rxm_cmap_signal) eq_entry->data == RXM_CMAP_FREE) {
 		handle = eq_entry->context;
 		assert(handle->state == RXM_CMAP_SHUTDOWN);
 		FI_DBG(&rxm_prov, FI_LOG_EP_CTRL, "freeing handle: %p\n", handle);
 		cmap = handle->cmap;
+		rxm_ep = container_of(cmap->ep, struct rxm_ep, util_ep);
+
+		rxm_conn_close(handle);
+
+		// after closing the connection, we need to flush any dangling references to the
+		// handle from msg_cq entries that have not been cleaned up yet, otherwise we
+		// could run into problems during CQ cleanup.  these entries will be errored so
+		// keep reading through EAVAIL.
+		rxm_flush_msg_cq(rxm_ep);
+
 		if (handle->peer) {
 			dlist_remove(&handle->peer->entry);
 			free(handle->peer);

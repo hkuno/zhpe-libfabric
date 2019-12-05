@@ -122,6 +122,7 @@ struct util_coll_mc {
 };
 
 struct join_data {
+	struct util_coll_mc *new_mc;
 	struct bitmask data;
 	struct bitmask tmp;
 };
@@ -152,6 +153,9 @@ struct util_coll_operation {
 	} data;
 	util_coll_comp_fn_t		comp_fn;
 };
+
+int ofi_query_collective(struct fid_domain *domain, enum fi_collective_op coll,
+			 struct fi_collective_attr *attr, uint64_t flags);
 
 int ofi_join_collective(struct fid_ep *ep, fi_addr_t coll_addr,
 			const struct fid_av_set *set, uint64_t flags,

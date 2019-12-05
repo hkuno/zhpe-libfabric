@@ -68,7 +68,7 @@ class Fabtest(Test):
         super().__init__(branchname, buildno, testname, core_prov, fabric,
                          hosts, ofi_build_mode, util_prov)
         self.fabtestpath = "{}/bin".format(self.libfab_installpath) 
-    
+        self.fabtestconfigpath = "{}/share/fabtests".format(self.libfab_installpath)
     def get_exclude_file(self):
         path = self.libfab_installpath
         efile_path = "{}/share/fabtests/test_configs".format(path)
@@ -98,7 +98,7 @@ class Fabtest(Test):
      
     @property
     def options(self):
-        opts = "-vvv -p {} -S ".format(self.fabtestpath)
+        opts = "-T 300 -vvv -p {} -S ".format(self.fabtestpath)
         if (self.core_prov == "verbs" and self.nw_interface):
             opts = "{} -s {} ".format(opts, common.get_node_name(self.server, 
                     self.nw_interface)) # include common.py
@@ -138,14 +138,63 @@ class Fabtest(Test):
    
     @property
     def execute_condn(self):
-        # fabtests works for shmem prov only for libfabirc debug builds.
+        # fabtests works for shmem prov only for libfabric debug builds.
         return True if (self.core_prov != 'shm' or \
                         self.ofi_build_mode == 'dbg') else False
 
     def execute_cmd(self):
+        curdir = os.getcwd()
+        os.chdir(self.fabtestconfigpath)
         command = self.cmd + self.options
         outputcmd = shlex.split(command)
-        common.run_command(outputcmd)       
+        common.run_command(outputcmd)
+        os.chdir(curdir)
+
+class ShmemTest(Test):
+    def __init__(self, branchname, buildno, testname, core_prov, fabric,
+                 hosts, ofi_build_mode, util_prov=None):
+        
+        super().__init__(branchname, buildno, testname, core_prov, fabric,
+                         hosts, ofi_build_mode, util_prov)
+     
+        #self.n - number of hosts * number of processes per host
+        self.n = 4 
+        # self.ppn - number of processes per node. 
+        self.ppn = 2
+        self.shmem_dir = "{}/shmem".format(self.libfab_installpath)
+
+    @property
+    def cmd(self):
+        #todo: rename mpi_testpath to testpath to make it generic for shmem and mpitest
+        return "{}/run_shmem.sh ".format(ci_site_config.mpi_testpath)
+
+    def options(self, shmem_testname):
+       
+        if self.util_prov:
+            prov = "{core};{util} ".format(core=self.core_prov, 
+                    util=self.util_prov)
+        else:
+            prov = self.core_prov
+ 
+        opts = "-n {n} -hosts {server},{client} -shmem_dir={shmemdir} \
+                -libfabric_path={path}/lib -prov '{provider}' -test {test} \
+                -server {server} -inf {inf}" \
+                .format(n=self.n, server=self.server, client=self.client, \
+                shmemdir=self.shmem_dir, path=self.libfab_installpath, \
+                provider=prov, test=shmem_testname, \
+                inf=ci_site_config.interface_map[self.fabric])
+        return opts
+
+    @property
+    def execute_condn(self):
+        return True if (self.core_prov == "psm2" or self.core_prov == "sockets") \
+                    else False
+            
+    def execute_cmd(self, shmem_testname):
+        command = self.cmd + self.options(shmem_testname) 
+        outputcmd = shlex.split(command)
+        common.run_command(outputcmd)        
+    
 
 class MpiTests(Test):
     def __init__(self, branchname, buildno, testname, core_prov, fabric,

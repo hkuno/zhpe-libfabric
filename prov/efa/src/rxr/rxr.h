@@ -84,7 +84,7 @@ extern const uint32_t rxr_poison_value;
 #define RXR_RECVWIN_SIZE		(16384)
 #define RXR_DEF_CQ_SIZE			(8192)
 #define RXR_REMOTE_CQ_DATA_LEN		(8)
-#define RXR_MIN_AV_SIZE			(8192)
+#define RXR_MIN_AV_SIZE			(16384)
 /* maximum timeout for RNR backoff (microseconds) */
 #define RXR_DEF_RNR_MAX_TIMEOUT		(1000000)
 /* bounds for random RNR backoff timeout */
@@ -1182,7 +1182,7 @@ static inline void rxr_release_rx_pkt_entry(struct rxr_ep *ep,
 #endif
 #ifdef ENABLE_EFA_POISONING
 	/* the same pool size is used for all types of rx pkt_entries */
-	rxr_poison_mem_region((uint32_t *)pkt, ep->rx_pkt_pool_entry_sz);
+	rxr_poison_mem_region((uint32_t *)pkt_entry, ep->rx_pkt_pool_entry_sz);
 #endif
 	pkt_entry->state = RXR_PKT_ENTRY_FREE;
 	ofi_buf_free(pkt_entry);

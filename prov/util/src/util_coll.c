@@ -555,10 +555,10 @@ void util_coll_join_comp(struct util_coll_operation *coll_op)
 	struct fi_eq_err_entry entry;
 	struct util_ep *ep = container_of(coll_op->mc->ep, struct util_ep, ep_fid);
 
-	coll_op->mc->seq = 0;
-	coll_op->mc->group_id = ofi_bitmask_get_lsbset(coll_op->data.join.data);
+	coll_op->data.join.new_mc->seq = 0;
+	coll_op->data.join.new_mc->group_id = ofi_bitmask_get_lsbset(coll_op->data.join.data);
 	// mark the local mask bit
-	ofi_bitmask_unset(ep->coll_cid_mask, coll_op->mc->group_id);
+	ofi_bitmask_unset(ep->coll_cid_mask, coll_op->data.join.new_mc->group_id);
 
 	/* write to the eq  */
 	memset(&entry, 0, sizeof(entry));
@@ -740,6 +740,8 @@ int ofi_join_collective(struct fid_ep *ep, fi_addr_t coll_addr,
 				util_coll_join_comp);
 	if (ret)
 		goto err1;
+
+	join_op->data.join.new_mc = new_coll_mc;
 
 	if (new_coll_mc->local_rank != FI_ADDR_NOTAVAIL) {
 		ret = ofi_bitmask_create(&join_op->data.join.data, OFI_MAX_GROUP_ID);
@@ -982,4 +984,50 @@ void ofi_coll_handle_xfer_comp(uint64_t tag, void *ctx)
 
 	util_ep = container_of(xfer_item->hdr.coll_op->mc->ep, struct util_ep, ep_fid);
 	util_coll_op_progress_work(util_ep, xfer_item->hdr.coll_op);
+}
+
+int ofi_query_collective(struct fid_domain *domain, enum fi_collective_op coll,
+				struct fi_collective_attr *attr, uint64_t flags)
+{
+	int ret;
+
+	if (!attr || attr->mode != 0)
+		return -FI_EINVAL;
+
+	switch (coll) {
+	case FI_BARRIER:
+		ret = FI_SUCCESS;
+		break;
+	case FI_ALLREDUCE:
+		if (FI_MIN <= attr->op && FI_BXOR >= attr->op)
+			ret = fi_query_atomic(domain, attr->datatype, attr->op,
+					      &attr->datatype_attr, flags);
+		else
+			return -FI_ENOSYS;
+		break;
+	case FI_BROADCAST:
+	case FI_ALLTOALL:
+	case FI_ALLGATHER:
+	case FI_REDUCE_SCATTER:
+	case FI_REDUCE:
+	case FI_SCATTER:
+	case FI_GATHER:
+	default:
+		return -FI_ENOSYS;
+	}
+
+	if (ret)
+		return ret;
+
+	// with the currently implemented software based collective operations
+	// the only restriction is the number of ranks we can address, as limited
+	// by the size of the rank portion of the collective tag, which is 31 bits.
+	// future collectives may impose further restrictions which will need to update
+	// the calculation.  For example, operations which require dedicated space in
+	// the recieve buffer for each rank would limit the number of members by buffer
+	// size and value type (8kB buffer / 64B value = 128 member max).
+	// hardware may impose further restrictions
+	attr->max_members = ~(0x80000000);
+
+	return FI_SUCCESS;
 }

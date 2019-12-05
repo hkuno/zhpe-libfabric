@@ -1998,8 +1998,7 @@ ssize_t rxr_ep_tsend(struct fid_ep *ep_fid, const void *buf, size_t len,
 
 	msg_iov.iov_base = (void *)buf;
 	msg_iov.iov_len = len;
-
-	return rxr_ep_tsendv(ep_fid, &msg_iov, desc, 1, dest_addr, tag,
+	return rxr_ep_tsendv(ep_fid, &msg_iov, &desc, 1, dest_addr, tag,
 			     context);
 }
 
@@ -2301,7 +2300,7 @@ static int rxr_ep_bind(struct fid *ep_fid, struct fid *bfid, uint64_t flags)
 		if (!rxr_ep->peer)
 			return -FI_ENOMEM;
 
-		rxr_ep->robuf_fs = rxr_robuf_fs_create(rxr_ep->rx_size,
+		rxr_ep->robuf_fs = rxr_robuf_fs_create(av->util_av.count,
 						       NULL, NULL);
 		if (!rxr_ep->robuf_fs)
 			return -FI_ENOMEM;
