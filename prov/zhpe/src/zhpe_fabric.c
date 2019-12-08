@@ -287,6 +287,7 @@ static int zhpe_ext_munmap(struct fi_zhpe_mmap_desc *mmap_desc)
 	if (!mmap_desc)
 		goto done;
 	ret = zhpeq_mmap_unmap(mdesc->zmdesc);
+	free(mdesc);
 
  done:
 	return ret;
