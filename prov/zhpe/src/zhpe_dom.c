@@ -501,6 +501,10 @@ int zhpe_domain(struct fid_fabric *fid_fabric, struct fi_info *info,
 
 	ret = ofi_domain_init(&zfab->util_fabric.fabric_fid, info,
 			      &zdom->util_domain, context);
+
+	if (zdom->util_domain.data_progress == FI_PROGRESS_AUTO)
+		zdom->util_domain.threading = FI_THREAD_SAFE;
+
 	if (ret < 0) {
 		free(zdom);
 		zdom = NULL;

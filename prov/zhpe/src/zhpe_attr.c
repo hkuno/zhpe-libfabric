@@ -49,7 +49,7 @@
 #define ZHPE_EQ_DEF_SZ		(1<<8)
 
 #define ZHPE_EP_CAP		(FI_ATOMICS | FI_MSG | FI_RMA |		\
-				 FI_RMA_EVENT | FI_TAGGED | FI_TRIGGER)
+				 FI_RMA_EVENT | FI_TAGGED /*| FI_TRIGGER*/)
 #define ZHPE_EP_COMP_ORDER	(FI_ORDER_NONE)
 #define ZHPE_EP_DEF_BUFF_RECV	(1024 * 1024)
 #define ZHPE_EP_MAX_ATOMIC_SZ	(8)
@@ -148,7 +148,7 @@ static struct fi_rx_attr zhpe_rx_attr = {
 
 struct fi_domain_attr zhpe_domain_attr = {
 	.name			= "zhpe-bridge",
-	.threading		= FI_THREAD_COMPLETION,
+	.threading		= FI_THREAD_SAFE,
 	.control_progress	= FI_PROGRESS_AUTO,
 	.data_progress		= FI_PROGRESS_AUTO,
 	.resource_mgmt		= FI_RM_ENABLED,
