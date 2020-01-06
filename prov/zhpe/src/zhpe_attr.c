@@ -148,7 +148,7 @@ static struct fi_rx_attr zhpe_rx_attr = {
 
 struct fi_domain_attr zhpe_domain_attr = {
 	.name			= "zhpe-bridge",
-	.threading		= FI_THREAD_COMPLETION,
+	.threading		= FI_THREAD_SAFE,
 	.control_progress	= FI_PROGRESS_AUTO,
 	.data_progress		= FI_PROGRESS_AUTO,
 	.resource_mgmt		= FI_RM_ENABLED,
