@@ -769,6 +769,7 @@ void zhpe_pe_retry_tx_ring1(struct zhpe_pe_retry *pe_retry)
 
 	return;
  requeue:
+	zhpe_conn_pull(conn);
 	zhpe_pe_retry_insert(conn->ztx, pe_retry);
 }
 
